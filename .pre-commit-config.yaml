@@ -1,0 +1,13 @@
+# .pre-commit-config.yaml
+# Note: this is the first pre-commit config in this repo.
+# Run: pre-commit install
+repos:
+  - repo: local
+    hooks:
+      - id: audit-yaml-provenance
+        name: Audit YAML provenance check
+        entry: python scripts/check_audit_yaml_provenance.py
+        language: system
+        files: '^plugins/[^/]+/cases/D\d+[^/]*\.ya?ml$'
+        pass_filenames: true
+        require_serial: true

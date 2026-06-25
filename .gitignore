@@ -1,0 +1,57 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# Test reports (auto-generated) — only templates/ allowed
+plugins/wifi_llapi/reports/*
+!plugins/wifi_llapi/reports/templates/
+!plugins/wifi_llapi/reports/.gitkeep
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets — never commit
+configs/testbed.yaml
+.env
+.coverage
+
+# Local-only notes / handoff / scratch artifacts
+.worktrees/
+.codex
+
+# Local agent/tool runtime artifacts
+.run_wifi_llapi.log
+.wifi_monitor.log
+.copilot-testpilot.tags
+.superpowers/
+report.*.json
+/*.xlsx
+/*.xls
+/*.xlsm
+compare-*.md
+compare-*.json
+*-full-run-static.md
+0414-handover.md
+5G-STA-sccuss-exp.md
+6G-STA-exp.md
+docs/copilot-sdk-hooks-skills-session-resume-persistenc.md
+docs/wifi_llapi_cases_summary.txt
+
+# Audit artifacts (auto-generated)
+audit/*
+!audit/.gitkeep

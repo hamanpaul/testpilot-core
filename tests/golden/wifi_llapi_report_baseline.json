@@ -1,0 +1,115 @@
+{
+  "_comment": "Golden snapshot of build_wifi_llapi_summary output for the 3-case deterministic fixture. Generated on feature/decouple-core-wifi-llapi. DO NOT edit by hand — regenerate by running tests/test_wifi_llapi_report_golden.py with --update-golden.",
+  "_fixture": {
+    "row_objects": {
+      "101": "WiFi.AccessPoint.1.Security.",
+      "102": "WiFi.Radio.1.",
+      "103": "Device.Unknown.1."
+    },
+    "case_results": [
+      {
+        "case_id": "D001",
+        "source_row": 101,
+        "result_5g": "Pass",
+        "result_6g": "Fail",
+        "result_24g": "Not Supported",
+        "diagnostic_status": "FailEnv",
+        "failure_snapshot": {"reason_code": "sta_band_not_ready", "phase": "verify_env"}
+      },
+      {
+        "case_id": "D002",
+        "source_row": 102,
+        "result_5g": "Fail",
+        "result_6g": "Skip",
+        "result_24g": "Pass",
+        "diagnostic_status": "",
+        "failure_snapshot": {
+          "reason_code": "pass_criteria_not_satisfied",
+          "comment": "pass_criteria not satisfied",
+          "phase": "evaluate"
+        }
+      },
+      {
+        "case_id": "D003",
+        "source_row": 103,
+        "result_5g": "N/A",
+        "result_6g": "Pass",
+        "result_24g": "Fail",
+        "diagnostic_status": "FailConfig",
+        "failure_snapshot": {"comment": "missing sta profile", "phase": "setup_env"}
+      }
+    ]
+  },
+  "expected_summary": {
+    "policy_version": "wifi_llapi_summary_v1",
+    "band_category": [
+      {"band_key": "result_5g", "band_label": "5G", "total_items": 1, "tested_items": 1, "pass": 1, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": 1.0, "progress": 1.0, "category": "WiFi.AccessPoint"},
+      {"band_key": "result_5g", "band_label": "5G", "total_items": 0, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": null, "progress": null, "category": "WiFi.EndPoint"},
+      {"band_key": "result_5g", "band_label": "5G", "total_items": 1, "tested_items": 1, "pass": 0, "fail": 1, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": 0.0, "progress": 1.0, "category": "WiFi.Radio"},
+      {"band_key": "result_5g", "band_label": "5G", "total_items": 0, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": null, "progress": null, "category": "WiFi.SSID"},
+      {"band_key": "result_5g", "band_label": "5G", "total_items": 0, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": null, "progress": null, "category": "WiFi.wps_DefParam"},
+      {"band_key": "result_5g", "band_label": "5G", "total_items": 1, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": null, "progress": 0.0, "category": "WiFi.Other"},
+      {"band_key": "result_6g", "band_label": "6G", "total_items": 1, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 1, "not_supported": 0, "skip": 0, "pass_rate": null, "progress": 0.0, "category": "WiFi.AccessPoint"},
+      {"band_key": "result_6g", "band_label": "6G", "total_items": 0, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": null, "progress": null, "category": "WiFi.EndPoint"},
+      {"band_key": "result_6g", "band_label": "6G", "total_items": 1, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 1, "pass_rate": null, "progress": 0.0, "category": "WiFi.Radio"},
+      {"band_key": "result_6g", "band_label": "6G", "total_items": 0, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": null, "progress": null, "category": "WiFi.SSID"},
+      {"band_key": "result_6g", "band_label": "6G", "total_items": 0, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": null, "progress": null, "category": "WiFi.wps_DefParam"},
+      {"band_key": "result_6g", "band_label": "6G", "total_items": 1, "tested_items": 1, "pass": 1, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": 1.0, "progress": 1.0, "category": "WiFi.Other"},
+      {"band_key": "result_24g", "band_label": "2.4G", "total_items": 1, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 0, "not_supported": 1, "skip": 0, "pass_rate": null, "progress": 0.0, "category": "WiFi.AccessPoint"},
+      {"band_key": "result_24g", "band_label": "2.4G", "total_items": 0, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": null, "progress": null, "category": "WiFi.EndPoint"},
+      {"band_key": "result_24g", "band_label": "2.4G", "total_items": 1, "tested_items": 1, "pass": 1, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": 1.0, "progress": 1.0, "category": "WiFi.Radio"},
+      {"band_key": "result_24g", "band_label": "2.4G", "total_items": 0, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": null, "progress": null, "category": "WiFi.SSID"},
+      {"band_key": "result_24g", "band_label": "2.4G", "total_items": 0, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 0, "not_supported": 0, "skip": 0, "pass_rate": null, "progress": null, "category": "WiFi.wps_DefParam"},
+      {"band_key": "result_24g", "band_label": "2.4G", "total_items": 1, "tested_items": 0, "pass": 0, "fail": 0, "to_be_tested": 1, "not_supported": 0, "skip": 0, "pass_rate": null, "progress": 0.0, "category": "WiFi.Other"}
+    ],
+    "bucket_totals": {
+      "result_5g": {
+        "band_key": "result_5g", "band_label": "5G", "total_items": 3, "tested_items": 2,
+        "pass": 1, "fail": 1, "to_be_tested": 0, "not_supported": 0, "skip": 0,
+        "pass_rate": 0.5, "progress": 0.6666666666666666
+      },
+      "result_6g": {
+        "band_key": "result_6g", "band_label": "6G", "total_items": 3, "tested_items": 1,
+        "pass": 1, "fail": 0, "to_be_tested": 1, "not_supported": 0, "skip": 1,
+        "pass_rate": 1.0, "progress": 0.3333333333333333
+      },
+      "result_24g": {
+        "band_key": "result_24g", "band_label": "2.4G", "total_items": 3, "tested_items": 1,
+        "pass": 1, "fail": 0, "to_be_tested": 1, "not_supported": 1, "skip": 0,
+        "pass_rate": 1.0, "progress": 0.3333333333333333
+      }
+    },
+    "raw_totals": {
+      "result_5g": {"Pass": 1, "Fail": 1, "N/A": 1},
+      "result_6g": {"Fail": 1, "Skip": 1, "Pass": 1},
+      "result_24g": {"Not Supported": 1, "Pass": 1, "Fail": 1}
+    },
+    "diagnostic_status": {"FailEnv": 1, "FailConfig": 1},
+    "per_case": [
+      {
+        "case_id": "D001", "source_row": 101, "category": "WiFi.AccessPoint",
+        "bands": {
+          "result_5g": {"raw": "Pass", "bucket": "Pass", "fail_reason": ""},
+          "result_6g": {"raw": "Fail", "bucket": "To be confirmed", "fail_reason": "sta band not ready"},
+          "result_24g": {"raw": "Not Supported", "bucket": "Not Supported", "fail_reason": ""}
+        }
+      },
+      {
+        "case_id": "D002", "source_row": 102, "category": "WiFi.Radio",
+        "bands": {
+          "result_5g": {"raw": "Fail", "bucket": "Fail", "fail_reason": "pass criteria not satisfied"},
+          "result_6g": {"raw": "Skip", "bucket": "Skip", "fail_reason": ""},
+          "result_24g": {"raw": "Pass", "bucket": "Pass", "fail_reason": ""}
+        }
+      },
+      {
+        "case_id": "D003", "source_row": 103, "category": "WiFi.Other",
+        "bands": {
+          "result_5g": {"raw": "N/A", "bucket": "N/A", "fail_reason": ""},
+          "result_6g": {"raw": "Pass", "bucket": "Pass", "fail_reason": ""},
+          "result_24g": {"raw": "Fail", "bucket": "To be confirmed", "fail_reason": "missing sta profile"}
+        }
+      }
+    ]
+  }
+}

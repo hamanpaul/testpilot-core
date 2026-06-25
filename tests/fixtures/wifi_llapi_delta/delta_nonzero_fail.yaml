@@ -1,0 +1,38 @@
+id: wifi-llapi-delta-nonzero-fail
+name: BytesReceived
+version: "1.0"
+source:
+  row: 5
+  object: "WiFi.SSID.{i}.Stats."
+  api: "BytesReceived"
+bands:
+  - 6g
+llapi_support: Support
+topology:
+  devices:
+    DUT:
+      role: ap
+      transport: serial
+steps:
+  - id: baseline_api
+    action: exec
+    target: DUT
+    phase: baseline
+    command: 'ubus-cli "WiFi.SSID.6.Stats.BytesReceived?"'
+    capture: baseline_api
+  - id: trigger_traffic
+    action: exec
+    target: DUT
+    phase: trigger
+    command: "echo traffic-6g"
+  - id: verify_api
+    action: exec
+    target: DUT
+    phase: verify
+    command: 'ubus-cli "WiFi.SSID.6.Stats.BytesReceivedVerify?"'
+    capture: verify_api
+pass_criteria:
+  - delta:
+      baseline: baseline_api.BytesReceived
+      verify: verify_api.BytesReceived
+    operator: delta_nonzero

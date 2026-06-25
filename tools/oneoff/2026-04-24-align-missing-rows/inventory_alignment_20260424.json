@@ -1,0 +1,236 @@
+{
+  "actions": [
+    {
+      "fields_changed": {
+        "id": [
+          "wifi-llapi-D068-discoverymethodenabled-accesspoint-fils",
+          "wifi-llapi-D066-discoverymethodenabled-accesspoint-fils"
+        ],
+        "source.row": [
+          68,
+          66
+        ]
+      },
+      "from": "D068_discoverymethodenabled_accesspoint_fils.yaml",
+      "kind": "rename",
+      "row": 66,
+      "to": "D066_discoverymethodenabled_accesspoint_fils.yaml"
+    },
+    {
+      "fields_changed": {
+        "id": [
+          "wifi-llapi-D068-discoverymethodenabled-accesspoint-upr",
+          "wifi-llapi-D067-discoverymethodenabled-accesspoint-upr"
+        ],
+        "source.row": [
+          68,
+          67
+        ]
+      },
+      "from": "D068_discoverymethodenabled_accesspoint_upr.yaml",
+      "kind": "rename",
+      "row": 67,
+      "to": "D067_discoverymethodenabled_accesspoint_upr.yaml"
+    },
+    {
+      "fields_changed": {
+        "id": [
+          "wifi-llapi-D115-getstationstats-accesspoint",
+          "wifi-llapi-D109-getstationstats"
+        ],
+        "source.row": [
+          115,
+          109
+        ]
+      },
+      "from": "D115_getstationstats_accesspoint.yaml",
+      "kind": "rename",
+      "row": 109,
+      "to": "D109_getstationstats.yaml"
+    },
+    {
+      "fields_changed": {
+        "id": [
+          "wifi-llapi-D115-getstationstats-active",
+          "wifi-llapi-D110-getstationstats-active"
+        ],
+        "source.row": [
+          115,
+          110
+        ]
+      },
+      "from": "D115_getstationstats_active.yaml",
+      "kind": "rename",
+      "row": 110,
+      "to": "D110_getstationstats_active.yaml"
+    },
+    {
+      "fields_changed": {
+        "id": [
+          "wifi-llapi-D115-getstationstats-associationtime",
+          "wifi-llapi-D111-getstationstats-associationtime"
+        ],
+        "source.row": [
+          115,
+          111
+        ]
+      },
+      "from": "D115_getstationstats_associationtime.yaml",
+      "kind": "rename",
+      "row": 111,
+      "to": "D111_getstationstats_associationtime.yaml"
+    },
+    {
+      "fields_changed": {
+        "id": [
+          "wifi-llapi-D115-getstationstats-authenticationstate",
+          "wifi-llapi-D112-getstationstats-authenticationstate"
+        ],
+        "source.row": [
+          115,
+          112
+        ]
+      },
+      "from": "D115_getstationstats_authenticationstate.yaml",
+      "kind": "rename",
+      "row": 112,
+      "to": "D112_getstationstats_authenticationstate.yaml"
+    },
+    {
+      "fields_changed": {
+        "id": [
+          "wifi-llapi-D115-getstationstats-avgsignalstrength",
+          "wifi-llapi-D113-getstationstats-avgsignalstrength"
+        ],
+        "source.row": [
+          115,
+          113
+        ]
+      },
+      "from": "D115_getstationstats_avgsignalstrength.yaml",
+      "kind": "rename",
+      "row": 113,
+      "to": "D113_getstationstats_avgsignalstrength.yaml"
+    },
+    {
+      "fields_changed": {
+        "id": [
+          "wifi-llapi-D115-getstationstats-avgsignalstrengthbychain",
+          "wifi-llapi-D114-getstationstats-avgsignalstrengthbychain"
+        ],
+        "source.row": [
+          115,
+          114
+        ]
+      },
+      "from": "D115_getstationstats_avgsignalstrengthbychain.yaml",
+      "kind": "rename",
+      "row": 114,
+      "to": "D114_getstationstats_avgsignalstrengthbychain.yaml"
+    },
+    {
+      "fields_changed": {
+        "id": [
+          "wifi-llapi-d495-retrycount-basic",
+          "wifi-llapi-D407-retrycount"
+        ],
+        "source.row": [
+          495,
+          407
+        ]
+      },
+      "from": "D495_retrycount_ssid_stats_basic.yaml",
+      "kind": "move",
+      "row": 407,
+      "to": "D407_retrycount_ssid_stats.yaml"
+    },
+    {
+      "fields_changed": {
+        "source.row": [
+          362,
+          495
+        ]
+      },
+      "from": "D495_retrycount_ssid_stats_verified.yaml",
+      "kind": "metadata",
+      "row": 495,
+      "to": "D495_retrycount_ssid_stats_verified.yaml"
+    },
+    {
+      "fields_changed": {},
+      "from": "D096_uapsdenable.yaml",
+      "kind": "delete",
+      "row": null,
+      "to": null
+    },
+    {
+      "fields_changed": {},
+      "from": "D097_vendorie.yaml",
+      "kind": "delete",
+      "row": null,
+      "to": null
+    },
+    {
+      "fields_changed": {},
+      "from": "D100_wmmenable.yaml",
+      "kind": "delete",
+      "row": null,
+      "to": null
+    },
+    {
+      "fields_changed": {},
+      "from": "D102_configmethodssupported.yaml",
+      "kind": "delete",
+      "row": null,
+      "to": null
+    },
+    {
+      "fields_changed": {},
+      "from": "D106_relaycredentialsenable.yaml",
+      "kind": "delete",
+      "row": null,
+      "to": null
+    },
+    {
+      "fields_changed": {},
+      "from": "D474_channel_radio_37.yaml",
+      "kind": "delete",
+      "row": null,
+      "to": null
+    },
+    {
+      "fields_changed": {
+        "id": [
+          null,
+          "wifi-llapi-D428-channel-neighbour"
+        ],
+        "source.api": [
+          null,
+          "Channel"
+        ],
+        "source.object": [
+          null,
+          "WiFi.AccessPoint.{i}.Neighbour.{i}."
+        ],
+        "source.row": [
+          null,
+          428
+        ]
+      },
+      "from": "_template.yaml",
+      "kind": "create",
+      "row": 428,
+      "to": "D428_channel_neighbour.yaml"
+    }
+  ],
+  "generated_at": "2026-04-25T07:03:00.215740+00:00",
+  "mode": "apply",
+  "post_state": {
+    "canonical_coverage": 294,
+    "incl_template": 416,
+    "liberal_missing": 0,
+    "liberal_missing_rows": [],
+    "support_rows": 415,
+    "total_cases": 415
+  }
+}

@@ -1,0 +1,27 @@
+version: 1
+project: testpilot
+policy_profile: flat
+policy_version: "1.0.5"
+tier: work
+policy:
+  config_name: .project-policy.yml
+  release_version_source: VERSION
+  required_checks:
+    - release-version
+    - cli-help-sync
+    - policy-config
+    - agent-instructions-sync
+cli:
+  - command: "bash scripts/policy_cli_help.sh"
+    help_args: ["--help"]
+    reflected_in: "README.md"
+    marker: "testpilot-help"
+  - command: "bash scripts/policy_cli_help.sh"
+    help_args: ["--update", "--help"]
+    reflected_in: "README.md"
+    marker: "testpilot-update-help"
+policy_check:
+  repository: hamanpaul/paulsha-conventions
+  config: .project-policy.yml
+  pin_required: true
+  workflow_ref: hamanpaul/paulsha-conventions/.github/workflows/reusable-policy-check.yml@484f963adddf384d30fa0dd85aef35dddf822ee7

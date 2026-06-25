@@ -1,0 +1,19 @@
+id: example-001
+name: Example test case
+description: Replace with actual test case description.
+
+bands:
+  - 5G
+  - 2.4G
+
+steps:
+  - id: step_01
+    action: execute
+    target: dut
+    command: "echo hello"
+    capture: step_01
+
+pass_criteria:
+  - field: step_01.output
+    operator: contains
+    value: "hello"

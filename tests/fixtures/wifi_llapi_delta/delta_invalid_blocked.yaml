@@ -1,0 +1,33 @@
+id: wifi-llapi-delta-invalid-blocked
+name: blocked invalid delta schema
+version: "1.0"
+source:
+  row: 7
+  object: "WiFi.SSID.{i}.Stats."
+  api: "BlockedInvalid"
+bands:
+  - 5g
+llapi_support: Support
+topology:
+  devices:
+    DUT:
+      role: ap
+      transport: serial
+steps:
+  - id: baseline
+    action: exec
+    target: DUT
+    phase: baseline
+    command: 'ubus-cli "WiFi.SSID.4.Stats.BlockedInvalid?"'
+    capture: baseline_stats
+  - id: verify
+    action: exec
+    target: DUT
+    phase: verify
+    command: 'ubus-cli "WiFi.SSID.4.Stats.BlockedInvalid?"'
+    capture: verify_stats
+pass_criteria:
+  - delta:
+      baseline: baseline_stats.BlockedInvalid
+      verify: verify_stats.BlockedInvalid
+    operator: delta_nonzero

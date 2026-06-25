@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      SERIALWRAP_BIN: /tmp/serialwrap
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: python -m pip install --upgrade pip uv
+
+      - name: Install project and test dependencies
+        run: |
+          uv sync --extra dev --locked
+
+      - name: Bootstrap CI testbed and serialwrap stub
+        run: |
+          mkdir -p configs
+          rm -rf /tmp/serialwrap
+          cat > configs/testbed.yaml <<'EOF'
+          testbed:
+            name: lab-bench-1
+            devices:
+              DUT:
+                role: ap
+                transport: serial
+                selector: COM0
+                serial_port: /dev/ttyUSB0
+                baudrate: 115200
+              STA:
+                role: sta
+                transport: serial
+                selector: COM1
+                serial_port: /dev/ttyUSB1
+                baudrate: 115200
+              EndpointPC:
+                role: endpoint
+                transport: ssh
+                host: 192.168.1.100
+                user: testpilot
+            variables:
+              SSID_5G: testpilot5G
+              KEY_5G: "00000000"
+              SSID_6G: testpilot6G
+              KEY_6G: "00000000"
+              SSID_24G: testpilot2G
+              KEY_24G: "00000000"
+              sta_available_bands: [5g, 6g, 2.4g]
+          EOF
+          cat > /tmp/serialwrap <<'EOF'
+          #!/usr/bin/env sh
+          exit 0
+          EOF
+          chmod +x /tmp/serialwrap
+
+      - name: Run test suite (core)
+        run: .venv/bin/python -m pytest -q tests
+
+      - name: Validate release governance policy
+        run: .venv/bin/python -m pytest -q tests/test_release_governance.py
