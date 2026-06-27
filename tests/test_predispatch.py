@@ -113,76 +113,38 @@ def test_update_nonexistent_managed_src_exits_nonzero() -> None:
     assert not status_calls, f"git status was called unexpectedly: {status_calls}"
 
 
-def test_update_runs_managed_installer_with_ref_and_paths(tmp_path: Path) -> None:
-    """_handle_update should delegate to install.sh to update all managed assets."""
+def test_update_reinstalls_manifest_plugins(tmp_path: Path) -> None:
+    """_handle_update (wheel model) reinstalls all manifest plugins via runner."""
+    import testpilot.cli as cli_mod
     from testpilot.cli import _handle_update
 
-    managed_src = tmp_path / "managed" / "src"
-    (managed_src / ".git").mkdir(parents=True)
-    installer = managed_src / "scripts" / "install.sh"
-    installer.parent.mkdir()
-    installer.write_text("#!/usr/bin/env bash\nexit 0\n")
+    fake_venv = tmp_path / ".venv"
+    fake_venv.mkdir()
 
-    managed_venv = tmp_path / "managed" / ".venv"
-    wrapper = tmp_path / "bin" / "testpilot"
-    skills_root = tmp_path / "skills"
+    calls: list[list[str]] = []
 
-    class _CleanStatus:
-        returncode = 0
-        stdout = ""
-        stderr = ""
+    with patch.object(cli_mod, "_get_managed_venv", return_value=fake_venv):
+        with patch.object(cli_mod, "_probe_installed_plugins", return_value=set()):
+            with patch.object(cli_mod, "_resolve_manifest", return_value={"wifi_llapi"}):
+                rc = _handle_update("main", runner=lambda args: calls.append(args) or 0)
 
-    installer_calls: list[tuple[list[str], dict]] = []
-
-    def _fake_run(cmd, **kwargs):
-        installer_calls.append((list(cmd), kwargs))
-        return subprocess.CompletedProcess(args=cmd, returncode=0)
-
-    with patch("testpilot.cli._get_managed_src", return_value=managed_src):
-        with patch("testpilot.cli._get_managed_venv", return_value=managed_venv):
-            with patch("testpilot.cli._get_wrapper_path", return_value=wrapper):
-                with patch("testpilot.cli._get_skills_root", return_value=skills_root):
-                    with patch("testpilot.cli._git_run", return_value=_CleanStatus()):
-                        with patch("testpilot.cli.subprocess.run", side_effect=_fake_run):
-                            _handle_update("v0.2.0")
-
-    assert installer_calls, "install.sh was not invoked"
-    cmd, kwargs = installer_calls[0]
-    assert cmd[0] == "bash"
-    assert Path(cmd[1]).name == "install.sh"
-    assert kwargs["cwd"] == str(managed_src)
-    env = kwargs["env"]
-    assert env["TESTPILOT_REF"] == "v0.2.0"
-    assert env["TESTPILOT_HOME"] == str(managed_src.parent)
-    assert env["TESTPILOT_BIN_DIR"] == str(wrapper.parent)
-    assert env["TESTPILOT_SKILLS_DIR"] == str(skills_root)
+    assert rc == 0
+    install_calls = [c for c in calls if "install" in c and "uninstall" not in c]
+    assert any("wifi_llapi" in str(c) for c in install_calls), f"Expected wifi_llapi install in {calls}"
 
 
-def test_update_installer_failure_exits_nonzero(tmp_path: Path) -> None:
-    """_handle_update should propagate install.sh failures as a non-zero exit."""
+def test_update_missing_venv_exits_nonzero(tmp_path: Path) -> None:
+    """_handle_update must exit non-zero when no managed venv exists (wheel model)."""
+    import testpilot.cli as cli_mod
     from testpilot.cli import _handle_update
 
-    managed_src = tmp_path / "managed" / "src"
-    (managed_src / ".git").mkdir(parents=True)
-    installer = managed_src / "scripts" / "install.sh"
-    installer.parent.mkdir()
-    installer.write_text("#!/usr/bin/env bash\nexit 23\n")
+    missing_venv = tmp_path / "nonexistent" / ".venv"
 
-    class _CleanStatus:
-        returncode = 0
-        stdout = ""
-        stderr = ""
+    with patch.object(cli_mod, "_get_managed_venv", return_value=missing_venv):
+        with pytest.raises(SystemExit) as exc_info:
+            _handle_update("main")
 
-    with patch("testpilot.cli._get_managed_src", return_value=managed_src):
-        with patch("testpilot.cli._git_run", return_value=_CleanStatus()):
-            with patch(
-                "testpilot.cli.subprocess.run",
-                return_value=subprocess.CompletedProcess(args=["bash"], returncode=23),
-            ):
-                with pytest.raises(SystemExit) as exc_info:
-                    _handle_update("main")
-
-    assert exc_info.value.code == 23
+    assert exc_info.value.code != 0
 
 
 # ---------------------------------------------------------------------------

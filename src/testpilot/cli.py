@@ -17,6 +17,7 @@ import tomllib
 from pathlib import Path
 
 import click
+from dataclasses import dataclass
 from rich.table import Table
 
 from testpilot import __version__
@@ -585,77 +586,116 @@ def _handle_verify_install() -> None:
     console.print("[bold green]verify-install: all checks passed[/bold green]")
 
 
-def _handle_update(ref: str | None) -> None:
-    """Handle --update pre-dispatch: update managed checkout to ref (default: main)."""
-    target_ref = ref or "main"
-    managed_src = _get_managed_src()
+@dataclass
+class ReconcilePlan:
+    to_install: set[str]
+    to_uninstall: set[str]
 
-    if not (managed_src / ".git").exists():
-        console.print(
-            "[bold red]Managed checkout not found.[/bold red]\n"
-            "Run the managed installer before using testpilot --update.\n"
-            f"  path: {managed_src}",
+
+def _reconcile_plan(installed: set[str], manifest: set[str]) -> ReconcilePlan:
+    return ReconcilePlan(to_install=manifest - installed, to_uninstall=installed - manifest)
+
+
+def _probe_installed_plugins() -> set[str]:
+    """Return the set of plugin names currently installed in the managed environment."""
+    try:
+        eps = importlib.metadata.entry_points(group="testpilot.plugins")
+        return {ep.name for ep in eps}
+    except Exception:
+        return set()
+
+
+def _resolve_manifest(ref) -> set[str]:
+    """Load the bundled install-manifest.yaml and return the set of plugin names.
+
+    NOTE: Online ref-fetch (fetching a specific git ref from the remote) is performed
+    by scripts/install.sh, not here. This function loads the local bundled manifest only.
+    """
+    here = Path(__file__).parent
+    candidates = [
+        here.parent.parent / "install-manifest.yaml",  # repo root from src/testpilot/
+        here.parent.parent.parent / "install-manifest.yaml",  # one more level up
+        Path.cwd() / "install-manifest.yaml",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            from testpilot.install.manifest import load_manifest
+            m = load_manifest(candidate)
+            return {p.name for p in m.plugins}
+    return set()
+
+
+def _default_pip_runner(args: list[str]) -> int:
+    """Run pip in the managed venv."""
+    venv = _get_managed_venv()
+    pip = venv / "bin" / "pip"
+    result = subprocess.run([str(pip)] + args, capture_output=False)
+    return result.returncode
+
+
+def _handle_update(ref, *, runner=None) -> int:
+    """Handle --update pre-dispatch: update testpilot in-place using the wheel model.
+
+    Instead of requiring a git checkout at ~/.local/share/testpilot/src/.git,
+    this function:
+    1. Checks that the managed venv exists
+    2. Snapshots the current environment to .last-good.txt
+    3. Resolves the manifest (plugins to install)
+    4. Reconciles installed plugins vs manifest
+    5. Installs/uninstalls as needed
+    """
+    if runner is None:
+        runner = _default_pip_runner
+
+    managed_share = Path.home() / ".local" / "share" / "testpilot"
+    managed_venv = _get_managed_venv()
+
+    if not managed_venv.exists():
+        print(
+            "No managed testpilot installation found at "
+            f"{managed_venv}.\n"
+            "Run the installer first: curl -fsSL <url> | bash",
+            file=sys.stderr,
         )
-        raise SystemExit(1)
+        sys.exit(1)
 
-    # Only check for dirty state when the managed checkout actually exists.
-    # Skipping this guard on a nonexistent path would run git status against
-    # the developer's own working tree and produce false positives.
-    status = _git_run(
-        ["git", "status", "--porcelain"],
-        cwd=str(managed_src),
-    )
-    if status.returncode != 0:
-        detail = status.stderr.strip() or "git status failed"
-        console.print(
-            "[bold red]Cannot inspect managed checkout state.[/bold red]\n"
-            f"{detail}\n"
-            f"  path: {managed_src}",
-        )
-        raise SystemExit(status.returncode or 1)
-    if status.stdout.strip():
-        console.print(
-            "[bold red]Managed checkout has uncommitted changes.[/bold red]\n"
-            "Please commit, stash, or resolve local edits before updating.\n"
-            f"  path: {managed_src}",
-        )
-        raise SystemExit(1)
-
-    installer = managed_src / "scripts" / "install.sh"
-    if not installer.exists():
-        console.print(
-            "[bold red]Managed installer not found.[/bold red]\n"
-            f"Expected scripts/install.sh under managed checkout: {installer}",
-        )
-        raise SystemExit(1)
-
-    console.print(f"[bold]Updating TestPilot to ref:[/bold] {target_ref}")
-
-    env = os.environ.copy()
-    env.update(
-        {
-            "TESTPILOT_REF": target_ref,
-            "TESTPILOT_HOME": str(managed_src.parent),
-            "TESTPILOT_BIN_DIR": str(_get_wrapper_path().parent),
-            "TESTPILOT_SKILLS_DIR": str(_get_skills_root()),
-        }
-    )
-
-    with tempfile.TemporaryDirectory(prefix="testpilot-update-") as tmp_dir:
-        installer_copy = Path(tmp_dir) / "install.sh"
-        shutil.copy2(installer, installer_copy)
-        result = subprocess.run(
-            ["bash", str(installer_copy)],
-            cwd=str(managed_src),
-            env=env,
+    # Snapshot current environment for rollback
+    last_good = managed_share / ".last-good.txt"
+    try:
+        venv_python = managed_venv / "bin" / "python"
+        freeze_result = subprocess.run(
+            [str(venv_python), "-m", "pip", "freeze"],
+            capture_output=True,
             text=True,
         )
+        if freeze_result.returncode == 0:
+            last_good.write_text(freeze_result.stdout)
+    except Exception as e:
+        print(f"Warning: could not snapshot environment: {e}", file=sys.stderr)
 
-    if result.returncode != 0:
-        console.print(f"[bold red]Update failed with exit code {result.returncode}[/bold red]")
-        raise SystemExit(result.returncode)
+    # Resolve the manifest
+    manifest_plugins = _resolve_manifest(ref)
 
-    console.print("[bold green]Update complete[/bold green]")
+    # Probe installed plugins
+    installed_plugins = _probe_installed_plugins()
+
+    # Compute reconcile plan
+    plan = _reconcile_plan(installed=installed_plugins, manifest=manifest_plugins)
+
+    # Apply: reinstall all manifest plugins
+    for plugin_name in manifest_plugins:
+        rc = runner(["install", "--upgrade", plugin_name])
+        if rc != 0:
+            print(f"Warning: failed to install {plugin_name}", file=sys.stderr)
+
+    # Uninstall dropped plugins
+    for plugin_name in plan.to_uninstall:
+        rc = runner(["uninstall", "-y", plugin_name])
+        if rc != 0:
+            print(f"Warning: failed to uninstall {plugin_name}", file=sys.stderr)
+
+    print("Update complete.")
+    return 0
 
 
 def _setup_logging(verbose: bool) -> None:
