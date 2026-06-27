@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
+import importlib.resources
 import json
 import logging
 import os
@@ -377,9 +379,180 @@ def _check_plugin_health(managed_src: Path) -> list[tuple[bool, str]]:
     return checks
 
 
+# ---------------------------------------------------------------------------
+# Wheel-mode verify-install (Task 5)
+# ---------------------------------------------------------------------------
+
+
+def _verify_install_wheel_mode(probe: dict) -> list[tuple[bool, str]]:
+    """Pure function: build (ok, message) rows from a probe dict.
+
+    No IO — callers supply the probe dict (real or test fixture).
+    Exit-code decision is left to the caller: nonzero iff any ok is False.
+    """
+    rows: list[tuple[bool, str]] = []
+
+    # Core importability
+    core_version = probe.get("core_version")
+    if not core_version:
+        rows.append((False, "FAIL core: testpilot-core not importable"))
+    else:
+        rows.append((True, f"OK core: testpilot-core {core_version}"))
+
+    # Plugin entry points
+    for plugin in probe.get("plugins", []):
+        name = plugin.get("name", "<unknown>")
+        version = plugin.get("version", "?")
+        api = plugin.get("api", "?")
+        if plugin.get("loads"):
+            rows.append((True, f"OK plugin: {name} {version} (api {api})"))
+        else:
+            error = plugin.get("error", "unknown error")
+            rows.append((False, f"FAIL plugin: {name} api-incompatible ({error})"))
+
+    # serialwrap — absence is a WARN, not a failure
+    if probe.get("serialwrap"):
+        rows.append((True, "OK serialwrap on PATH"))
+    else:
+        rows.append((True, "WARN serialwrap not found on PATH"))
+
+    # wrapper_ok — mismatch is a WARN
+    if not probe.get("wrapper_ok", True):
+        rows.append((True, "WARN wrapper does not resolve to managed venv"))
+
+    # packaged skill — absence is a WARN
+    if not probe.get("skill_packaged", True):
+        rows.append((True, f"WARN packaged skill {_SKILL_NAME} missing"))
+
+    # stray import — present is a WARN
+    stray = probe.get("stray_import")
+    if stray:
+        rows.append((True, f"WARN testpilot importable outside managed venv: {stray}"))
+
+    return rows
+
+
+def _probe_wheel_install() -> dict:
+    """Gather real installation data for wheel-mode verify-install.
+
+    Returns a probe dict compatible with _verify_install_wheel_mode.
+    Never raises; all errors are captured as sentinel values.
+    """
+    probe: dict = {}
+
+    # --- core version ---
+    try:
+        probe["core_version"] = importlib.metadata.version("testpilot-core")
+    except importlib.metadata.PackageNotFoundError:
+        probe["core_version"] = None
+
+    # --- plugins via entry points ---
+    plugin_rows: list[dict] = []
+    try:
+        eps = list(importlib.metadata.entry_points(group="testpilot.plugins"))
+    except Exception:
+        eps = []
+
+    for ep in eps:
+        row: dict = {"name": ep.name}
+        # plugin package version
+        try:
+            dist_name = ep.dist.name if getattr(ep, "dist", None) else ep.name
+            row["version"] = importlib.metadata.version(dist_name)
+        except Exception:
+            row["version"] = "?"
+
+        # attempt load
+        try:
+            loader = PluginLoader.from_entry_points([ep])
+            plugin_obj = loader.load(ep.name)
+            row["loads"] = True
+            row["api"] = getattr(plugin_obj, "api_version", "?")
+            row["error"] = None
+        except Exception as exc:
+            row["loads"] = False
+            row["api"] = "?"
+            row["error"] = type(exc).__name__
+
+        plugin_rows.append(row)
+
+    probe["plugins"] = plugin_rows
+
+    # --- serialwrap ---
+    serialwrap_bin = os.environ.get("SERIALWRAP_BIN")
+    if serialwrap_bin:
+        probe["serialwrap"] = bool(Path(serialwrap_bin).exists())
+    else:
+        probe["serialwrap"] = bool(shutil.which("serialwrap"))
+
+    # --- wrapper_ok: does the testpilot wrapper resolve to a managed venv? ---
+    try:
+        wrapper_path = _get_wrapper_path()
+        managed_venv = _get_managed_venv()
+        if wrapper_path.exists():
+            content = wrapper_path.read_text(errors="replace")
+            probe["wrapper_ok"] = str(managed_venv) in content
+        else:
+            probe["wrapper_ok"] = True  # no wrapper in wheel mode is fine
+    except Exception:
+        probe["wrapper_ok"] = True
+
+    # --- packaged skill ---
+    try:
+        skill_ref = importlib.resources.files("testpilot") / "_skills" / _SKILL_NAME
+        probe["skill_packaged"] = skill_ref.is_file() or skill_ref.is_dir()
+    except Exception:
+        probe["skill_packaged"] = False
+
+    # --- stray import: try system python to locate testpilot ---
+    probe["stray_import"] = None
+    try:
+        # Use sys.executable (the venv python); compare its testpilot path to this file.
+        managed_pkg_dir = str(Path(__file__).resolve().parent)
+        result = subprocess.run(
+            [sys.executable, "-c",
+             "import os, testpilot; print(os.path.dirname(testpilot.__file__))"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            found_path = result.stdout.strip()
+            if found_path and Path(found_path).resolve() != Path(managed_pkg_dir).resolve():
+                probe["stray_import"] = found_path
+    except Exception:
+        pass
+
+    return probe
+
+
 def _handle_verify_install() -> None:
     """Handle --verify-install pre-dispatch: report deployment health."""
     managed_src = _get_managed_src()
+
+    # ------------------------------------------------------------------
+    # Wheel-mode: no managed src directory at all → use importlib.metadata probes
+    # ------------------------------------------------------------------
+    if not managed_src.exists():
+        probe = _probe_wheel_install()
+        rows = _verify_install_wheel_mode(probe)
+        errors: list[str] = []
+        for ok_flag, msg in rows:
+            if not ok_flag:
+                console.print(f"[bold red]{msg}[/bold red]")
+                errors.append(msg)
+            elif msg.startswith("WARN") or msg.startswith("SKIP"):
+                console.print(f"[yellow]{msg}[/yellow]")
+            else:
+                console.print(f"[bold green]{msg}[/bold green]")
+        if errors:
+            raise SystemExit(1)
+        console.print("[bold green]verify-install: all checks passed[/bold green]")
+        return
+
+    # ------------------------------------------------------------------
+    # Checkout-mode: existing managed git checkout path (preserved)
+    # ------------------------------------------------------------------
     managed_venv = _get_managed_venv()
     wrapper_path = _get_wrapper_path()
     skills_root = _get_skills_root()
@@ -396,17 +569,17 @@ def _handle_verify_install() -> None:
     ]
     checks.extend(_check_plugin_health(managed_src))
 
-    errors: list[str] = []
+    checkout_errors: list[str] = []
     for ok_flag, msg in checks:
         if not ok_flag:
             console.print(f"[bold red]{msg}[/bold red]")
-            errors.append(msg)
+            checkout_errors.append(msg)
         elif msg.startswith("WARN") or msg.startswith("SKIP"):
             console.print(f"[yellow]{msg}[/yellow]")
         else:
             console.print(f"[bold green]{msg}[/bold green]")
 
-    if errors:
+    if checkout_errors:
         raise SystemExit(1)
 
     console.print("[bold green]verify-install: all checks passed[/bold green]")

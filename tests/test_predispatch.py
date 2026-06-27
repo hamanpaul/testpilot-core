@@ -203,15 +203,25 @@ def test_verify_install_dispatches_before_click() -> None:
 
 
 def test_verify_install_missing_skill_exits_nonzero(tmp_path: Path) -> None:
-    """_handle_verify_install should exit non-zero when skill dir is missing."""
+    """_handle_verify_install should exit non-zero when skill dir is missing.
+
+    A managed_src directory is provided so the function enters checkout-mode,
+    where a missing skill at skills_root is a hard failure.  In wheel-mode
+    (no managed_src) a missing packaged skill is only a WARN.
+    """
     from testpilot.cli import _handle_verify_install
 
     fake_home = tmp_path / "home"
     fake_home.mkdir()
 
-    with patch("testpilot.cli._get_skills_root", return_value=fake_home / ".agents" / "skills"):
-        with pytest.raises(SystemExit) as exc_info:
-            _handle_verify_install()
+    # Create a managed_src to trigger checkout-mode (skill absence = FAIL there).
+    managed_src = tmp_path / "managed_src"
+    managed_src.mkdir()
+
+    with patch("testpilot.cli._get_managed_src", return_value=managed_src):
+        with patch("testpilot.cli._get_skills_root", return_value=fake_home / ".agents" / "skills"):
+            with pytest.raises(SystemExit) as exc_info:
+                _handle_verify_install()
     assert exc_info.value.code != 0
 
 
