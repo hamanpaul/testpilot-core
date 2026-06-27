@@ -23,6 +23,23 @@ preparation.
 - CI: manifest API-compatibility gate (`testpilot install-doctor --manifest install-manifest.yaml`) and offline bundle smoke test in the PR/push workflow.
 - `tests/test_wheel_contents.py`: wheel-content assertion locking that the skill is present and no runtime report bundle dirs leak into the wheel.
 
+### Fixed
+
+- **CRITICAL: `testpilot --update` no longer destroys a real wheel install.** The
+  authoritative `install-manifest.yaml` and `install.sh` now ship inside the
+  wheel (`testpilot/_install/`), so `_resolve_manifest()` resolves them in a
+  real install instead of returning an empty set that made the reconcile loop
+  `pip uninstall` every plugin. An unresolvable manifest now exits nonzero
+  WITHOUT touching the installation.
+- **`--update` reinstall no longer hits public PyPI for private plugins.** The
+  pinned set is reinstalled by delegating to the packaged `install.sh` (via an
+  injectable seam, passing `TESTPILOT_REF` and `TESTPILOT_MANIFEST`) instead of
+  `pip install --upgrade <bare-name>` (dependency-confusion risk). Dropped
+  plugins are still reconciled via the pip runner.
+- `--update` now honors `REF` (forwarded as `TESTPILOT_REF`) and gates on
+  wheel-mode `--verify-install`; on verify failure it restores from the
+  `.last-good.txt` snapshot and exits nonzero.
+
 ### Changed — BREAKING
 
 - **Distribution renamed `testpilot` → `testpilot-core`** (`pip install testpilot-core`); the import package `testpilot` is unchanged.

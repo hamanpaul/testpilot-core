@@ -605,12 +605,20 @@ def _probe_installed_plugins() -> set[str]:
         return set()
 
 
-def _resolve_manifest(ref) -> set[str]:
-    """Load the bundled install-manifest.yaml and return the set of plugin names.
+def _packaged_manifest_path() -> Path | None:
+    """Locate the authoritative install-manifest.yaml.
 
-    NOTE: Online ref-fetch (fetching a specific git ref from the remote) is performed
-    by scripts/install.sh, not here. This function loads the local bundled manifest only.
+    Prefers the copy shipped inside the wheel (``testpilot/_install/``) so that a
+    real (non-checkout) install can always resolve it; falls back to repo-root
+    copies for dev checkouts. Returns None when none can be found — callers MUST
+    treat None as "unresolvable", never as "no plugins".
     """
+    try:
+        packaged = importlib.resources.files("testpilot") / "_install" / "install-manifest.yaml"
+        if packaged.is_file():
+            return Path(str(packaged))
+    except Exception:
+        pass
     here = Path(__file__).parent
     candidates = [
         here.parent.parent / "install-manifest.yaml",  # repo root from src/testpilot/
@@ -619,10 +627,55 @@ def _resolve_manifest(ref) -> set[str]:
     ]
     for candidate in candidates:
         if candidate.exists():
-            from testpilot.install.manifest import load_manifest
-            m = load_manifest(candidate)
-            return {p.name for p in m.plugins}
-    return set()
+            return candidate
+    return None
+
+
+def _packaged_installer_path() -> Path | None:
+    """Locate the authoritative install.sh.
+
+    Prefers the copy shipped inside the wheel (``testpilot/_install/``); falls
+    back to ``scripts/install.sh`` for dev checkouts. Returns None when neither
+    can be found.
+    """
+    try:
+        packaged = importlib.resources.files("testpilot") / "_install" / "install.sh"
+        if packaged.is_file():
+            return Path(str(packaged))
+    except Exception:
+        pass
+    here = Path(__file__).parent
+    candidates = [
+        here.parent.parent / "scripts" / "install.sh",  # repo root from src/testpilot/
+        here.parent.parent.parent / "scripts" / "install.sh",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _resolve_manifest(ref):
+    """Load the authoritative install-manifest.yaml as a manifest object.
+
+    Returns an ``InstallManifest`` or ``None`` when the manifest cannot be
+    resolved. It must NEVER return an empty set/manifest that looks like "no
+    plugins" — an empty set would make the reconcile loop uninstall every
+    installed plugin (the C1 destructive bug).
+
+    NOTE: Online ref-fetch (fetching a specific git ref from the remote) is
+    performed by scripts/install.sh, not here. ``ref`` is accepted for signature
+    stability and forwarded to the installer by ``_handle_update``.
+    """
+    path = _packaged_manifest_path()
+    if path is None:
+        return None
+    from testpilot.install.manifest import load_manifest
+
+    try:
+        return load_manifest(path)
+    except Exception:
+        return None
 
 
 def _default_pip_runner(args: list[str]) -> int:
@@ -633,21 +686,76 @@ def _default_pip_runner(args: list[str]) -> int:
     return result.returncode
 
 
-def _handle_update(ref, *, runner=None) -> int:
+def _default_installer_runner(env: dict) -> int:
+    """Invoke the packaged install.sh with the given environment overlaid."""
+    installer = _packaged_installer_path()
+    if installer is None:
+        print("Installer script not found in package or checkout.", file=sys.stderr)
+        return 1
+    full_env = dict(os.environ)
+    full_env.update({k: v for k, v in env.items() if v is not None})
+    result = subprocess.run(["bash", str(installer)], env=full_env)
+    return result.returncode
+
+
+def _run_installer(env: dict, *, runner=None) -> int:
+    """Injectable seam: run the authoritative installer with ``env`` overlaid.
+
+    Tests patch ``runner``; the default delegates to ``_default_installer_runner``
+    which executes the packaged ``install.sh``.
+    """
+    if runner is None:
+        runner = _default_installer_runner
+    return runner(env)
+
+
+def _last_good_path() -> Path:
+    """Return the rollback snapshot path under the managed share dir."""
+    return Path.home() / ".local" / "share" / "testpilot" / ".last-good.txt"
+
+
+def _snapshot_environment(managed_venv: Path, last_good: Path) -> None:
+    """Freeze the managed venv to ``last_good`` for rollback. Best-effort."""
+    try:
+        venv_python = managed_venv / "bin" / "python"
+        freeze_result = subprocess.run(
+            [str(venv_python), "-m", "pip", "freeze"],
+            capture_output=True,
+            text=True,
+        )
+        if freeze_result.returncode == 0:
+            last_good.parent.mkdir(parents=True, exist_ok=True)
+            last_good.write_text(freeze_result.stdout)
+    except Exception as e:
+        print(f"Warning: could not snapshot environment: {e}", file=sys.stderr)
+
+
+def _verify_after_update() -> bool:
+    """Run wheel-mode verify-install as a post-update gate. True iff healthy."""
+    probe = _probe_wheel_install()
+    rows = _verify_install_wheel_mode(probe)
+    return all(ok for ok, _ in rows)
+
+
+def _handle_update(ref, *, runner=None, installer=None, verifier=None) -> int:
     """Handle --update pre-dispatch: update testpilot in-place using the wheel model.
 
-    Instead of requiring a git checkout at ~/.local/share/testpilot/src/.git,
-    this function:
-    1. Checks that the managed venv exists
-    2. Snapshots the current environment to .last-good.txt
-    3. Resolves the manifest (plugins to install)
-    4. Reconciles installed plugins vs manifest
-    5. Installs/uninstalls as needed
+    Wheel-model flow (no git checkout):
+    1. Require the managed venv to exist.
+    2. Resolve the authoritative manifest. If it cannot be resolved → exit
+       nonzero WITHOUT touching the installation (never uninstall-all).
+    3. Snapshot the current environment to .last-good.txt for rollback.
+    4. Re-(install) the pinned set by delegating to the packaged install.sh
+       (passing TESTPILOT_REF and TESTPILOT_MANIFEST), NOT `pip install <name>`.
+    5. Reconcile: uninstall plugins dropped from a non-empty manifest.
+    6. Gate on wheel-mode verify-install; on failure restore from .last-good.txt
+       and exit nonzero.
     """
     if runner is None:
         runner = _default_pip_runner
+    if verifier is None:
+        verifier = _verify_after_update
 
-    managed_share = Path.home() / ".local" / "share" / "testpilot"
     managed_venv = _get_managed_venv()
 
     if not managed_venv.exists():
@@ -659,40 +767,55 @@ def _handle_update(ref, *, runner=None) -> int:
         )
         sys.exit(1)
 
-    # Snapshot current environment for rollback
-    last_good = managed_share / ".last-good.txt"
-    try:
-        venv_python = managed_venv / "bin" / "python"
-        freeze_result = subprocess.run(
-            [str(venv_python), "-m", "pip", "freeze"],
-            capture_output=True,
-            text=True,
+    # Resolve the manifest FIRST. An unresolvable manifest must never lead to
+    # uninstalling every installed plugin — bail out untouched.
+    manifest = _resolve_manifest(ref)
+    if manifest is None:
+        print(
+            "Could not resolve the install manifest; refusing to modify the "
+            "installation. No plugins were changed.",
+            file=sys.stderr,
         )
-        if freeze_result.returncode == 0:
-            last_good.write_text(freeze_result.stdout)
-    except Exception as e:
-        print(f"Warning: could not snapshot environment: {e}", file=sys.stderr)
+        sys.exit(1)
 
-    # Resolve the manifest
-    manifest_plugins = _resolve_manifest(ref)
+    manifest_path = _packaged_manifest_path()
+    manifest_plugins = {p.name for p in manifest.plugins}
 
-    # Probe installed plugins
+    # Snapshot current environment for rollback.
+    last_good = _last_good_path()
+    _snapshot_environment(managed_venv, last_good)
+
+    # Probe installed plugins and compute reconcile plan.
     installed_plugins = _probe_installed_plugins()
-
-    # Compute reconcile plan
     plan = _reconcile_plan(installed=installed_plugins, manifest=manifest_plugins)
 
-    # Apply: reinstall all manifest plugins
-    for plugin_name in manifest_plugins:
-        rc = runner(["install", "--upgrade", plugin_name])
-        if rc != 0:
-            print(f"Warning: failed to install {plugin_name}", file=sys.stderr)
+    # Re-(install) the pinned set via the authoritative installer — NOT pip
+    # bare-name (which would hit public PyPI for private plugins).
+    installer_env = {
+        "TESTPILOT_REF": ref or "",
+        "TESTPILOT_MANIFEST": str(manifest_path) if manifest_path else "",
+    }
+    rc = _run_installer(installer_env, runner=installer)
+    if rc != 0:
+        print("Update failed: installer returned nonzero.", file=sys.stderr)
+        sys.exit(1)
 
-    # Uninstall dropped plugins
-    for plugin_name in plan.to_uninstall:
-        rc = runner(["uninstall", "-y", plugin_name])
-        if rc != 0:
-            print(f"Warning: failed to uninstall {plugin_name}", file=sys.stderr)
+    # Uninstall dropped plugins (only when the manifest is non-empty).
+    if manifest_plugins:
+        for plugin_name in plan.to_uninstall:
+            rc = runner(["uninstall", "-y", plugin_name])
+            if rc != 0:
+                print(f"Warning: failed to uninstall {plugin_name}", file=sys.stderr)
+
+    # Post-update gate: verify the install; roll back on failure.
+    if not verifier():
+        print(
+            "Post-update verify-install failed; rolling back from snapshot.",
+            file=sys.stderr,
+        )
+        if last_good.exists():
+            runner(["install", "-r", str(last_good)])
+        sys.exit(1)
 
     print("Update complete.")
     return 0

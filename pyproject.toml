@@ -36,6 +36,8 @@ packages = ["src/testpilot"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills/testpilot-normal-test" = "testpilot/_skills/testpilot-normal-test"
+"install-manifest.yaml" = "testpilot/_install/install-manifest.yaml"
+"scripts/install.sh" = "testpilot/_install/install.sh"
 
 [tool.ruff]
 target-version = "py311"
