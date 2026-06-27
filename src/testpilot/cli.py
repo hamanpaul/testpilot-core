@@ -789,6 +789,17 @@ def _last_good_path() -> Path:
     return _get_managed_venv().parent / ".last-good.txt"
 
 
+def _wheel_cache_path() -> Path:
+    """Return the offline wheel-cache dir under the managed home.
+
+    ``scripts/install.sh`` preserves the wheels it installs here so that the
+    ``testpilot --update`` rollback can reinstall the last-good set with
+    ``--no-index`` / ``--find-links`` — it must NEVER reach a public index
+    (dependency-confusion hazard for the private ``testpilot-core``/plugins).
+    """
+    return _get_managed_venv().parent / ".wheel-cache"
+
+
 def _snapshot_environment(managed_venv: Path, last_good: Path) -> None:
     """Freeze the managed venv to ``last_good`` for rollback. Best-effort."""
     try:
@@ -888,8 +899,37 @@ def _handle_update(ref, *, runner=None, installer=None, verifier=None) -> int:
             "Post-update verify-install failed; rolling back from snapshot.",
             file=sys.stderr,
         )
+        _manual_recovery = (
+            "Automatic rollback failed; reinstall from a known-good bundle via "
+            "`install.sh --offline <bundle>`."
+        )
         if last_good.exists():
-            runner(["install", "-r", str(last_good)])
+            # CRITICAL: rollback must be OFFLINE-ONLY. A bare `pip install -r`
+            # resolves the snapshot (which pins the private testpilot-core and
+            # plugins) against public PyPI — the exact dependency-confusion /
+            # failure hazard the main path avoids. Force --no-index and resolve
+            # only from the local wheel cache that install.sh preserved.
+            wheel_cache = _wheel_cache_path()
+            rc = runner(
+                [
+                    "install",
+                    "--no-index",
+                    "--find-links",
+                    str(wheel_cache),
+                    "-r",
+                    str(last_good),
+                ]
+            )
+            if rc != 0:
+                # Never silently fall back to a public index — surface a clear
+                # manual-recovery path and exit nonzero.
+                print(_manual_recovery, file=sys.stderr)
+        else:
+            print(
+                "No rollback snapshot found at "
+                f"{last_good}. {_manual_recovery}",
+                file=sys.stderr,
+            )
         sys.exit(1)
 
     print("Update complete.")

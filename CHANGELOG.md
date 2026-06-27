@@ -41,6 +41,24 @@ preparation.
   checked the hardcoded default `~/.local/share/testpilot/src` while removal uses
   `_get_managed_src()` (TESTPILOT_HOME-aware); the probe now uses
   `_get_managed_src()` so detection and removal target the same path.
+- **CRITICAL: `--update` rollback can no longer reach a public index.** The
+  rollback path ran `pip install -r <pip-freeze-snapshot>`, which resolves the
+  private `testpilot-core`/plugins against public PyPI (dependency-confusion /
+  install failure) — the same hazard the main install path avoids. Rollback now
+  forces `pip install --no-index --find-links <wheel-cache> -r <snapshot>`
+  against the local wheel cache the installer preserves under
+  `${TESTPILOT_HOME}/.wheel-cache`, checks the runner return code, and on
+  failure (or a missing snapshot) prints a manual-recovery message
+  (`install.sh --offline <bundle>`) and exits nonzero instead of silently
+  retrying online. `scripts/install.sh` online mode now copies each used wheel
+  into `${TESTPILOT_HOME}/.wheel-cache` after a successful install.
+- `scripts/install.sh` robustness: offline mode now validates the bundle's
+  `linux-<arch>` tag against `uname -m` BEFORE extraction (fail fast on
+  wrong-arch); the online per-package wheel download dir is tracked and cleaned
+  by the EXIT trap so it no longer leaks when `pip` aborts under
+  `set -euo pipefail`; and venv creation no longer hides a broken interpreter
+  behind `|| true` — it fails if `${VENV}/bin/python` is missing or not
+  executable.
 - **CRITICAL: `testpilot --update` no longer destroys a real wheel install.** The
   authoritative `install-manifest.yaml` and `install.sh` now ship inside the
   wheel (`testpilot/_install/`), so `_resolve_manifest()` resolves them in a

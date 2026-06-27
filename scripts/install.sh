@@ -45,6 +45,10 @@ TESTPILOT_REF="${TESTPILOT_REF:-}"
 TESTPILOT_MANIFEST="${TESTPILOT_MANIFEST:-}"
 
 VENV="${TESTPILOT_HOME}/.venv"
+# Offline rollback cache: install.sh preserves used wheels here so that
+# `testpilot --update` rollback can reinstall the last-good set with
+# --no-index / --find-links and NEVER reach a public index.
+WHEEL_CACHE="${TESTPILOT_HOME}/.wheel-cache"
 
 # ── Arg parsing ───────────────────────────────────────────────────────────────
 OFFLINE_BUNDLE=""
@@ -75,6 +79,11 @@ _create_venv() {
     else
         python3 -m venv "$VENV" 2>/dev/null || true
     fi
+    # `|| true` keeps creation idempotent (re-running over an existing venv is
+    # fine) but must NOT mask a genuinely broken venv: assert the interpreter
+    # actually exists and is executable before proceeding.
+    [[ -x "${VENV}/bin/python" ]] \
+        || fail "Virtualenv creation failed: ${VENV}/bin/python is missing or not executable."
     ok "Virtualenv ready: ${VENV}"
 }
 
@@ -160,6 +169,19 @@ if [[ -n "$OFFLINE_BUNDLE" ]]; then
         ok "Python version matches bundle (cp${BUNDLE_PYMINOR})"
     else
         warn "Bundle name has no cp<XY> token; skipping python version check."
+    fi
+
+    # 2b. Assert the bundle's linux-<arch> tag matches this machine's arch
+    #     (fail fast BEFORE extraction — a wrong-arch wheelhouse cannot install).
+    RUNNING_ARCH="$(uname -m)"
+    if [[ "$BUNDLE_BASENAME" =~ linux-([A-Za-z0-9_]+)-cp ]]; then
+        BUNDLE_ARCH="${BASH_REMATCH[1]}"
+        if [[ "$BUNDLE_ARCH" != "$RUNNING_ARCH" ]]; then
+            fail "Architecture mismatch: bundle is for linux-${BUNDLE_ARCH} but this machine is ${RUNNING_ARCH}. Obtain a bundle built for ${RUNNING_ARCH}."
+        fi
+        ok "Architecture matches bundle (linux-${BUNDLE_ARCH})"
+    else
+        warn "Bundle name has no linux-<arch> token; skipping architecture check."
     fi
 
     # 3. Extract bundle
@@ -248,7 +270,11 @@ else
     # cleaned up even when pip fails under `set -euo pipefail` (a function-scoped
     # RETURN trap does NOT fire on a set -e abort; an EXIT trap does).
     ASKPASS_HELPER=""
-    trap 'rm -f "$MANIFEST_FILE" "$MANIFEST_PARSE_SCRIPT" "$ASKPASS_HELPER"' EXIT
+    # ONLINE_WHEEL_TMP tracks the current per-package wheel download dir so it is
+    # removed even when `pip` aborts under `set -euo pipefail` (a function-scoped
+    # RETURN trap does NOT fire on a set -e abort; this EXIT trap does).
+    ONLINE_WHEEL_TMP=""
+    trap 'rm -f "$MANIFEST_FILE" "$MANIFEST_PARSE_SCRIPT" "$ASKPASS_HELPER"; rm -rf "$ONLINE_WHEEL_TMP"' EXIT
 
     if [[ -n "$TESTPILOT_MANIFEST" ]]; then
         info "Using local manifest override: ${TESTPILOT_MANIFEST}"
@@ -374,6 +400,8 @@ PYEOF
     _install_pkg_online() {
         local repo="$1" version="$2" label="$3" with_deps="${4:-false}"
         local wheel_dir; wheel_dir="$(mktemp -d)"
+        # Track for EXIT-trap cleanup so a pip failure under set -e cannot leak it.
+        ONLINE_WHEEL_TMP="$wheel_dir"
         local nodeps_flag=""
         [[ "$with_deps" == "true" ]] || nodeps_flag="--no-deps"
 
@@ -391,6 +419,11 @@ PYEOF
             else
                 _venv_pip --no-deps "$wheel_dir"/*.whl
             fi
+            # Preserve the installed wheel(s) into the offline rollback cache so
+            # `testpilot --update` rollback can reinstall this set with
+            # --no-index (NEVER a public index). Best-effort; never fatal.
+            mkdir -p "$WHEEL_CACHE"
+            cp "$wheel_dir"/*.whl "$WHEEL_CACHE"/ 2>/dev/null || true
             ok "${label} installed from wheel"
         else
             # Fallback: git+https with GIT_ASKPASS helper (token never in URL)
@@ -415,6 +448,7 @@ PYEOF
             ok "${label} installed via git+https"
         fi
         rm -rf "$wheel_dir"
+        ONLINE_WHEEL_TMP=""
     }
 
     # 6. Install core first (with its deps)

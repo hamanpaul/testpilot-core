@@ -136,6 +136,13 @@ testpilot --update            # re-resolves manifest, reinstalls pinned wheels, 
 testpilot --verify-install    # report install health
 ```
 
+`--update` snapshots the environment first; if the post-update verify fails it
+rolls back **offline only** (`pip install --no-index --find-links` against the
+local wheel cache the installer preserves under
+`${TESTPILOT_HOME:-~/.local/share/testpilot}/.wheel-cache`) — it never reaches a
+public index. If the cached wheels are insufficient, rollback fails loudly and
+asks you to reinstall from a known-good bundle via `install.sh --offline`.
+
 ### CLI Entry Points
 
 Use the installed `testpilot` command for normal operation. Developer checkouts can
@@ -376,6 +383,12 @@ bash scripts/install.sh --offline testpilot-bundle-<ver>-linux-<arch>-cp<XY>.tar
 testpilot --update            # 重解析 manifest、重裝 pinned wheels、同步 plugin
 testpilot --verify-install    # 回報安裝狀態
 ```
+
+`--update` 會先快照環境；若更新後 verify 失敗，rollback **只走離線**
+（以 `pip install --no-index --find-links` 對安裝器保存在
+`${TESTPILOT_HOME:-~/.local/share/testpilot}/.wheel-cache` 的本地 wheel cache 重裝），
+絕不連到 public index。若 cache 內 wheel 不足，rollback 會明確失敗並提示改用
+`install.sh --offline` 從已知良好的 bundle 重裝。
 
 ### CLI 進入點
 

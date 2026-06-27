@@ -286,6 +286,96 @@ class TestOnlineInstall:
 
 
 # ---------------------------------------------------------------------------
+# Scenario: Online mode — offline rollback wheel cache (CRITICAL)
+# ---------------------------------------------------------------------------
+
+
+class TestWheelCachePreservation:
+    """Online install preserves wheels into the rollback wheel-cache.
+
+    The cache backs `testpilot --update` rollback's `--no-index --find-links`
+    reinstall, so it must never reach a public index.
+    """
+
+    def test_online_populates_wheel_cache(
+        self, fake_home: Path, stubs: Path
+    ) -> None:
+        result = _run_installer(fake_home, stubs)
+        assert result.returncode == 0, (
+            f"installer failed:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
+        cache = fake_home / ".local" / "share" / "testpilot" / ".wheel-cache"
+        assert cache.exists(), f"wheel cache not created at {cache}"
+        wheels = list(cache.glob("*.whl"))
+        assert wheels, (
+            f"no wheels preserved into the rollback cache {cache}:\n{result.stdout}"
+        )
+
+
+class TestVenvCreationGuard:
+    """A failed venv creation must abort with a clear error (no `|| true` mask)."""
+
+    def _stub_bin_with_broken_venv(self, tmp_path: Path) -> Path:
+        bin_dir = tmp_path / "broken_stub_bin"
+        bin_dir.mkdir()
+        # gh stub: same minimal release/api behavior as the normal stub.
+        _write_stub(
+            bin_dir / "gh",
+            """\
+            #!/usr/bin/env bash
+            _dir=""
+            prev=""
+            for arg in "$@"; do
+                if [[ "$prev" == "--dir" ]]; then _dir="$arg"; fi
+                prev="$arg"
+            done
+            case "$*" in
+              *"release download"*)
+                if [[ -n "$_dir" ]]; then
+                    mkdir -p "$_dir"
+                    touch "$_dir/testpilot_core-0.3.0-py3-none-any.whl"
+                fi
+                exit 0 ;;
+              *) exit 0 ;;
+            esac
+            """,
+        )
+        # uv stub: `venv` creates the dir + testpilot/pip but a NON-executable python.
+        _write_stub(
+            bin_dir / "uv",
+            """\
+            #!/usr/bin/env bash
+            case "$1" in
+              venv)
+                VENV_DIR="$2"
+                mkdir -p "$VENV_DIR/bin"
+                printf '#!/usr/bin/env sh\\nexit 0\\n' > "$VENV_DIR/bin/testpilot"
+                chmod +x "$VENV_DIR/bin/testpilot"
+                # python created but deliberately NOT executable -> broken venv
+                printf 'broken\\n' > "$VENV_DIR/bin/python"
+                chmod 0644 "$VENV_DIR/bin/python"
+                ;;
+              pip) : ;;
+            esac
+            exit 0
+            """,
+        )
+        return bin_dir
+
+    def test_broken_venv_python_aborts(self, fake_home: Path, tmp_path: Path) -> None:
+        broken = self._stub_bin_with_broken_venv(tmp_path)
+        result = _run_installer(fake_home, broken)
+        assert result.returncode != 0, (
+            "installer must abort when the managed venv python is not executable\n"
+            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
+        combined = (result.stdout + result.stderr).lower()
+        assert "virtualenv" in combined or "venv" in combined or "python" in combined, (
+            f"no clear venv-failure message:\n{result.stdout}\n{result.stderr}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Scenario: Offline mode
 # ---------------------------------------------------------------------------
 
@@ -393,6 +483,53 @@ class TestOfflineInstall:
         combined = result.stdout + result.stderr
         assert "mismatch" in combined.lower() or "version" in combined.lower(), (
             f"No version mismatch message:\n{combined}"
+        )
+
+    def test_offline_arch_mismatch_aborts(self, tmp_path: Path, fake_home: Path) -> None:
+        """--offline aborts (before extraction) if the bundle linux-<arch> tag
+        does not match `uname -m`."""
+        import hashlib
+        import tarfile
+        import sys
+
+        bundle_dir = tmp_path / "bundle_staging"
+        (bundle_dir / "wheelhouse").mkdir(parents=True)
+        (bundle_dir / "requirements.txt").write_text("testpilot-core==0.3.0\n")
+
+        pyminor = f"{sys.version_info.major}{sys.version_info.minor}"
+        # Deliberately wrong architecture token (correct python token).
+        tarball_name = f"testpilot-bundle-0.3.0-linux-ppc64le-cp{pyminor}.tar.gz"
+        tarball_path = tmp_path / tarball_name
+        with tarfile.open(str(tarball_path), "w:gz") as tar:
+            tar.add(str(bundle_dir), arcname=".")
+
+        digest = hashlib.sha256(tarball_path.read_bytes()).hexdigest()
+        sums_path = Path(str(tarball_path) + ".SHA256SUMS")
+        sums_path.write_text(f"{digest}  {tarball_name}\n")
+
+        result = subprocess.run(
+            ["bash", str(INSTALL_SH), "--offline", str(tarball_path)],
+            env={
+                **{k: v for k, v in os.environ.items() if k not in _ISOLATED_VARS},
+                "HOME": str(fake_home),
+                "TESTPILOT_HOME": str(fake_home / ".local" / "share" / "testpilot"),
+                "TESTPILOT_BIN_DIR": str(fake_home / ".local" / "bin"),
+                "TESTPILOT_SKILLS_DIR": str(fake_home / ".agents" / "skills"),
+            },
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode != 0, (
+            "installer should abort on arch mismatch\n"
+            f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
+        )
+        combined = (result.stdout + result.stderr).lower()
+        assert "arch" in combined or "ppc64le" in combined, (
+            f"no architecture mismatch message:\n{result.stdout}\n{result.stderr}"
+        )
+        # Fail-fast: the managed venv must NOT have been created.
+        assert not (fake_home / ".local" / "share" / "testpilot" / ".venv").exists(), (
+            "arch check must fail BEFORE venv creation / extraction"
         )
 
     def test_offline_creates_wrapper(self, tmp_path: Path, fake_home: Path, stubs: Path) -> None:

@@ -91,13 +91,16 @@ def test_update_delegates_to_installer_and_reconciles(tmp_path: Path) -> None:
 
 
 def test_update_verify_failure_triggers_rollback(tmp_path: Path) -> None:
-    """I3: post-update verify failure restores from .last-good.txt and exits nonzero."""
+    """I3 + CRITICAL: post-update verify failure restores from .last-good.txt
+    using an OFFLINE pip invocation (never a public index) and exits nonzero."""
     venv = _setup_venv(tmp_path)
     # Pre-create the snapshot so rollback uses it.
     share = tmp_path / "share"
     share.mkdir()
     last_good = share / ".last-good.txt"
     last_good.write_text("wifi_llapi==0.3.0\n")
+    wheel_cache = share / ".wheel-cache"
+    wheel_cache.mkdir()
 
     runner_calls: list[list[str]] = []
 
@@ -106,18 +109,88 @@ def test_update_verify_failure_triggers_rollback(tmp_path: Path) -> None:
             with patch.object(cli_mod, "_packaged_manifest_path", return_value=Path("/pkg/m.yaml")):
                 with patch.object(cli_mod, "_probe_installed_plugins", return_value={"wifi_llapi"}):
                     with patch.object(cli_mod, "_last_good_path", return_value=last_good):
-                        with patch.object(cli_mod, "_snapshot_environment", return_value=None):
-                            with pytest.raises(SystemExit) as exc:
-                                _handle_update(
-                                    "main",
-                                    runner=lambda args: runner_calls.append(args) or 0,
-                                    installer=lambda env: 0,
-                                    verifier=lambda: False,
-                                )
+                        with patch.object(cli_mod, "_wheel_cache_path", return_value=wheel_cache):
+                            with patch.object(cli_mod, "_snapshot_environment", return_value=None):
+                                with pytest.raises(SystemExit) as exc:
+                                    _handle_update(
+                                        "main",
+                                        runner=lambda args: runner_calls.append(args) or 0,
+                                        installer=lambda env: 0,
+                                        verifier=lambda: False,
+                                    )
 
     assert exc.value.code != 0
-    # rollback: runner called with install -r <last_good>
-    assert any("install" in c and "-r" in c and str(last_good) in c for c in runner_calls), runner_calls
+    rollback = [c for c in runner_calls if "install" in c and "-r" in c]
+    assert rollback, f"rollback install not invoked: {runner_calls}"
+    rb = rollback[0]
+    # CRITICAL: rollback must be offline-only — never reachable to public PyPI.
+    assert "--no-index" in rb, f"rollback must use --no-index: {rb}"
+    assert "--find-links" in rb, f"rollback must use --find-links: {rb}"
+    assert str(wheel_cache) in rb, f"rollback must point --find-links at the wheel cache: {rb}"
+    assert str(last_good) in rb
+    # No pip install anywhere in the flow may omit --no-index (would risk a
+    # public-index reach / dependency confusion for private packages).
+    for c in runner_calls:
+        if "install" in c and "uninstall" not in c:
+            assert "--no-index" in c, f"every install must be offline-only: {c}"
+
+
+def test_rollback_failure_prints_manual_recovery_and_exits_nonzero(
+    tmp_path: Path, capsys
+) -> None:
+    """CRITICAL: when offline rollback fails (wheels unavailable), print a clear
+    manual-recovery message and exit nonzero — never silently retry online."""
+    venv = _setup_venv(tmp_path)
+    share = tmp_path / "share"
+    share.mkdir()
+    last_good = share / ".last-good.txt"
+    last_good.write_text("wifi_llapi==0.3.0\n")
+    wheel_cache = share / ".wheel-cache"
+    wheel_cache.mkdir()
+
+    runner_calls: list[list[str]] = []
+
+    def _runner(args: list[str]) -> int:
+        runner_calls.append(args)
+        # Rollback install fails (e.g. cached wheels missing for some deps).
+        if "install" in args and "-r" in args:
+            return 1
+        return 0
+
+    with patch.object(cli_mod, "_get_managed_venv", return_value=venv):
+        with patch.object(cli_mod, "_resolve_manifest", return_value=_fake_manifest(["wifi_llapi"])):
+            with patch.object(cli_mod, "_packaged_manifest_path", return_value=Path("/pkg/m.yaml")):
+                with patch.object(cli_mod, "_probe_installed_plugins", return_value={"wifi_llapi"}):
+                    with patch.object(cli_mod, "_last_good_path", return_value=last_good):
+                        with patch.object(cli_mod, "_wheel_cache_path", return_value=wheel_cache):
+                            with patch.object(cli_mod, "_snapshot_environment", return_value=None):
+                                with pytest.raises(SystemExit) as exc:
+                                    _handle_update(
+                                        "main",
+                                        runner=_runner,
+                                        installer=lambda env: 0,
+                                        verifier=lambda: False,
+                                    )
+
+    assert exc.value.code != 0
+    err = capsys.readouterr().err
+    assert "install.sh --offline" in err, f"missing manual-recovery guidance: {err!r}"
+    # The offline rollback attempt still must have used --no-index.
+    rollback = [c for c in runner_calls if "install" in c and "-r" in c]
+    assert rollback and "--no-index" in rollback[0]
+
+
+def test_wheel_cache_path_respects_testpilot_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The offline rollback wheel cache lives under TESTPILOT_HOME."""
+    home = tmp_path / "custom-home"
+    monkeypatch.setenv("TESTPILOT_HOME", str(home))
+
+    path = cli_mod._wheel_cache_path()
+
+    assert path == home / ".wheel-cache"
+    assert path.parent == cli_mod._get_managed_venv().parent
 
 
 def test_last_good_path_respects_testpilot_home(
