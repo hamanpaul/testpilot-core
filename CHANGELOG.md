@@ -47,6 +47,15 @@ preparation.
 - Wheel-mode stray-import detection now uses a non-managed interpreter
   (`_system_python_outside`) instead of the managed venv python, so it can
   actually detect a `testpilot` importable outside the managed venv.
+- `scripts/install.sh` online mode now installs serialwrap WITH its dependency
+  closure (it is public and does not depend on testpilot-core); only core and
+  plugins keep the `--no-deps` path. The install helper's flag is renamed
+  `is_core` → `with_deps` for clarity and the git+https fallback honors it too.
+- `scripts/install.sh` GIT_ASKPASS hardening: the askpass helper now reads the
+  token from the exported env at call time (`exec printf '%s\n' "$GH_TOKEN"`)
+  instead of embedding the literal secret, and its cleanup is registered in the
+  EXIT trap so it is removed even when `pip` fails under `set -euo pipefail`
+  (a function-scoped RETURN trap does not fire on a `set -e` abort).
 
 ### Changed — BREAKING
 

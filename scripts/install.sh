@@ -244,7 +244,11 @@ else
     # 3. Fetch or use local manifest
     MANIFEST_FILE="$(mktemp)"
     MANIFEST_PARSE_SCRIPT="$(mktemp /tmp/tp_parse.XXXXXX.py)"
-    trap 'rm -f "$MANIFEST_FILE" "$MANIFEST_PARSE_SCRIPT"' EXIT
+    # ASKPASS_HELPER is removed by the EXIT trap so the token-passing helper is
+    # cleaned up even when pip fails under `set -euo pipefail` (a function-scoped
+    # RETURN trap does NOT fire on a set -e abort; an EXIT trap does).
+    ASKPASS_HELPER=""
+    trap 'rm -f "$MANIFEST_FILE" "$MANIFEST_PARSE_SCRIPT" "$ASKPASS_HELPER"' EXIT
 
     if [[ -n "$TESTPILOT_MANIFEST" ]]; then
         info "Using local manifest override: ${TESTPILOT_MANIFEST}"
@@ -364,9 +368,14 @@ PYEOF
     # ── Helper: download wheel or fall back to git+https via GIT_ASKPASS ─────
     # SECURITY: GIT_ASKPASS helper echoes the token to git's password prompt.
     #           The token is NEVER embedded in the URL or echoed to stdout.
+    # with_deps=true  -> install the package WITH its dependency closure
+    # with_deps=false -> install with --no-deps (plugins depend on core, which is
+    #                    installed first; resolving their deps would re-pull core)
     _install_pkg_online() {
-        local repo="$1" version="$2" label="$3" is_core="${4:-false}"
+        local repo="$1" version="$2" label="$3" with_deps="${4:-false}"
         local wheel_dir; wheel_dir="$(mktemp -d)"
+        local nodeps_flag=""
+        [[ "$with_deps" == "true" ]] || nodeps_flag="--no-deps"
 
         info "Downloading ${label} ${version} from ${repo} ..."
 
@@ -377,7 +386,7 @@ PYEOF
                 --dir "$wheel_dir" \
                 2>/dev/null; then
             ok "Downloaded wheel(s) for ${label}"
-            if [[ "$is_core" == "true" ]]; then
+            if [[ "$with_deps" == "true" ]]; then
                 _venv_pip "$wheel_dir"/*.whl
             else
                 _venv_pip --no-deps "$wheel_dir"/*.whl
@@ -386,18 +395,21 @@ PYEOF
         else
             # Fallback: git+https with GIT_ASKPASS helper (token never in URL)
             warn "No wheel asset for ${label} ${version}; falling back to git+https"
-            local askpass_helper=""
             if [[ -n "${GH_TOKEN:-}" ]]; then
-                askpass_helper="$(mktemp /tmp/tp_askpass.XXXXXX)"
-                chmod 700 "$askpass_helper"
-                # Write a helper that echoes the token; git calls this for password
-                printf '#!/bin/sh\necho "%s"\n' "$GH_TOKEN" > "$askpass_helper"
-                GIT_ASKPASS="$askpass_helper" \
-                    "${VENV}/bin/pip" install \
+                # Use the script-global ASKPASS_HELPER (cleaned by the EXIT trap)
+                # so the helper is removed even if pip fails under set -e.
+                ASKPASS_HELPER="$(mktemp /tmp/tp_askpass.XXXXXX)"
+                chmod 700 "$ASKPASS_HELPER"
+                # Helper reads the token from the EXPORTED env at call time;
+                # the literal secret is NEVER written into the helper file.
+                printf '#!/bin/sh\nexec printf '\''%%s\\n'\'' "$GH_TOKEN"\n' > "$ASKPASS_HELPER"
+                GH_TOKEN="$GH_TOKEN" GIT_ASKPASS="$ASKPASS_HELPER" \
+                    "${VENV}/bin/pip" install ${nodeps_flag} \
                     "git+https://github.com/${repo}@v${version}"
-                rm -f "$askpass_helper"
+                rm -f "$ASKPASS_HELPER"
+                ASKPASS_HELPER=""
             else
-                "${VENV}/bin/pip" install \
+                "${VENV}/bin/pip" install ${nodeps_flag} \
                     "git+https://github.com/${repo}@v${version}"
             fi
             ok "${label} installed via git+https"
@@ -424,9 +436,9 @@ PYEOF
         _install_pkg_online "$prepo" "$pver" "plugin:${pname}" "false"
     done
 
-    # 8. Install serialwrap with --no-deps
+    # 8. Install serialwrap WITH deps (public; does not depend on testpilot-core)
     if [[ -n "$SERIALWRAP_REPO" && -n "$SERIALWRAP_VERSION" ]]; then
-        _install_pkg_online "$SERIALWRAP_REPO" "$SERIALWRAP_VERSION" "serialwrap" "false"
+        _install_pkg_online "$SERIALWRAP_REPO" "$SERIALWRAP_VERSION" "serialwrap" "true"
     fi
 
     # 9. Wrapper + skill sync
