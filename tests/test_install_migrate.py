@@ -72,6 +72,39 @@ def test_install_migrate_noop_on_clean_probe() -> None:
     assert removed == [], removed
 
 
+def test_probe_legacy_src_respects_testpilot_home(tmp_path, monkeypatch) -> None:
+    """I-important3: the legacy-src probe must target _get_managed_src().
+
+    Regression: the probe checked the hardcoded ``~/.local/share/testpilot/src``
+    while removal used ``_get_managed_src()`` (TESTPILOT_HOME-aware), so under a
+    custom TESTPILOT_HOME detection and removal pointed at different paths.
+    """
+    home = tmp_path / "custom-home"
+    (home / "src").mkdir(parents=True)
+    monkeypatch.setenv("TESTPILOT_HOME", str(home))
+
+    probe = cli_mod._probe_legacy_installs()
+
+    assert probe["legacy_src"] is True, (
+        "probe must detect the legacy src under TESTPILOT_HOME"
+    )
+    # The detected path is exactly what removal would target.
+    assert cli_mod._get_managed_src() == home / "src"
+
+
+def test_probe_legacy_src_absent_under_clean_testpilot_home(
+    tmp_path, monkeypatch
+) -> None:
+    """No legacy src under a fresh TESTPILOT_HOME -> probe reports False."""
+    home = tmp_path / "clean-home"
+    home.mkdir()
+    monkeypatch.setenv("TESTPILOT_HOME", str(home))
+
+    probe = cli_mod._probe_legacy_installs()
+
+    assert probe["legacy_src"] is False
+
+
 def test_install_migrate_command_registered_and_hidden() -> None:
     # The command must exist (invokable) but be hidden from --help so the README
     # CLI-help marker stays valid.

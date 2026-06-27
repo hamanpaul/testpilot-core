@@ -33,6 +33,14 @@ preparation.
   It now reads the hatch version path (mirroring
   `tests/test_version_metadata.py` / `scripts/check_release_version.py`) when
   the version is dynamic.
+- **Rollback snapshot path now honors `TESTPILOT_HOME`.** `_last_good_path()`
+  hardcoded `~/.local/share/testpilot/.last-good.txt` while `_get_managed_venv()`
+  respects `TESTPILOT_HOME`; the snapshot is now derived from the same base so it
+  always sits next to the venv it describes.
+- **Legacy-checkout probe now honors `TESTPILOT_HOME`.** `_probe_legacy_installs()`
+  checked the hardcoded default `~/.local/share/testpilot/src` while removal uses
+  `_get_managed_src()` (TESTPILOT_HOME-aware); the probe now uses
+  `_get_managed_src()` so detection and removal target the same path.
 - **CRITICAL: `testpilot --update` no longer destroys a real wheel install.** The
   authoritative `install-manifest.yaml` and `install.sh` now ship inside the
   wheel (`testpilot/_install/`), so `_resolve_manifest()` resolves them in a

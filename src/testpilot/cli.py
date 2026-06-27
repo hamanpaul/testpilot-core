@@ -781,8 +781,12 @@ def _run_installer(env: dict, *, runner=None) -> int:
 
 
 def _last_good_path() -> Path:
-    """Return the rollback snapshot path under the managed share dir."""
-    return Path.home() / ".local" / "share" / "testpilot" / ".last-good.txt"
+    """Return the rollback snapshot path under the managed home dir.
+
+    Derived from the same TESTPILOT_HOME base as ``_get_managed_venv()`` so the
+    snapshot always sits next to the venv it describes.
+    """
+    return _get_managed_venv().parent / ".last-good.txt"
 
 
 def _snapshot_environment(managed_venv: Path, last_good: Path) -> None:
@@ -953,9 +957,11 @@ def _probe_legacy_installs() -> dict:
     except Exception:
         pass
 
-    # Check legacy src checkout
+    # Check legacy src checkout — use _get_managed_src() (TESTPILOT_HOME-aware)
+    # so detection targets the same path that removal (_default_legacy_src_remover
+    # via _get_managed_src) would delete.
     try:
-        legacy_src = Path.home() / ".local" / "share" / "testpilot" / "src"
+        legacy_src = _get_managed_src()
         result["legacy_src"] = legacy_src.exists()
     except Exception:
         pass

@@ -120,6 +120,25 @@ def test_update_verify_failure_triggers_rollback(tmp_path: Path) -> None:
     assert any("install" in c and "-r" in c and str(last_good) in c for c in runner_calls), runner_calls
 
 
+def test_last_good_path_respects_testpilot_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """I-important2: the rollback snapshot must live under TESTPILOT_HOME.
+
+    Regression: ``_last_good_path()`` hardcoded ``~/.local/share/testpilot`` even
+    though ``_get_managed_venv()`` honors TESTPILOT_HOME, so the snapshot and the
+    venv it describes could diverge.
+    """
+    home = tmp_path / "custom-home"
+    monkeypatch.setenv("TESTPILOT_HOME", str(home))
+
+    path = cli_mod._last_good_path()
+
+    assert path == home / ".last-good.txt"
+    # And it shares the same base as the managed venv it snapshots.
+    assert path.parent == cli_mod._get_managed_venv().parent
+
+
 def test_resolve_manifest_returns_object_or_none() -> None:
     """C1.2: _resolve_manifest returns a real manifest object in dev checkout."""
     m = cli_mod._resolve_manifest("main")
