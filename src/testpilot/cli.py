@@ -709,6 +709,31 @@ def _register_plugins(root: click.Group) -> None:
             click.echo(f"WARN: skipped plugin '{name}' CLI: {exc}", err=True)
 
 
+@main.command("install-doctor")
+@click.option(
+    "--manifest",
+    "manifest_path",
+    default=None,
+    type=click.Path(),
+    help="Path to install-manifest.yaml (default: install-manifest.yaml in CWD).",
+)
+def install_doctor(manifest_path: str | None) -> None:
+    """Check manifest plugin API-compat against installed core SDK version."""
+    from testpilot.api import API_VERSION
+    from testpilot.install.manifest import load_manifest
+    from testpilot.install.compat import manifest_compat_report
+
+    path = Path(manifest_path) if manifest_path else Path.cwd() / "install-manifest.yaml"
+    m = load_manifest(path)
+    pairs = [(p.name, p.api_version) for p in m.plugins]
+    rep = manifest_compat_report(API_VERSION, pairs)
+    for failure in rep.failures:
+        click.echo(failure)
+    if not rep.ok:
+        raise SystemExit(1)
+    click.echo("manifest compatible")
+
+
 # Plugin CLI commands are install-time registrations from this checkout.
 # Runtime --root selects project data, not the command registration source.
 _register_plugins(main)
