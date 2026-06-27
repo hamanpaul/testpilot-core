@@ -25,6 +25,14 @@ preparation.
 
 ### Fixed
 
+- **`--verify-install` version-mirror check now understands dynamic versions.**
+  `pyproject.toml` uses `dynamic = ["version"]` (sourced from the `VERSION`
+  file via `[tool.hatch.version]`), but `_check_version_mirrors()` still read
+  `data["project"]["version"]` and surfaced a spurious
+  `pyproject.toml unreadable: 'version'` FAIL in checkout-mode verify-install.
+  It now reads the hatch version path (mirroring
+  `tests/test_version_metadata.py` / `scripts/check_release_version.py`) when
+  the version is dynamic.
 - **CRITICAL: `testpilot --update` no longer destroys a real wheel install.** The
   authoritative `install-manifest.yaml` and `install.sh` now ship inside the
   wheel (`testpilot/_install/`), so `_resolve_manifest()` resolves them in a

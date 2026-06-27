@@ -230,8 +230,19 @@ def _check_version_mirrors(managed_src: Path) -> tuple[bool, str]:
     if pyproject_file.exists():
         try:
             data = tomllib.loads(pyproject_file.read_text(encoding="utf-8"))
-            versions["pyproject.toml"] = data["project"]["version"]
-        except (KeyError, tomllib.TOMLDecodeError) as exc:
+            project = data["project"]
+            if "version" in project.get("dynamic", []):
+                # Dynamic version is sourced from the hatch version path
+                # (e.g. the VERSION file); mirror tests/test_version_metadata.py
+                # and scripts/check_release_version.py rather than reading a
+                # static project.version that does not exist.
+                version_path = data["tool"]["hatch"]["version"]["path"]
+                versions["pyproject.toml"] = (
+                    (managed_src / version_path).read_text(encoding="utf-8").strip()
+                )
+            else:
+                versions["pyproject.toml"] = project["version"]
+        except (KeyError, tomllib.TOMLDecodeError, OSError) as exc:
             errors.append(f"pyproject.toml unreadable: {exc}")
 
     init_file = managed_src / "src" / "testpilot" / "__init__.py"
