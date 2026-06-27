@@ -34,6 +34,9 @@ pattern = "(?P<version>.+)"
 [tool.hatch.build.targets.wheel]
 packages = ["src/testpilot"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"skills/testpilot-normal-test" = "testpilot/_skills/testpilot-normal-test"
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
