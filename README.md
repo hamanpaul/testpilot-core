@@ -156,9 +156,10 @@ Options:
   --help            Show this message and exit.
 
 Commands:
-  list-cases    List test cases for a plugin.
-  list-plugins  List available test plugins.
-  run           Run tests for a plugin.
+  install-doctor  Check manifest plugin API-compat against installed core...
+  list-cases      List test cases for a plugin.
+  list-plugins    List available test plugins.
+  run             Run tests for a plugin.
 <!-- END: cli-help marker="testpilot-help" -->
 <!-- testpilot-help:end -->
 
@@ -179,9 +180,10 @@ Options:
   --help            Show this message and exit.
 
 Commands:
-  list-cases    List test cases for a plugin.
-  list-plugins  List available test plugins.
-  run           Run tests for a plugin.
+  install-doctor  Check manifest plugin API-compat against installed core...
+  list-cases      List test cases for a plugin.
+  list-plugins    List available test plugins.
+  run             Run tests for a plugin.
 <!-- END: cli-help marker="testpilot-update-help" -->
 <!-- testpilot-update-help:end -->
 
