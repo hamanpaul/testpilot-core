@@ -1085,8 +1085,9 @@ def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> 
     expose_value=True,
     metavar="REF",
     help=(
-        "Update the managed wheel install to REF (default: main): reinstall "
-        "pinned wheels and reconcile plugins, then exit."
+        "Reinstall and reconcile the managed wheel install from its pinned "
+        "manifest, then exit. REF is accepted but cross-version update is not "
+        "yet implemented; the currently-pinned set is reinstalled."
     ),
     is_flag=False,
     flag_value="main",
@@ -1112,6 +1113,13 @@ def main(
     """TestPilot — plugin-based test automation for embedded devices."""
     # Pre-dispatch: --update and --verify-install run before normal routing.
     if update_ref is not None:
+        if update_ref not in (None, "main"):
+            click.echo(
+                f"note: --update reinstalls the currently-pinned manifest set; "
+                f"targeting REF {update_ref!r} for a cross-version update is not "
+                f"yet implemented.",
+                err=True,
+            )
         _handle_update(update_ref)
         ctx.exit(0)
         return

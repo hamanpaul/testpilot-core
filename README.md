@@ -167,8 +167,10 @@ Options:
   --root DIRECTORY  Project root directory.
   --azure           Use Azure OpenAI API. Prompts for endpoint, key, and model
                     interactively.
-  --update REF      Update the managed wheel install to REF (default: main):
-                    reinstall pinned wheels and reconcile plugins, then exit.
+  --update REF      Reinstall and reconcile the managed wheel install from its
+                    pinned manifest, then exit. REF is accepted but cross-
+                    version update is not yet implemented; the currently-
+                    pinned set is reinstalled.
   --verify-install  Report managed install health and exit.
   --help            Show this message and exit.
 
@@ -192,8 +194,10 @@ Options:
   --root DIRECTORY  Project root directory.
   --azure           Use Azure OpenAI API. Prompts for endpoint, key, and model
                     interactively.
-  --update REF      Update the managed wheel install to REF (default: main):
-                    reinstall pinned wheels and reconcile plugins, then exit.
+  --update REF      Reinstall and reconcile the managed wheel install from its
+                    pinned manifest, then exit. REF is accepted but cross-
+                    version update is not yet implemented; the currently-
+                    pinned set is reinstalled.
   --verify-install  Report managed install health and exit.
   --help            Show this message and exit.
 

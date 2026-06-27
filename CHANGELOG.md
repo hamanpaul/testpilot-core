@@ -36,9 +36,13 @@ preparation.
   injectable seam, passing `TESTPILOT_REF` and `TESTPILOT_MANIFEST`) instead of
   `pip install --upgrade <bare-name>` (dependency-confusion risk). Dropped
   plugins are still reconciled via the pip runner.
-- `--update` now honors `REF` (forwarded as `TESTPILOT_REF`) and gates on
+- `--update` snapshots the environment (`.last-good.txt`) and gates on
   wheel-mode `--verify-install`; on verify failure it restores from the
-  `.last-good.txt` snapshot and exits nonzero.
+  snapshot and exits nonzero. `REF` is accepted and forwarded as
+  `TESTPILOT_REF`, but cross-version update is not yet implemented — the
+  currently-pinned manifest set is reinstalled regardless of `REF` (a runtime
+  notice is printed for a non-default `REF`). Fetching a new ref's manifest is
+  a tracked follow-up.
 - Legacy-install migration is now wired in (previously dead code): a hidden
   `testpilot install-migrate` command runs the detect/probe pair and removes
   legacy user-site / pipx / `~/.local/share/testpilot/src` checkouts via an
