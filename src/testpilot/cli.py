@@ -698,6 +698,77 @@ def _handle_update(ref, *, runner=None) -> int:
     return 0
 
 
+def _detect_legacy_installs(probe: dict) -> list[str]:
+    """Pure function: map detected legacy install shapes to action keys.
+
+    Args:
+        probe: dict with keys:
+            - user_site_testpilot: bool - testpilot dist-info found in user site-packages
+            - pipx_testpilot: bool - testpilot found in pipx list
+            - legacy_src: bool - ~/.local/share/testpilot/src exists
+
+    Returns:
+        list of action keys: uninstall_user_site, uninstall_pipx, remove_legacy_src
+    """
+    actions = []
+    if probe.get("user_site_testpilot"):
+        actions.append("uninstall_user_site")
+    if probe.get("pipx_testpilot"):
+        actions.append("uninstall_pipx")
+    if probe.get("legacy_src"):
+        actions.append("remove_legacy_src")
+    return actions
+
+
+def _probe_legacy_installs() -> dict:
+    """Best-effort probe of legacy install shapes. Never raises.
+
+    Returns a dict suitable for passing to _detect_legacy_installs().
+    """
+    result = {
+        "user_site_testpilot": False,
+        "pipx_testpilot": False,
+        "legacy_src": False,
+    }
+
+    # Check user site-packages for testpilot dist-info
+    try:
+        import site
+        user_site = site.getusersitepackages()
+        if user_site:
+            user_site_path = Path(user_site)
+            if user_site_path.exists():
+                for entry in user_site_path.iterdir():
+                    name = entry.name.lower()
+                    if (name.startswith("testpilot") or name.startswith("testpilot_core")) and name.endswith(".dist-info"):
+                        result["user_site_testpilot"] = True
+                        break
+    except Exception:
+        pass
+
+    # Check pipx
+    try:
+        proc = subprocess.run(
+            ["pipx", "list", "--short"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0 and "testpilot" in proc.stdout.lower():
+            result["pipx_testpilot"] = True
+    except Exception:
+        pass
+
+    # Check legacy src checkout
+    try:
+        legacy_src = Path.home() / ".local" / "share" / "testpilot" / "src"
+        result["legacy_src"] = legacy_src.exists()
+    except Exception:
+        pass
+
+    return result
+
+
 def _setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
