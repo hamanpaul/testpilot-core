@@ -338,8 +338,7 @@ wheels = [
 ]
 
 [[package]]
-name = "testpilot"
-version = "0.3.0"
+name = "testpilot-core"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
