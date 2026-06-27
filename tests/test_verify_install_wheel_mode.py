@@ -19,7 +19,23 @@ def test_wheel_mode_fails_on_incompatible_plugin():
                      "error": "IncompatiblePluginError"}],
         "serialwrap": True, "skill_packaged": True, "stray_import": None,
     })
-    assert any(not ok and "wifi_llapi" in msg for ok, msg in rows)
+    # An IncompatiblePluginError must still be reported as incompatible (M6).
+    assert any(not ok and "wifi_llapi" in msg and "incompatible" in msg.lower() for ok, msg in rows)
+
+
+def test_wheel_mode_uses_error_type_for_non_incompat_failure():
+    # M6: a non-api-incompatibility failure must surface the captured error
+    # TYPE, not the hardcoded "api-incompatible" wording.
+    rows = _verify_install_wheel_mode(probe={
+        "wrapper_ok": True, "core_version": "0.3.0",
+        "plugins": [{"name": "brcm_fw_upgrade", "version": "0.1.0", "loads": False,
+                     "api": "?", "error": "ImportError"}],
+        "serialwrap": True, "skill_packaged": True, "stray_import": None,
+    })
+    failing = [msg for ok, msg in rows if not ok and "brcm_fw_upgrade" in msg]
+    assert failing, rows
+    assert "ImportError" in failing[0]
+    assert "api-incompatible" not in failing[0]
 
 
 def test_wheel_mode_warns_on_stray_import():

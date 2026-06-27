@@ -167,7 +167,8 @@ Options:
   --root DIRECTORY  Project root directory.
   --azure           Use Azure OpenAI API. Prompts for endpoint, key, and model
                     interactively.
-  --update REF      Update managed checkout to REF (default: main) and exit.
+  --update REF      Update the managed wheel install to REF (default: main):
+                    reinstall pinned wheels and reconcile plugins, then exit.
   --verify-install  Report managed install health and exit.
   --help            Show this message and exit.
 
@@ -191,7 +192,8 @@ Options:
   --root DIRECTORY  Project root directory.
   --azure           Use Azure OpenAI API. Prompts for endpoint, key, and model
                     interactively.
-  --update REF      Update managed checkout to REF (default: main) and exit.
+  --update REF      Update the managed wheel install to REF (default: main):
+                    reinstall pinned wheels and reconcile plugins, then exit.
   --verify-install  Report managed install health and exit.
   --help            Show this message and exit.
 

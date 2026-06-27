@@ -57,6 +57,15 @@ preparation.
   EXIT trap so it is removed even when `pip` fails under `set -euo pipefail`
   (a function-scoped RETURN trap does not fire on a `set -e` abort).
 
+### Changed
+
+- `--update` help text updated to describe the wheel-model reconcile (was stale
+  "managed checkout" wording); README CLI-help marker blocks regenerated to
+  match.
+- Wheel-mode `--verify-install` now reports a failing plugin with its captured
+  error TYPE (e.g. `failed to load (ImportError)`); only an actual
+  `IncompatiblePluginError` is reported as `api-incompatible`.
+
 ### Changed — BREAKING
 
 - **Distribution renamed `testpilot` → `testpilot-core`** (`pip install testpilot-core`); the import package `testpilot` is unchanged.

@@ -409,7 +409,13 @@ def _verify_install_wheel_mode(probe: dict) -> list[tuple[bool, str]]:
             rows.append((True, f"OK plugin: {name} {version} (api {api})"))
         else:
             error = plugin.get("error", "unknown error")
-            rows.append((False, f"FAIL plugin: {name} api-incompatible ({error})"))
+            # Use the captured error TYPE in the message rather than always
+            # claiming "api-incompatible"; only IncompatiblePluginError is an
+            # actual API-version mismatch.
+            if error == "IncompatiblePluginError":
+                rows.append((False, f"FAIL plugin: {name} api-incompatible ({error})"))
+            else:
+                rows.append((False, f"FAIL plugin: {name} failed to load ({error})"))
 
     # serialwrap — absence is a WARN, not a failure
     if probe.get("serialwrap"):
@@ -1078,7 +1084,10 @@ def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> 
     is_eager=True,
     expose_value=True,
     metavar="REF",
-    help="Update managed checkout to REF (default: main) and exit.",
+    help=(
+        "Update the managed wheel install to REF (default: main): reinstall "
+        "pinned wheels and reconcile plugins, then exit."
+    ),
     is_flag=False,
     flag_value="main",
 )
