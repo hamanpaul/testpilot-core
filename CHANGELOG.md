@@ -39,6 +39,14 @@ preparation.
 - `--update` now honors `REF` (forwarded as `TESTPILOT_REF`) and gates on
   wheel-mode `--verify-install`; on verify failure it restores from the
   `.last-good.txt` snapshot and exits nonzero.
+- Legacy-install migration is now wired in (previously dead code): a hidden
+  `testpilot install-migrate` command runs the detect/probe pair and removes
+  legacy user-site / pipx / `~/.local/share/testpilot/src` checkouts via an
+  injectable runner; `scripts/install.sh` invokes it (best-effort) after the
+  managed venv is populated, in both online and offline modes.
+- Wheel-mode stray-import detection now uses a non-managed interpreter
+  (`_system_python_outside`) instead of the managed venv python, so it can
+  actually detect a `testpilot` importable outside the managed venv.
 
 ### Changed — BREAKING
 

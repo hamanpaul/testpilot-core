@@ -119,6 +119,15 @@ except Exception as e:
 " "$skill_dst" 2>&1 && ok "Skill synced" || warn "Skill not found in installed package (skip)"
 }
 
+# ── Helper: migrate legacy installs to the wheel model (best-effort, non-fatal) ─
+# Detects and cleans up old user-site / pipx / git-checkout installs so the
+# managed venv is the single source of truth. Failures here never abort install.
+_run_legacy_migration() {
+    local venv="$1"
+    info "Checking for legacy testpilot installs to migrate ..."
+    "${venv}/bin/testpilot" install-migrate || true
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # OFFLINE MODE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -189,6 +198,9 @@ if [[ -n "$OFFLINE_BUNDLE" ]]; then
 
     # 6. Wrapper + skill sync
     _write_wrapper_and_skill "$VENV" "$TESTPILOT_BIN_DIR" "$TESTPILOT_SKILLS_DIR"
+
+    # 6b. Migrate legacy installs (best-effort, non-fatal)
+    _run_legacy_migration "$VENV"
 
     # 7. Post-install gate
     info "Running post-install gate: testpilot --verify-install ..."
@@ -419,6 +431,9 @@ PYEOF
 
     # 9. Wrapper + skill sync
     _write_wrapper_and_skill "$VENV" "$TESTPILOT_BIN_DIR" "$TESTPILOT_SKILLS_DIR"
+
+    # 10. Migrate legacy installs (best-effort, non-fatal)
+    _run_legacy_migration "$VENV"
 
 fi  # end ONLINE/OFFLINE branch
 

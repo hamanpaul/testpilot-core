@@ -433,6 +433,56 @@ def _verify_install_wheel_mode(probe: dict) -> list[tuple[bool, str]]:
     return rows
 
 
+def _system_python_outside(venv_bin: Path) -> str | None:
+    """Resolve a python interpreter that is NOT inside the managed venv.
+
+    The stray-import probe must use a non-managed interpreter; using the managed
+    venv's own python (``sys.executable``) always finds the managed testpilot and
+    therefore can never detect a genuine stray install. Returns a path string, or
+    None when no distinct interpreter can be found. Never raises.
+    """
+    try:
+        venv_bin_resolved = Path(venv_bin).resolve()
+    except Exception:
+        venv_bin_resolved = Path(venv_bin)
+
+    def _outside(candidate: str | None) -> str | None:
+        if not candidate:
+            return None
+        try:
+            p = Path(candidate).resolve()
+            if not p.exists():
+                return None
+        except Exception:
+            return None
+        # Reject anything living directly under the managed venv bin.
+        if p.parent == venv_bin_resolved or venv_bin_resolved in p.parents:
+            return None
+        return str(p)
+
+    # Prefer a python on PATH that is outside the managed venv.
+    for name in ("python3", "python"):
+        try:
+            found = shutil.which(name)
+        except Exception:
+            found = None
+        result = _outside(found)
+        if result:
+            return result
+
+    # Fall back to a well-known system interpreter if it is distinct.
+    try:
+        usr = Path("/usr/bin/python3")
+        if usr.exists():
+            result = _outside(str(usr))
+            if result and Path(result).resolve() != Path(sys.executable).resolve():
+                return result
+    except Exception:
+        pass
+
+    return None
+
+
 def _probe_wheel_install() -> dict:
     """Gather real installation data for wheel-mode verify-install.
 
@@ -505,22 +555,26 @@ def _probe_wheel_install() -> dict:
     except Exception:
         probe["skill_packaged"] = False
 
-    # --- stray import: try system python to locate testpilot ---
+    # --- stray import: use a NON-managed interpreter to locate testpilot ---
+    # Using sys.executable (the managed venv python) would always find the
+    # managed testpilot, so stray_import could never fire. Resolve a python
+    # outside the managed venv instead.
     probe["stray_import"] = None
     try:
-        # Use sys.executable (the venv python); compare its testpilot path to this file.
         managed_pkg_dir = str(Path(__file__).resolve().parent)
-        result = subprocess.run(
-            [sys.executable, "-c",
-             "import os, testpilot; print(os.path.dirname(testpilot.__file__))"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0:
-            found_path = result.stdout.strip()
-            if found_path and Path(found_path).resolve() != Path(managed_pkg_dir).resolve():
-                probe["stray_import"] = found_path
+        system_python = _system_python_outside(_get_managed_venv() / "bin")
+        if system_python:
+            result = subprocess.run(
+                [system_python, "-c",
+                 "import os, testpilot; print(os.path.dirname(testpilot.__file__))"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                found_path = result.stdout.strip()
+                if found_path and Path(found_path).resolve() != Path(managed_pkg_dir).resolve():
+                    probe["stray_import"] = found_path
     except Exception:
         pass
 
@@ -892,6 +946,78 @@ def _probe_legacy_installs() -> dict:
     return result
 
 
+def _default_migration_runner(cmd: list[str]) -> int:
+    """Best-effort subprocess runner for migration actions. Never raises."""
+    try:
+        return subprocess.run(cmd).returncode
+    except Exception as exc:
+        print(f"Warning: migration command failed ({cmd[0]}): {exc}", file=sys.stderr)
+        return 1
+
+
+def _default_legacy_src_remover(path: Path) -> None:
+    """Remove the legacy src checkout only (never the managed venv)."""
+    if path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _handle_install_migrate(*, probe=None, runner=None, remover=None) -> int:
+    """Detect legacy install shapes and migrate them to the wheel model.
+
+    Conservative + best-effort. Actions:
+      - uninstall_user_site: `python -m pip uninstall -y testpilot testpilot-core`
+        using a NON-managed interpreter so it targets the user/system site.
+      - uninstall_pipx: `pipx uninstall testpilot` / `testpilot-core`.
+      - remove_legacy_src: remove ~/.local/share/testpilot/src (NOT the venv).
+    After acting, WARN if `testpilot` still resolves outside the managed venv.
+    """
+    if probe is None:
+        probe = _probe_legacy_installs()
+    if runner is None:
+        runner = _default_migration_runner
+    if remover is None:
+        remover = _default_legacy_src_remover
+
+    actions = _detect_legacy_installs(probe)
+    if not actions:
+        print("No legacy testpilot installs detected; nothing to migrate.")
+        return 0
+
+    venv_bin = _get_managed_venv() / "bin"
+    for action in actions:
+        if action == "uninstall_user_site":
+            system_python = _system_python_outside(venv_bin) or "python3"
+            runner([system_python, "-m", "pip", "uninstall", "-y", "testpilot", "testpilot-core"])
+        elif action == "uninstall_pipx":
+            runner(["pipx", "uninstall", "testpilot"])
+            runner(["pipx", "uninstall", "testpilot-core"])
+        elif action == "remove_legacy_src":
+            remover(_get_managed_src())
+
+    # Warn if testpilot still resolves outside the managed venv after migration.
+    system_python = _system_python_outside(venv_bin)
+    if system_python:
+        try:
+            result = subprocess.run(
+                [system_python, "-c",
+                 "import os, testpilot; print(os.path.dirname(testpilot.__file__))"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                print(
+                    "WARN: testpilot still importable outside the managed venv: "
+                    f"{result.stdout.strip()}",
+                    file=sys.stderr,
+                )
+        except Exception:
+            pass
+
+    print("Legacy migration complete.")
+    return 0
+
+
 def _setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
@@ -1139,6 +1265,12 @@ def install_doctor(manifest_path: str | None) -> None:
     if not rep.ok:
         raise SystemExit(1)
     click.echo("manifest compatible")
+
+
+@main.command("install-migrate", hidden=True)
+def install_migrate() -> None:
+    """(hidden) Migrate a legacy user-site / pipx / git-checkout install to the wheel model."""
+    raise SystemExit(_handle_install_migrate())
 
 
 # Plugin CLI commands are install-time registrations from this checkout.

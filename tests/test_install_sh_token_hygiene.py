@@ -31,3 +31,10 @@ def test_has_offline_branch():
 
 def test_installs_core_then_plugins_no_deps():
     assert "--no-deps" in SH
+
+
+def test_invokes_legacy_migration():
+    # I1: install.sh must wire in the legacy-migration command (best-effort).
+    assert "install-migrate" in SH
+    # best-effort: the migration call must not abort the install (|| true)
+    assert "install-migrate || true" in SH
