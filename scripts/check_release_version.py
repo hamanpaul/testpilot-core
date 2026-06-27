@@ -24,7 +24,12 @@ def _runtime_version() -> str:
 
 def _pyproject_version() -> str:
     data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    return data["project"]["version"]
+    project = data["project"]
+    if "version" in project.get("dynamic", []):
+        # Dynamic version sourced from hatch version path (e.g. VERSION file)
+        version_path = data["tool"]["hatch"]["version"]["path"]
+        return (ROOT / version_path).read_text(encoding="utf-8").strip()
+    return project["version"]
 
 
 def _version_file() -> str:

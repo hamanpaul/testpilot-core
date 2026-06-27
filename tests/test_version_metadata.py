@@ -17,7 +17,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _pyproject_version() -> str:
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    return pyproject["project"]["version"]
+    project = pyproject["project"]
+    if "version" in project.get("dynamic", []):
+        # Dynamic version sourced from hatch version path (e.g. VERSION file)
+        version_path = pyproject["tool"]["hatch"]["version"]["path"]
+        return (ROOT / version_path).read_text(encoding="utf-8").strip()
+    return project["version"]
 
 
 def _runtime_version() -> str:
