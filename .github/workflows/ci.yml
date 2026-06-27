@@ -80,5 +80,10 @@ jobs:
       - name: Manifest API-compatibility gate
         run: .venv/bin/testpilot install-doctor --manifest install-manifest.yaml
 
-      - name: Offline bundle install smoke
+      - name: Offline bundle install smoke (real installer gate)
+        # Stages a real bundle and runs `scripts/install.sh --offline` against it,
+        # gating checksum/arch/extract/wrapper/skill/verify-install. CI=true makes
+        # a dependency-prep/network failure a HARD FAIL (no silent skip).
+        env:
+          CI: "true"
         run: bash tests/test_offline_install_integration.sh

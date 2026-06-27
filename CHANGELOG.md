@@ -97,6 +97,17 @@ preparation.
 
 ### Changed
 
+- **CI offline smoke is now a real installer gate.**
+  `tests/test_offline_install_integration.sh` previously `pip install`ed a
+  wheelhouse directly and `exit 0`'d on any network/download failure, so the
+  actual offline-installer paths (checksum, python+arch tag checks, extraction,
+  wrapper, skill sync, post-install verify) were never exercised. It now stages
+  a real bundle (`wheelhouse/` + `requirements.txt` + `SHA256SUMS`, in
+  `build-bundle.sh`'s shape) and runs `bash scripts/install.sh --offline
+  <bundle>` into an isolated `TESTPILOT_HOME`, asserting `testpilot --version`
+  and `testpilot --verify-install` pass. In CI (`CI=true`) a
+  dependency-prep/network failure is a HARD FAIL; locally with no network it
+  prints an explicit SKIP. The CI step pins `CI: "true"`.
 - `--update` help text updated to describe the wheel-model reconcile (was stale
   "managed checkout" wording); README CLI-help marker blocks regenerated to
   match.
