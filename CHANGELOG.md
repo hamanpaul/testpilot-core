@@ -9,6 +9,25 @@ preparation.
 
 ## [Unreleased]
 
+### Added
+
+- `install-manifest.yaml` with pinned core, plugin, and serialwrap versions for manifest-driven managed installs.
+- `testpilot install-doctor` CLI command: checks manifest plugin API-compat against the installed core SDK version (`testpilot.api.API_VERSION`); exits non-zero on incompatibility.
+- Online one-click managed-venv wheel install via `scripts/install.sh` with `TESTPILOT_INSTALL_TOKEN` (downloads pinned wheels via `gh release download`); subset install via `--plugins`.
+- Offline bundle install via `scripts/install.sh --offline <bundle.tar.gz>`; bundle built by `scripts/build-bundle.sh` on a networked Linux box; verifies `SHA256SUMS`, installs with `--no-index`.
+- Wheel-mode `--verify-install`: reports managed venv health and wheel-installed package versions.
+- Wheel-world `--update`: re-resolves manifest, reinstalls pinned wheels, reconciles plugins.
+- Legacy-install migration detection: warns when a `~/.local/share/testpilot/src` git-checkout install is detected and guides migration to the wheel model.
+- Skill `testpilot-normal-test` shipped as wheel data under `testpilot/_skills/testpilot-normal-test` (via `pyproject.toml` `force-include`).
+- CI: wheel build (`uv build --wheel`) and upload to GitHub Release asset after tag-triggered release creation.
+- CI: manifest API-compatibility gate (`testpilot install-doctor --manifest install-manifest.yaml`) and offline bundle smoke test in the PR/push workflow.
+- `tests/test_wheel_contents.py`: wheel-content assertion locking that the skill is present and no runtime report bundle dirs leak into the wheel.
+
+### Changed — BREAKING
+
+- **Distribution renamed `testpilot` → `testpilot-core`** (`pip install testpilot-core`); the import package `testpilot` is unchanged.
+- Managed install model changed from git-checkout + editable source to wheel-based venv; `~/.local/share/testpilot/src` is no longer created or used.
+
 ## [0.3.0]
 
 - **CI 可重現性 + 鎖定 click 渲染**: `uv.lock` 改為版控（移出 `.gitignore`），CI

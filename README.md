@@ -6,8 +6,7 @@
 
 ## Install
 
-Use the managed installer in [Quick Start](#quick-start), then run
-`testpilot --verify-install`.
+This README is the canonical install reference. For online install (managed venv + pinned wheels), see [Quick Start](#quick-start). For offline environments or update procedures, see [Managed Install and Update](#managed-install-and-update). After any install or update, run `testpilot --verify-install` to confirm health.
 
 ## Usage
 
@@ -74,13 +73,22 @@ testbed:
 
 ### Quick Start
 
+**Online one-click install** (requires a fine-grained read-only PAT with `contents: read`
+for `hamanpaul/testpilot-core` and all plugin repos):
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/paulc-arc/testpilot/main/scripts/install.sh | bash
+TESTPILOT_INSTALL_TOKEN=<fine-grained read-only PAT> bash scripts/install.sh
 testpilot --verify-install
 testpilot list-plugins
 ```
 
-Install a concrete plugin from its own package, then list and run it:
+Install only a subset of plugins with `--plugins`:
+
+```bash
+TESTPILOT_INSTALL_TOKEN=<PAT> bash scripts/install.sh --plugins wifi_llapi
+```
+
+Once installed, list and run plugins:
 
 ```bash
 testpilot list-plugins
@@ -96,28 +104,36 @@ testpilot run <plugin>
 
 ### Managed Install and Update
 
-The supported QC/TEST install is a managed checkout plus managed virtualenv:
+The supported QC/TEST install uses a managed venv with pinned wheels (no git checkout):
 
 ```bash
-~/.local/share/testpilot/src     # managed git checkout
 ~/.local/share/testpilot/.venv   # managed runtime virtualenv
 ~/.local/bin/testpilot           # wrapper, no activation required
 ~/.agents/skills/testpilot-normal-test
 ```
 
-Default install source is `https://github.com/paulc-arc/testpilot.git` with
-`TESTPILOT_REF=latest-release`. Local/fork validation can override the source:
+**Online install** — downloads wheels via `gh release download` using a fine-grained PAT:
 
 ```bash
-TESTPILOT_REPO_URL=https://github.com/hamanpaul/testpilot.git TESTPILOT_REF=main bash scripts/install.sh
+TESTPILOT_INSTALL_TOKEN=<fine-grained read-only PAT> bash scripts/install.sh
 ```
 
-Update the managed checkout and reinstall/sync runtime assets:
+**Offline install** — build a bundle on a networked Linux box with `scripts/build-bundle.sh`,
+then transfer and install on the air-gapped machine:
 
 ```bash
-testpilot --update
-testpilot --update v0.2.1
-testpilot --verify-install
+# Build on a networked machine:
+bash scripts/build-bundle.sh
+
+# Install on the offline machine (verifies SHA256SUMS, installs with --no-index):
+bash scripts/install.sh --offline testpilot-bundle-<ver>-linux-<arch>-cp<XY>.tar.gz
+```
+
+**Update and verify:**
+
+```bash
+testpilot --update            # re-resolves manifest, reinstalls pinned wheels, reconciles plugins
+testpilot --verify-install    # report install health
 ```
 
 ### CLI Entry Points
@@ -298,13 +314,22 @@ export SERIALWRAP_BIN=/path/to/serialwrap
 
 ### 快速開始
 
+**線上一鍵安裝**（需要 fine-grained read-only PAT，具備 `hamanpaul/testpilot-core`
+及所有 plugin repo 的 `contents: read` 權限）：
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/paulc-arc/testpilot/main/scripts/install.sh | bash
+TESTPILOT_INSTALL_TOKEN=<fine-grained read-only PAT> bash scripts/install.sh
 testpilot --verify-install
 testpilot list-plugins
 ```
 
-從各自的套件安裝具體 plugin 後，即可列出與執行：
+透過 `--plugins` 只安裝部分 plugin：
+
+```bash
+TESTPILOT_INSTALL_TOKEN=<PAT> bash scripts/install.sh --plugins wifi_llapi
+```
+
+安裝後，列出並執行 plugin：
 
 ```bash
 testpilot list-plugins
@@ -314,21 +339,36 @@ testpilot run <plugin>
 
 ### Managed Install 與 Update
 
-支援的 QC/TEST 安裝為 managed checkout 加 managed virtualenv：
+支援的 QC/TEST 安裝採用 managed venv 加 pinned wheels（不再使用 git checkout）：
 
 ```bash
-~/.local/share/testpilot/src     # managed git checkout
 ~/.local/share/testpilot/.venv   # managed runtime virtualenv
 ~/.local/bin/testpilot           # wrapper，免 activate
 ~/.agents/skills/testpilot-normal-test
 ```
 
-更新 managed checkout 並重新安裝/同步 runtime 資產：
+**線上安裝**：
 
 ```bash
-testpilot --update
-testpilot --update v0.2.1
-testpilot --verify-install
+TESTPILOT_INSTALL_TOKEN=<fine-grained read-only PAT> bash scripts/install.sh
+```
+
+**離線安裝**（先在有網路的 Linux 機器以 `scripts/build-bundle.sh` 建置 bundle，
+再傳至目標機器）：
+
+```bash
+# 有網路機器上建置：
+bash scripts/build-bundle.sh
+
+# 離線機器上安裝（驗證 SHA256SUMS，以 --no-index 安裝）：
+bash scripts/install.sh --offline testpilot-bundle-<ver>-linux-<arch>-cp<XY>.tar.gz
+```
+
+**更新與驗證：**
+
+```bash
+testpilot --update            # 重解析 manifest、重裝 pinned wheels、同步 plugin
+testpilot --verify-install    # 回報安裝狀態
 ```
 
 ### CLI 進入點
