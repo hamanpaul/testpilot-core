@@ -23,6 +23,10 @@ preparation.
 - CI: manifest API-compatibility gate (`testpilot install-doctor --manifest install-manifest.yaml`) and offline bundle smoke test in the PR/push workflow.
 - `tests/test_wheel_contents.py`: wheel-content assertion locking that the skill is present and no runtime report bundle dirs leak into the wheel.
 
+### Changed
+
+- `install-manifest.yaml`: bump `wifi_llapi` pin `0.3.0` → `0.3.1` to match the published `wifi_llapi-0.3.1-py3-none-any.whl` release asset (`api_version` unchanged at `1.1`; manifest API-compat gate stays green).
+
 ### Fixed
 
 - **`--verify-install` version-mirror check now understands dynamic versions.**
