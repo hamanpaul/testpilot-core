@@ -54,7 +54,7 @@ Custom agents / skills / MCP remain extension surfaces in the current codebase r
 - **Python 3.11+**
 - **git**
 - **[uv](https://docs.astral.sh/uv/)** — Python package manager, preferred by the installer
-- **[serialwrap](https://github.com/paulc-arc/serialwrap)** — UART serial multiplexer for DUT / STA communication; managed installs install/update it automatically
+- **[serialwrap](https://github.com/hamanpaul/serialwrap)** — UART serial multiplexer for DUT / STA communication; managed installs install/update it automatically
 
 Developer checkouts that manage serialwrap manually can still set the binary path via environment variable:
 
@@ -315,7 +315,7 @@ TestPilot 是針對 prplOS / OpenWrt 嵌入式裝置的 plugin 化測試自動�
 - **Python 3.11+**
 - **git**
 - **[uv](https://docs.astral.sh/uv/)** — 安裝器優先採用的 Python 套件管理器
-- **[serialwrap](https://github.com/paulc-arc/serialwrap)** — DUT / STA 通訊用的 UART serial multiplexer；managed install 會自動安裝/更新
+- **[serialwrap](https://github.com/hamanpaul/serialwrap)** — DUT / STA 通訊用的 UART serial multiplexer；managed install 會自動安裝/更新
 
 手動管理 serialwrap 的開發者 checkout 可用環境變數指定路徑：
 

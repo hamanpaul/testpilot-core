@@ -9,6 +9,8 @@ preparation.
 
 ## [Unreleased]
 
+## [0.3.1]
+
 ### Added
 
 - `install-manifest.yaml` with pinned core, plugin, and serialwrap versions for manifest-driven managed installs.
@@ -22,10 +24,6 @@ preparation.
 - CI: wheel build (`uv build --wheel`) and upload to GitHub Release asset after tag-triggered release creation.
 - CI: manifest API-compatibility gate (`testpilot install-doctor --manifest install-manifest.yaml`) and offline bundle smoke test in the PR/push workflow.
 - `tests/test_wheel_contents.py`: wheel-content assertion locking that the skill is present and no runtime report bundle dirs leak into the wheel.
-
-### Changed
-
-- `install-manifest.yaml`: bump `wifi_llapi` pin `0.3.0` → `0.3.1` to match the published `wifi_llapi-0.3.1-py3-none-any.whl` release asset (`api_version` unchanged at `1.1`; manifest API-compat gate stays green).
 
 ### Fixed
 
@@ -118,6 +116,9 @@ preparation.
 - Wheel-mode `--verify-install` now reports a failing plugin with its captured
   error TYPE (e.g. `failed to load (ImportError)`); only an actual
   `IncompatiblePluginError` is reported as `api-incompatible`.
+- `install-manifest.yaml`: `wifi_llapi` pin bumped `0.3.0` → `0.3.1` to match the
+  published `wifi_llapi-0.3.1-py3-none-any.whl` release asset (`api_version`
+  unchanged at `1.1`; `install-doctor` manifest-compat gate stays green).
 
 ### Changed — BREAKING
 

@@ -123,26 +123,26 @@ def test_version_file_uses_semver() -> None:
 
 def test_release_validation_accepts_matching_tag() -> None:
     result = subprocess.run(
-        [sys.executable, "scripts/check_release_version.py", "--tag", "v0.3.0"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "Validated release tag v0.3.0" in result.stdout
-
-
-def test_release_validation_rejects_mismatched_tag() -> None:
-    result = subprocess.run(
         [sys.executable, "scripts/check_release_version.py", "--tag", "v0.3.1"],
         cwd=ROOT,
         capture_output=True,
         text=True,
     )
 
+    assert result.returncode == 0, result.stderr
+    assert "Validated release tag v0.3.1" in result.stdout
+
+
+def test_release_validation_rejects_mismatched_tag() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/check_release_version.py", "--tag", "v0.3.0"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
     assert result.returncode != 0
-    assert "does not match expected v0.3.0" in result.stderr
+    assert "does not match expected v0.3.1" in result.stderr
 
 
 def test_release_validation_rejects_malformed_tag() -> None:
