@@ -1,12 +1,12 @@
 core:
   distribution: testpilot-core
   repo: hamanpaul/testpilot-core
-  version: "0.3.0"
+  version: "0.3.1"
   private: true
 plugins:
   - name: wifi_llapi
     repo: hamanpaul/wifi_llapi
-    version: "0.3.0"
+    version: "0.3.1"
     api_version: "1.1"
     private: true
   - name: brcm_fw_upgrade

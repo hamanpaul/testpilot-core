@@ -9,6 +9,8 @@ preparation.
 
 ## [Unreleased]
 
+## [0.3.1]
+
 ### Added
 
 - `install-manifest.yaml` with pinned core, plugin, and serialwrap versions for manifest-driven managed installs.
@@ -114,6 +116,9 @@ preparation.
 - Wheel-mode `--verify-install` now reports a failing plugin with its captured
   error TYPE (e.g. `failed to load (ImportError)`); only an actual
   `IncompatiblePluginError` is reported as `api-incompatible`.
+- `install-manifest.yaml`: `wifi_llapi` pin bumped `0.3.0` → `0.3.1` to match the
+  published `wifi_llapi-0.3.1-py3-none-any.whl` release asset (`api_version`
+  unchanged at `1.1`; `install-doctor` manifest-compat gate stays green).
 
 ### Changed — BREAKING
 
