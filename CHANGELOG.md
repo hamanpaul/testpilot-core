@@ -9,6 +9,15 @@ preparation.
 
 ## [Unreleased]
 
+## [0.3.2]
+
+### Changed
+
+- `install-manifest.yaml`: bump `serialwrap` pin `0.2.0` → `0.2.1` to match the
+  published `serialwrap-0.2.1-py3-none-any.whl` release asset (serialwrap Phase A
+  added its tag-triggered wheel release; the offline-bundle path now resolves a
+  serialwrap wheel instead of relying on the `install.sh` git+https fallback).
+
 ## [0.3.1]
 
 ### Added
