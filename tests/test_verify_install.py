@@ -110,6 +110,44 @@ class TestVersionMirrorCheck:
         assert not ok
         assert "pyproject.toml" in msg
 
+    def test_dynamic_version_reads_from_version_file(self, tmp_path: Path) -> None:
+        """Dynamic-version pyproject must source the version from the hatch path.
+
+        Regression: ``dynamic = ["version"]`` previously raised KeyError on
+        ``data["project"]["version"]`` and surfaced as
+        ``pyproject.toml unreadable: 'version'`` — a spurious verify-install FAIL.
+        """
+        from testpilot.cli import _check_version_mirrors
+
+        managed_src = tmp_path / "managed_src"
+        managed_src.mkdir()
+
+        (managed_src / "VERSION").write_text("0.3.0\n")
+        (managed_src / "pyproject.toml").write_text(
+            textwrap.dedent(
+                """
+                [project]
+                name = "testpilot-core"
+                dynamic = ["version"]
+
+                [tool.hatch.version]
+                path = "VERSION"
+                pattern = "(?P<version>.+)"
+                """
+            ).lstrip(),
+            encoding="utf-8",
+        )
+        init_dir = managed_src / "src" / "testpilot"
+        init_dir.mkdir(parents=True)
+        (init_dir / "__init__.py").write_text('__version__ = "0.3.0"\n')
+
+        ok, msg = _check_version_mirrors(managed_src)
+
+        assert ok, f"dynamic-version pyproject should pass, got: {msg}"
+        assert "unreadable" not in msg
+        assert "'version'" not in msg
+        assert "0.3.0" in msg
+
     def test_version_aligned_passes(self, tmp_path: Path) -> None:
         """All version mirrors aligned → verify-install does not fail on version check."""
         managed_src = tmp_path / "managed_src"
@@ -193,13 +231,15 @@ class TestManagedCheckoutReport:
                 with patch("testpilot.cli.console", mock_console):
                     _handle_verify_install()  # must not raise
 
-        output = " ".join(str(c) for c in mock_console.print.call_args_list)
-        # Some mention of checkout / managed path expected in output.
-        assert (
-            "checkout" in output.lower()
-            or "managed" in output.lower()
-            or str(nonexistent_src).split("/")[-2] in output
-        )
+        # Intent: a missing managed checkout must NOT hard-fail (no SystemExit above).
+        # Assert a stable, environment-independent signal that wheel-mode ran and
+        # passed — the core row + the success line are always emitted when core is
+        # importable. (The earlier 'checkout'/'managed' string check was fragile: in
+        # wheel-mode those words only appear when a wrapper/stray WARN happens to fire,
+        # which is environment-dependent and broke in CI.)
+        output = " ".join(str(c) for c in mock_console.print.call_args_list).lower()
+        assert "core" in output
+        assert "verify-install: all checks passed" in output
 
     def test_healthy_managed_checkout_prints_git_info(self, tmp_path: Path) -> None:
         """When managed checkout exists, verify-install prints git remote/ref/SHA."""

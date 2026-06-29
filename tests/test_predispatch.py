@@ -63,126 +63,112 @@ def test_update_does_not_enter_click_commands() -> None:
     assert result.exit_code == 0
 
 
-def test_update_dirty_checkout_exits_nonzero(tmp_path: Path) -> None:
-    """_handle_update should exit non-zero when managed checkout is dirty."""
+def test_update_missing_venv_exits_without_mutating(tmp_path: Path) -> None:
+    """Wheel model: no managed venv -> clear nonzero exit, runner never invoked.
+
+    (Rewritten from the retired dirty-git-checkout test. ALWAYS patches
+    _get_managed_venv and passes a fake runner so the real pip never runs.)
+    """
+    import testpilot.cli as cli_mod
     from testpilot.cli import _handle_update
 
-    # Create a real managed_src dir so the exists() guard passes.
-    managed_src = tmp_path / "managed" / "src"
-    managed_src.mkdir(parents=True)
+    missing_venv = tmp_path / "nope" / ".venv"  # does not exist
+    runner_calls: list[list[str]] = []
+    installer_calls: list[dict] = []
 
-    def _dirty_git_run(cmd, **kwargs):
-        class _R:
-            returncode = 0
-            stdout = ""
-
-        if "status" in cmd and "--porcelain" in cmd:
-            _R.stdout = " M some-file.py\n"
-        return _R()
-
-    with patch("testpilot.cli._get_managed_src", return_value=managed_src):
-        with patch("testpilot.cli._git_run", side_effect=_dirty_git_run):
-            with pytest.raises(SystemExit) as exc_info:
-                _handle_update("main")
-    assert exc_info.value.code != 0
-
-
-def test_update_nonexistent_managed_src_exits_nonzero() -> None:
-    """_handle_update must fail clearly when no managed checkout exists."""
-    from testpilot.cli import _handle_update
-
-    git_calls: list[list[str]] = []
-
-    def _tracking_git_run(cmd, **kwargs):
-        git_calls.append(list(cmd))
-
-        class _R:
-            returncode = 0
-            stdout = ""
-
-        return _R()
-
-    nonexistent = Path("/nonexistent/managed/src/that/does/not/exist")
-    with patch("testpilot.cli._get_managed_src", return_value=nonexistent):
-        with patch("testpilot.cli._git_run", side_effect=_tracking_git_run):
-            with pytest.raises(SystemExit) as exc_info:
-                _handle_update("main")
+    with patch.object(cli_mod, "_get_managed_venv", return_value=missing_venv):
+        with pytest.raises(SystemExit) as exc_info:
+            _handle_update(
+                "main",
+                runner=lambda args: runner_calls.append(args) or 0,
+                installer=lambda env: installer_calls.append(env) or 0,
+            )
 
     assert exc_info.value.code != 0
-    status_calls = [c for c in git_calls if "status" in c and "--porcelain" in c]
-    assert not status_calls, f"git status was called unexpectedly: {status_calls}"
+    assert runner_calls == [], f"runner must not run when venv is missing: {runner_calls}"
+    assert installer_calls == [], f"installer must not run when venv is missing: {installer_calls}"
 
 
-def test_update_runs_managed_installer_with_ref_and_paths(tmp_path: Path) -> None:
-    """_handle_update should delegate to install.sh to update all managed assets."""
+def test_update_unresolvable_manifest_exits_without_uninstall(tmp_path: Path) -> None:
+    """Wheel model: venv exists but manifest is unresolvable -> nonzero, no uninstall.
+
+    (Rewritten from the retired nonexistent-managed-src test.) The destructive
+    bug was treating an empty manifest as "no plugins" and uninstalling all; an
+    unresolvable manifest must touch nothing.
+    """
+    import testpilot.cli as cli_mod
     from testpilot.cli import _handle_update
 
-    managed_src = tmp_path / "managed" / "src"
-    (managed_src / ".git").mkdir(parents=True)
-    installer = managed_src / "scripts" / "install.sh"
-    installer.parent.mkdir()
-    installer.write_text("#!/usr/bin/env bash\nexit 0\n")
+    venv = tmp_path / ".venv"
+    venv.mkdir()
+    runner_calls: list[list[str]] = []
+    installer_calls: list[dict] = []
 
-    managed_venv = tmp_path / "managed" / ".venv"
-    wrapper = tmp_path / "bin" / "testpilot"
-    skills_root = tmp_path / "skills"
+    with patch.object(cli_mod, "_get_managed_venv", return_value=venv):
+        with patch.object(cli_mod, "_resolve_manifest", return_value=None):
+            with pytest.raises(SystemExit) as exc_info:
+                _handle_update(
+                    "main",
+                    runner=lambda args: runner_calls.append(args) or 0,
+                    installer=lambda env: installer_calls.append(env) or 0,
+                )
 
-    class _CleanStatus:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    installer_calls: list[tuple[list[str], dict]] = []
-
-    def _fake_run(cmd, **kwargs):
-        installer_calls.append((list(cmd), kwargs))
-        return subprocess.CompletedProcess(args=cmd, returncode=0)
-
-    with patch("testpilot.cli._get_managed_src", return_value=managed_src):
-        with patch("testpilot.cli._get_managed_venv", return_value=managed_venv):
-            with patch("testpilot.cli._get_wrapper_path", return_value=wrapper):
-                with patch("testpilot.cli._get_skills_root", return_value=skills_root):
-                    with patch("testpilot.cli._git_run", return_value=_CleanStatus()):
-                        with patch("testpilot.cli.subprocess.run", side_effect=_fake_run):
-                            _handle_update("v0.2.0")
-
-    assert installer_calls, "install.sh was not invoked"
-    cmd, kwargs = installer_calls[0]
-    assert cmd[0] == "bash"
-    assert Path(cmd[1]).name == "install.sh"
-    assert kwargs["cwd"] == str(managed_src)
-    env = kwargs["env"]
-    assert env["TESTPILOT_REF"] == "v0.2.0"
-    assert env["TESTPILOT_HOME"] == str(managed_src.parent)
-    assert env["TESTPILOT_BIN_DIR"] == str(wrapper.parent)
-    assert env["TESTPILOT_SKILLS_DIR"] == str(skills_root)
+    assert exc_info.value.code != 0
+    assert not any("uninstall" in c for c in runner_calls), runner_calls
+    assert installer_calls == [], installer_calls
 
 
-def test_update_installer_failure_exits_nonzero(tmp_path: Path) -> None:
-    """_handle_update should propagate install.sh failures as a non-zero exit."""
+def test_update_reinstalls_manifest_plugins(tmp_path: Path) -> None:
+    """_handle_update (wheel model) reinstalls the pinned set via the installer seam.
+
+    Reinstall delegates to the packaged install.sh (NOT pip bare-name), so the
+    assertion is that the installer is invoked — not that pip installs a name.
+    """
+    import testpilot.cli as cli_mod
+    from testpilot.cli import _handle_update
+    from testpilot.install.manifest import Core, InstallManifest, Plugin
+
+    fake_venv = tmp_path / ".venv"
+    fake_venv.mkdir()
+
+    manifest = InstallManifest(
+        core=Core(distribution="testpilot-core", version="0.3.0", repo="x/y"),
+        plugins=[Plugin(name="wifi_llapi", repo="x/wifi_llapi", version="0.3.0", api_version="1.1")],
+    )
+
+    calls: list[list[str]] = []
+    installer_calls: list[dict] = []
+
+    with patch.object(cli_mod, "_get_managed_venv", return_value=fake_venv):
+        with patch.object(cli_mod, "_probe_installed_plugins", return_value=set()):
+            with patch.object(cli_mod, "_resolve_manifest", return_value=manifest):
+                with patch.object(cli_mod, "_packaged_manifest_path", return_value=tmp_path / "m.yaml"):
+                    rc = _handle_update(
+                        "main",
+                        runner=lambda args: calls.append(args) or 0,
+                        installer=lambda env: installer_calls.append(env) or 0,
+                        verifier=lambda: True,
+                    )
+
+    assert rc == 0
+    assert len(installer_calls) == 1, installer_calls
+    # no bare-name pip install
+    bare_installs = [c for c in calls if "install" in c and "uninstall" not in c and "-r" not in c]
+    assert not bare_installs, f"Unexpected bare-name pip install: {bare_installs}"
+
+
+def test_update_missing_venv_exits_nonzero(tmp_path: Path) -> None:
+    """_handle_update must exit non-zero when no managed venv exists (wheel model)."""
+    import testpilot.cli as cli_mod
     from testpilot.cli import _handle_update
 
-    managed_src = tmp_path / "managed" / "src"
-    (managed_src / ".git").mkdir(parents=True)
-    installer = managed_src / "scripts" / "install.sh"
-    installer.parent.mkdir()
-    installer.write_text("#!/usr/bin/env bash\nexit 23\n")
+    missing_venv = tmp_path / "nonexistent" / ".venv"
 
-    class _CleanStatus:
-        returncode = 0
-        stdout = ""
-        stderr = ""
+    with patch.object(cli_mod, "_get_managed_venv", return_value=missing_venv):
+        with pytest.raises(SystemExit) as exc_info:
+            _handle_update("main")
 
-    with patch("testpilot.cli._get_managed_src", return_value=managed_src):
-        with patch("testpilot.cli._git_run", return_value=_CleanStatus()):
-            with patch(
-                "testpilot.cli.subprocess.run",
-                return_value=subprocess.CompletedProcess(args=["bash"], returncode=23),
-            ):
-                with pytest.raises(SystemExit) as exc_info:
-                    _handle_update("main")
-
-    assert exc_info.value.code == 23
+    assert exc_info.value.code != 0
 
 
 # ---------------------------------------------------------------------------
@@ -203,15 +189,25 @@ def test_verify_install_dispatches_before_click() -> None:
 
 
 def test_verify_install_missing_skill_exits_nonzero(tmp_path: Path) -> None:
-    """_handle_verify_install should exit non-zero when skill dir is missing."""
+    """_handle_verify_install should exit non-zero when skill dir is missing.
+
+    A managed_src directory is provided so the function enters checkout-mode,
+    where a missing skill at skills_root is a hard failure.  In wheel-mode
+    (no managed_src) a missing packaged skill is only a WARN.
+    """
     from testpilot.cli import _handle_verify_install
 
     fake_home = tmp_path / "home"
     fake_home.mkdir()
 
-    with patch("testpilot.cli._get_skills_root", return_value=fake_home / ".agents" / "skills"):
-        with pytest.raises(SystemExit) as exc_info:
-            _handle_verify_install()
+    # Create a managed_src to trigger checkout-mode (skill absence = FAIL there).
+    managed_src = tmp_path / "managed_src"
+    managed_src.mkdir()
+
+    with patch("testpilot.cli._get_managed_src", return_value=managed_src):
+        with patch("testpilot.cli._get_skills_root", return_value=fake_home / ".agents" / "skills"):
+            with pytest.raises(SystemExit) as exc_info:
+                _handle_verify_install()
     assert exc_info.value.code != 0
 
 

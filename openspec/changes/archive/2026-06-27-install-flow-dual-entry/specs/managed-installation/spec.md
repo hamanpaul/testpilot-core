@@ -1,8 +1,5 @@
-# managed-installation Specification
+## MODIFIED Requirements
 
-## Purpose
-Define the supported managed TestPilot installation, update, and health-check behavior for QC/TEST operator deployments.
-## Requirements
 ### Requirement: Verify install reports deployment health
 `testpilot --verify-install` SHALL run before normal Click dispatch and, in the wheel deployment model, report health using the live runtime metadata rather than a source checkout. It SHALL report whether: the managed virtualenv and `~/.local/bin/testpilot` wrapper exist and the wrapper resolves to the managed virtualenv's console script; the installed core distribution `testpilot-core` and its version are importable; each plugin declared by `importlib.metadata.entry_points(group="testpilot.plugins")` loads via `PluginLoader.load` (SDK `api_version` compatible with the installed core `API_VERSION`); `serialwrap` is resolvable on the operator's PATH; and the bundled `testpilot-normal-test` skill is present from packaged data. It SHALL fail when any plugin entry point is API-incompatible, and SHALL warn when a `testpilot` distribution is importable from outside the managed virtualenv.
 
@@ -18,12 +15,7 @@ Define the supported managed TestPilot installation, update, and health-check be
 - **WHEN** a `testpilot`/`testpilot-core` distribution is importable from outside the managed virtualenv (e.g. a leftover `pip --user` install)
 - **THEN** `testpilot --verify-install` warns about the out-of-managed-venv import so the operator can reconcile it
 
-### Requirement: Wrapper requires no source environment activation
-The installed `~/.local/bin/testpilot` wrapper SHALL execute the managed virtualenv's TestPilot console script directly and SHALL NOT require users to source an activation script or set `PYTHONPATH`.
-
-#### Scenario: Wrapper invokes managed console script
-- **WHEN** user runs `~/.local/bin/testpilot --version`
-- **THEN** the wrapper executes the console script from `~/.local/share/testpilot/.venv` and prints TestPilot version information
+## ADDED Requirements
 
 ### Requirement: Managed installer installs pinned wheels into a managed venv
 The installer SHALL create or update a runtime virtualenv under `~/.local/share/testpilot/.venv`, install the manifest-pinned `testpilot-core` wheel plus each selected plugin wheel and the `serialwrap` wheel into that virtualenv, expose `~/.local/bin/testpilot` as a wrapper that executes the managed virtualenv's console script with no activation, and sync the packaged `testpilot-normal-test` skill into `~/.agents/skills/testpilot-normal-test`. It SHALL NOT create or depend on a `~/.local/share/testpilot/src` source checkout. Private wheels SHALL be fetched with `gh release download` using a token provided only via the `GH_TOKEN`/`TESTPILOT_INSTALL_TOKEN` environment, never embedded in a URL or printed. `--plugins <name[,name...]>` SHALL select a subset; the default SHALL install the manifest's full plugin set.
@@ -76,3 +68,12 @@ On a machine with a prior TestPilot install, the installer SHALL detect and reco
 - **WHEN** the installer runs on a machine where `testpilot` was previously installed via `pip install --user`
 - **THEN** it reconciles the user-site install (uninstall/repoint), installs the managed wheel model, and `--verify-install` does not report a competing out-of-venv `testpilot`
 
+## REMOVED Requirements
+
+### Requirement: Managed installer creates checkout, venv, wrapper, skills, and serialwrap
+**Reason**: P4 物理拆分後 plugin 不再內嵌於 core checkout；安裝模型改為 manifest-pinned 的 managed-venv + wheel，不再維護 `~/.local/share/testpilot/src` 原始碼 checkout，也不再 editable-install `plugins/<name>`（這正是壞掉的步驟）。
+**Migration**: 由「Managed installer installs pinned wheels into a managed venv」取代——venv/wrapper/skill/serialwrap 仍建立，但 core/plugin/serialwrap 改以 wheel 安裝、來源由 `install-manifest.yaml` pin，private wheel 經 `gh release download` 取得。
+
+### Requirement: Top-level update refreshes the managed checkout
+**Reason**: `--update` 原本要求 `~/.local/share/testpilot/src/.git` 存在並 git fetch/checkout；wheel 模型沒有 src checkout，原需求在新模型下恆為失敗。
+**Migration**: 由「Top-level update reinstalls pinned wheels and reconciles the plugin set」取代——`--update` 改為 re-resolve manifest、重裝 pinned wheel、reconcile 掉非 manifest 的 plugin，並保留更新前快照供回復。

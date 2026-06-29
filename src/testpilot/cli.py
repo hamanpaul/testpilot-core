@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
+import importlib.resources
 import json
 import logging
 import os
@@ -15,6 +17,7 @@ import tomllib
 from pathlib import Path
 
 import click
+from dataclasses import dataclass
 from rich.table import Table
 
 from testpilot import __version__
@@ -227,8 +230,19 @@ def _check_version_mirrors(managed_src: Path) -> tuple[bool, str]:
     if pyproject_file.exists():
         try:
             data = tomllib.loads(pyproject_file.read_text(encoding="utf-8"))
-            versions["pyproject.toml"] = data["project"]["version"]
-        except (KeyError, tomllib.TOMLDecodeError) as exc:
+            project = data["project"]
+            if "version" in project.get("dynamic", []):
+                # Dynamic version is sourced from the hatch version path
+                # (e.g. the VERSION file); mirror tests/test_version_metadata.py
+                # and scripts/check_release_version.py rather than reading a
+                # static project.version that does not exist.
+                version_path = data["tool"]["hatch"]["version"]["path"]
+                versions["pyproject.toml"] = (
+                    (managed_src / version_path).read_text(encoding="utf-8").strip()
+                )
+            else:
+                versions["pyproject.toml"] = project["version"]
+        except (KeyError, tomllib.TOMLDecodeError, OSError) as exc:
             errors.append(f"pyproject.toml unreadable: {exc}")
 
     init_file = managed_src / "src" / "testpilot" / "__init__.py"
@@ -377,9 +391,240 @@ def _check_plugin_health(managed_src: Path) -> list[tuple[bool, str]]:
     return checks
 
 
+# ---------------------------------------------------------------------------
+# Wheel-mode verify-install (Task 5)
+# ---------------------------------------------------------------------------
+
+
+def _verify_install_wheel_mode(probe: dict) -> list[tuple[bool, str]]:
+    """Pure function: build (ok, message) rows from a probe dict.
+
+    No IO — callers supply the probe dict (real or test fixture).
+    Exit-code decision is left to the caller: nonzero iff any ok is False.
+    """
+    rows: list[tuple[bool, str]] = []
+
+    # Core importability
+    core_version = probe.get("core_version")
+    if not core_version:
+        rows.append((False, "FAIL core: testpilot-core not importable"))
+    else:
+        rows.append((True, f"OK core: testpilot-core {core_version}"))
+
+    # Plugin entry points
+    for plugin in probe.get("plugins", []):
+        name = plugin.get("name", "<unknown>")
+        version = plugin.get("version", "?")
+        api = plugin.get("api", "?")
+        if plugin.get("loads"):
+            rows.append((True, f"OK plugin: {name} {version} (api {api})"))
+        else:
+            error = plugin.get("error", "unknown error")
+            # Use the captured error TYPE in the message rather than always
+            # claiming "api-incompatible"; only IncompatiblePluginError is an
+            # actual API-version mismatch.
+            if error == "IncompatiblePluginError":
+                rows.append((False, f"FAIL plugin: {name} api-incompatible ({error})"))
+            else:
+                rows.append((False, f"FAIL plugin: {name} failed to load ({error})"))
+
+    # serialwrap — absence is a WARN, not a failure
+    if probe.get("serialwrap"):
+        rows.append((True, "OK serialwrap on PATH"))
+    else:
+        rows.append((True, "WARN serialwrap not found on PATH"))
+
+    # wrapper_ok — mismatch is a WARN
+    if not probe.get("wrapper_ok", True):
+        rows.append((True, "WARN wrapper does not resolve to managed venv"))
+
+    # packaged skill — absence is a WARN
+    if not probe.get("skill_packaged", True):
+        rows.append((True, f"WARN packaged skill {_SKILL_NAME} missing"))
+
+    # stray import — present is a WARN
+    stray = probe.get("stray_import")
+    if stray:
+        rows.append((True, f"WARN testpilot importable outside managed venv: {stray}"))
+
+    return rows
+
+
+def _system_python_outside(venv_bin: Path) -> str | None:
+    """Resolve a python interpreter that is NOT inside the managed venv.
+
+    The stray-import probe must use a non-managed interpreter; using the managed
+    venv's own python (``sys.executable``) always finds the managed testpilot and
+    therefore can never detect a genuine stray install. Returns a path string, or
+    None when no distinct interpreter can be found. Never raises.
+    """
+    try:
+        venv_bin_resolved = Path(venv_bin).resolve()
+    except Exception:
+        venv_bin_resolved = Path(venv_bin)
+
+    def _outside(candidate: str | None) -> str | None:
+        if not candidate:
+            return None
+        try:
+            p = Path(candidate).resolve()
+            if not p.exists():
+                return None
+        except Exception:
+            return None
+        # Reject anything living directly under the managed venv bin.
+        if p.parent == venv_bin_resolved or venv_bin_resolved in p.parents:
+            return None
+        return str(p)
+
+    # Prefer a python on PATH that is outside the managed venv.
+    for name in ("python3", "python"):
+        try:
+            found = shutil.which(name)
+        except Exception:
+            found = None
+        result = _outside(found)
+        if result:
+            return result
+
+    # Fall back to a well-known system interpreter if it is distinct.
+    try:
+        usr = Path("/usr/bin/python3")
+        if usr.exists():
+            result = _outside(str(usr))
+            if result and Path(result).resolve() != Path(sys.executable).resolve():
+                return result
+    except Exception:
+        pass
+
+    return None
+
+
+def _probe_wheel_install() -> dict:
+    """Gather real installation data for wheel-mode verify-install.
+
+    Returns a probe dict compatible with _verify_install_wheel_mode.
+    Never raises; all errors are captured as sentinel values.
+    """
+    probe: dict = {}
+
+    # --- core version ---
+    try:
+        probe["core_version"] = importlib.metadata.version("testpilot-core")
+    except importlib.metadata.PackageNotFoundError:
+        probe["core_version"] = None
+
+    # --- plugins via entry points ---
+    plugin_rows: list[dict] = []
+    try:
+        eps = list(importlib.metadata.entry_points(group="testpilot.plugins"))
+    except Exception:
+        eps = []
+
+    for ep in eps:
+        row: dict = {"name": ep.name}
+        # plugin package version
+        try:
+            dist_name = ep.dist.name if getattr(ep, "dist", None) else ep.name
+            row["version"] = importlib.metadata.version(dist_name)
+        except Exception:
+            row["version"] = "?"
+
+        # attempt load
+        try:
+            loader = PluginLoader.from_entry_points([ep])
+            plugin_obj = loader.load(ep.name)
+            row["loads"] = True
+            row["api"] = getattr(plugin_obj, "api_version", "?")
+            row["error"] = None
+        except Exception as exc:
+            row["loads"] = False
+            row["api"] = "?"
+            row["error"] = type(exc).__name__
+
+        plugin_rows.append(row)
+
+    probe["plugins"] = plugin_rows
+
+    # --- serialwrap ---
+    serialwrap_bin = os.environ.get("SERIALWRAP_BIN")
+    if serialwrap_bin:
+        probe["serialwrap"] = bool(Path(serialwrap_bin).exists())
+    else:
+        probe["serialwrap"] = bool(shutil.which("serialwrap"))
+
+    # --- wrapper_ok: does the testpilot wrapper resolve to a managed venv? ---
+    try:
+        wrapper_path = _get_wrapper_path()
+        managed_venv = _get_managed_venv()
+        if wrapper_path.exists():
+            content = wrapper_path.read_text(errors="replace")
+            probe["wrapper_ok"] = str(managed_venv) in content
+        else:
+            probe["wrapper_ok"] = True  # no wrapper in wheel mode is fine
+    except Exception:
+        probe["wrapper_ok"] = True
+
+    # --- packaged skill ---
+    try:
+        skill_ref = importlib.resources.files("testpilot") / "_skills" / _SKILL_NAME
+        probe["skill_packaged"] = skill_ref.is_file() or skill_ref.is_dir()
+    except Exception:
+        probe["skill_packaged"] = False
+
+    # --- stray import: use a NON-managed interpreter to locate testpilot ---
+    # Using sys.executable (the managed venv python) would always find the
+    # managed testpilot, so stray_import could never fire. Resolve a python
+    # outside the managed venv instead.
+    probe["stray_import"] = None
+    try:
+        managed_pkg_dir = str(Path(__file__).resolve().parent)
+        system_python = _system_python_outside(_get_managed_venv() / "bin")
+        if system_python:
+            result = subprocess.run(
+                [system_python, "-c",
+                 "import os, testpilot; print(os.path.dirname(testpilot.__file__))"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                found_path = result.stdout.strip()
+                if found_path and Path(found_path).resolve() != Path(managed_pkg_dir).resolve():
+                    probe["stray_import"] = found_path
+    except Exception:
+        pass
+
+    return probe
+
+
 def _handle_verify_install() -> None:
     """Handle --verify-install pre-dispatch: report deployment health."""
     managed_src = _get_managed_src()
+
+    # ------------------------------------------------------------------
+    # Wheel-mode: no managed src directory at all → use importlib.metadata probes
+    # ------------------------------------------------------------------
+    if not managed_src.exists():
+        probe = _probe_wheel_install()
+        rows = _verify_install_wheel_mode(probe)
+        errors: list[str] = []
+        for ok_flag, msg in rows:
+            if not ok_flag:
+                console.print(f"[bold red]{msg}[/bold red]")
+                errors.append(msg)
+            elif msg.startswith("WARN") or msg.startswith("SKIP"):
+                console.print(f"[yellow]{msg}[/yellow]")
+            else:
+                console.print(f"[bold green]{msg}[/bold green]")
+        if errors:
+            raise SystemExit(1)
+        console.print("[bold green]verify-install: all checks passed[/bold green]")
+        return
+
+    # ------------------------------------------------------------------
+    # Checkout-mode: existing managed git checkout path (preserved)
+    # ------------------------------------------------------------------
     managed_venv = _get_managed_venv()
     wrapper_path = _get_wrapper_path()
     skills_root = _get_skills_root()
@@ -396,93 +641,444 @@ def _handle_verify_install() -> None:
     ]
     checks.extend(_check_plugin_health(managed_src))
 
-    errors: list[str] = []
+    checkout_errors: list[str] = []
     for ok_flag, msg in checks:
         if not ok_flag:
             console.print(f"[bold red]{msg}[/bold red]")
-            errors.append(msg)
+            checkout_errors.append(msg)
         elif msg.startswith("WARN") or msg.startswith("SKIP"):
             console.print(f"[yellow]{msg}[/yellow]")
         else:
             console.print(f"[bold green]{msg}[/bold green]")
 
-    if errors:
+    if checkout_errors:
         raise SystemExit(1)
 
     console.print("[bold green]verify-install: all checks passed[/bold green]")
 
 
-def _handle_update(ref: str | None) -> None:
-    """Handle --update pre-dispatch: update managed checkout to ref (default: main)."""
-    target_ref = ref or "main"
-    managed_src = _get_managed_src()
+@dataclass
+class ReconcilePlan:
+    to_install: set[str]
+    to_uninstall: set[str]
 
-    if not (managed_src / ".git").exists():
-        console.print(
-            "[bold red]Managed checkout not found.[/bold red]\n"
-            "Run the managed installer before using testpilot --update.\n"
-            f"  path: {managed_src}",
-        )
-        raise SystemExit(1)
 
-    # Only check for dirty state when the managed checkout actually exists.
-    # Skipping this guard on a nonexistent path would run git status against
-    # the developer's own working tree and produce false positives.
-    status = _git_run(
-        ["git", "status", "--porcelain"],
-        cwd=str(managed_src),
-    )
-    if status.returncode != 0:
-        detail = status.stderr.strip() or "git status failed"
-        console.print(
-            "[bold red]Cannot inspect managed checkout state.[/bold red]\n"
-            f"{detail}\n"
-            f"  path: {managed_src}",
-        )
-        raise SystemExit(status.returncode or 1)
-    if status.stdout.strip():
-        console.print(
-            "[bold red]Managed checkout has uncommitted changes.[/bold red]\n"
-            "Please commit, stash, or resolve local edits before updating.\n"
-            f"  path: {managed_src}",
-        )
-        raise SystemExit(1)
+def _reconcile_plan(installed: set[str], manifest: set[str]) -> ReconcilePlan:
+    return ReconcilePlan(to_install=manifest - installed, to_uninstall=installed - manifest)
 
-    installer = managed_src / "scripts" / "install.sh"
-    if not installer.exists():
-        console.print(
-            "[bold red]Managed installer not found.[/bold red]\n"
-            f"Expected scripts/install.sh under managed checkout: {installer}",
-        )
-        raise SystemExit(1)
 
-    console.print(f"[bold]Updating TestPilot to ref:[/bold] {target_ref}")
+def _probe_installed_plugins() -> set[str]:
+    """Return the set of plugin names currently installed in the managed environment."""
+    try:
+        eps = importlib.metadata.entry_points(group="testpilot.plugins")
+        return {ep.name for ep in eps}
+    except Exception:
+        return set()
 
-    env = os.environ.copy()
-    env.update(
-        {
-            "TESTPILOT_REF": target_ref,
-            "TESTPILOT_HOME": str(managed_src.parent),
-            "TESTPILOT_BIN_DIR": str(_get_wrapper_path().parent),
-            "TESTPILOT_SKILLS_DIR": str(_get_skills_root()),
-        }
-    )
 
-    with tempfile.TemporaryDirectory(prefix="testpilot-update-") as tmp_dir:
-        installer_copy = Path(tmp_dir) / "install.sh"
-        shutil.copy2(installer, installer_copy)
-        result = subprocess.run(
-            ["bash", str(installer_copy)],
-            cwd=str(managed_src),
-            env=env,
+def _packaged_manifest_path() -> Path | None:
+    """Locate the authoritative install-manifest.yaml.
+
+    Prefers the copy shipped inside the wheel (``testpilot/_install/``) so that a
+    real (non-checkout) install can always resolve it; falls back to repo-root
+    copies for dev checkouts. Returns None when none can be found — callers MUST
+    treat None as "unresolvable", never as "no plugins".
+    """
+    try:
+        packaged = importlib.resources.files("testpilot") / "_install" / "install-manifest.yaml"
+        if packaged.is_file():
+            return Path(str(packaged))
+    except Exception:
+        pass
+    here = Path(__file__).parent
+    candidates = [
+        here.parent.parent / "install-manifest.yaml",  # repo root from src/testpilot/
+        here.parent.parent.parent / "install-manifest.yaml",  # one more level up
+        Path.cwd() / "install-manifest.yaml",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _packaged_installer_path() -> Path | None:
+    """Locate the authoritative install.sh.
+
+    Prefers the copy shipped inside the wheel (``testpilot/_install/``); falls
+    back to ``scripts/install.sh`` for dev checkouts. Returns None when neither
+    can be found.
+    """
+    try:
+        packaged = importlib.resources.files("testpilot") / "_install" / "install.sh"
+        if packaged.is_file():
+            return Path(str(packaged))
+    except Exception:
+        pass
+    here = Path(__file__).parent
+    candidates = [
+        here.parent.parent / "scripts" / "install.sh",  # repo root from src/testpilot/
+        here.parent.parent.parent / "scripts" / "install.sh",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _resolve_manifest(ref):
+    """Load the authoritative install-manifest.yaml as a manifest object.
+
+    Returns an ``InstallManifest`` or ``None`` when the manifest cannot be
+    resolved. It must NEVER return an empty set/manifest that looks like "no
+    plugins" — an empty set would make the reconcile loop uninstall every
+    installed plugin (the C1 destructive bug).
+
+    NOTE: Online ref-fetch (fetching a specific git ref from the remote) is
+    performed by scripts/install.sh, not here. ``ref`` is accepted for signature
+    stability and forwarded to the installer by ``_handle_update``.
+    """
+    path = _packaged_manifest_path()
+    if path is None:
+        return None
+    from testpilot.install.manifest import load_manifest
+
+    try:
+        return load_manifest(path)
+    except Exception:
+        return None
+
+
+def _default_pip_runner(args: list[str]) -> int:
+    """Run pip in the managed venv."""
+    venv = _get_managed_venv()
+    pip = venv / "bin" / "pip"
+    result = subprocess.run([str(pip)] + args, capture_output=False)
+    return result.returncode
+
+
+def _default_installer_runner(env: dict) -> int:
+    """Invoke the packaged install.sh with the given environment overlaid."""
+    installer = _packaged_installer_path()
+    if installer is None:
+        print("Installer script not found in package or checkout.", file=sys.stderr)
+        return 1
+    full_env = dict(os.environ)
+    full_env.update({k: v for k, v in env.items() if v is not None})
+    result = subprocess.run(["bash", str(installer)], env=full_env)
+    return result.returncode
+
+
+def _run_installer(env: dict, *, runner=None) -> int:
+    """Injectable seam: run the authoritative installer with ``env`` overlaid.
+
+    Tests patch ``runner``; the default delegates to ``_default_installer_runner``
+    which executes the packaged ``install.sh``.
+    """
+    if runner is None:
+        runner = _default_installer_runner
+    return runner(env)
+
+
+def _last_good_path() -> Path:
+    """Return the rollback snapshot path under the managed home dir.
+
+    Derived from the same TESTPILOT_HOME base as ``_get_managed_venv()`` so the
+    snapshot always sits next to the venv it describes.
+    """
+    return _get_managed_venv().parent / ".last-good.txt"
+
+
+def _wheel_cache_path() -> Path:
+    """Return the offline wheel-cache dir under the managed home.
+
+    ``scripts/install.sh`` preserves the wheels it installs here so that the
+    ``testpilot --update`` rollback can reinstall the last-good set with
+    ``--no-index`` / ``--find-links`` — it must NEVER reach a public index
+    (dependency-confusion hazard for the private ``testpilot-core``/plugins).
+    """
+    return _get_managed_venv().parent / ".wheel-cache"
+
+
+def _snapshot_environment(managed_venv: Path, last_good: Path) -> None:
+    """Freeze the managed venv to ``last_good`` for rollback. Best-effort."""
+    try:
+        venv_python = managed_venv / "bin" / "python"
+        freeze_result = subprocess.run(
+            [str(venv_python), "-m", "pip", "freeze"],
+            capture_output=True,
             text=True,
         )
+        if freeze_result.returncode == 0:
+            last_good.parent.mkdir(parents=True, exist_ok=True)
+            last_good.write_text(freeze_result.stdout)
+    except Exception as e:
+        print(f"Warning: could not snapshot environment: {e}", file=sys.stderr)
 
-    if result.returncode != 0:
-        console.print(f"[bold red]Update failed with exit code {result.returncode}[/bold red]")
-        raise SystemExit(result.returncode)
 
-    console.print("[bold green]Update complete[/bold green]")
+def _verify_after_update() -> bool:
+    """Run wheel-mode verify-install as a post-update gate. True iff healthy."""
+    probe = _probe_wheel_install()
+    rows = _verify_install_wheel_mode(probe)
+    return all(ok for ok, _ in rows)
+
+
+def _handle_update(ref, *, runner=None, installer=None, verifier=None) -> int:
+    """Handle --update pre-dispatch: update testpilot in-place using the wheel model.
+
+    Wheel-model flow (no git checkout):
+    1. Require the managed venv to exist.
+    2. Resolve the authoritative manifest. If it cannot be resolved → exit
+       nonzero WITHOUT touching the installation (never uninstall-all).
+    3. Snapshot the current environment to .last-good.txt for rollback.
+    4. Re-(install) the pinned set by delegating to the packaged install.sh
+       (passing TESTPILOT_REF and TESTPILOT_MANIFEST), NOT `pip install <name>`.
+    5. Reconcile: uninstall plugins dropped from a non-empty manifest.
+    6. Gate on wheel-mode verify-install; on failure restore from .last-good.txt
+       and exit nonzero.
+    """
+    if runner is None:
+        runner = _default_pip_runner
+    if verifier is None:
+        verifier = _verify_after_update
+
+    managed_venv = _get_managed_venv()
+
+    if not managed_venv.exists():
+        print(
+            "No managed testpilot installation found at "
+            f"{managed_venv}.\n"
+            "Run the installer first: curl -fsSL <url> | bash",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Resolve the manifest FIRST. An unresolvable manifest must never lead to
+    # uninstalling every installed plugin — bail out untouched.
+    manifest = _resolve_manifest(ref)
+    if manifest is None:
+        print(
+            "Could not resolve the install manifest; refusing to modify the "
+            "installation. No plugins were changed.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    manifest_path = _packaged_manifest_path()
+    manifest_plugins = {p.name for p in manifest.plugins}
+
+    # Snapshot current environment for rollback.
+    last_good = _last_good_path()
+    _snapshot_environment(managed_venv, last_good)
+
+    # Probe installed plugins and compute reconcile plan.
+    installed_plugins = _probe_installed_plugins()
+    plan = _reconcile_plan(installed=installed_plugins, manifest=manifest_plugins)
+
+    # Re-(install) the pinned set via the authoritative installer — NOT pip
+    # bare-name (which would hit public PyPI for private plugins).
+    installer_env = {
+        "TESTPILOT_REF": ref or "",
+        "TESTPILOT_MANIFEST": str(manifest_path) if manifest_path else "",
+    }
+    rc = _run_installer(installer_env, runner=installer)
+    if rc != 0:
+        print("Update failed: installer returned nonzero.", file=sys.stderr)
+        sys.exit(1)
+
+    # Uninstall dropped plugins (only when the manifest is non-empty).
+    if manifest_plugins:
+        for plugin_name in plan.to_uninstall:
+            rc = runner(["uninstall", "-y", plugin_name])
+            if rc != 0:
+                print(f"Warning: failed to uninstall {plugin_name}", file=sys.stderr)
+
+    # Post-update gate: verify the install; roll back on failure.
+    if not verifier():
+        print(
+            "Post-update verify-install failed; rolling back from snapshot.",
+            file=sys.stderr,
+        )
+        _manual_recovery = (
+            "Automatic rollback failed; reinstall from a known-good bundle via "
+            "`install.sh --offline <bundle>`."
+        )
+        if last_good.exists():
+            # CRITICAL: rollback must be OFFLINE-ONLY. A bare `pip install -r`
+            # resolves the snapshot (which pins the private testpilot-core and
+            # plugins) against public PyPI — the exact dependency-confusion /
+            # failure hazard the main path avoids. Force --no-index and resolve
+            # only from the local wheel cache that install.sh preserved.
+            wheel_cache = _wheel_cache_path()
+            rc = runner(
+                [
+                    "install",
+                    "--no-index",
+                    "--find-links",
+                    str(wheel_cache),
+                    "-r",
+                    str(last_good),
+                ]
+            )
+            if rc != 0:
+                # Never silently fall back to a public index — surface a clear
+                # manual-recovery path and exit nonzero.
+                print(_manual_recovery, file=sys.stderr)
+        else:
+            print(
+                "No rollback snapshot found at "
+                f"{last_good}. {_manual_recovery}",
+                file=sys.stderr,
+            )
+        sys.exit(1)
+
+    print("Update complete.")
+    return 0
+
+
+def _detect_legacy_installs(probe: dict) -> list[str]:
+    """Pure function: map detected legacy install shapes to action keys.
+
+    Args:
+        probe: dict with keys:
+            - user_site_testpilot: bool - testpilot dist-info found in user site-packages
+            - pipx_testpilot: bool - testpilot found in pipx list
+            - legacy_src: bool - ~/.local/share/testpilot/src exists
+
+    Returns:
+        list of action keys: uninstall_user_site, uninstall_pipx, remove_legacy_src
+    """
+    actions = []
+    if probe.get("user_site_testpilot"):
+        actions.append("uninstall_user_site")
+    if probe.get("pipx_testpilot"):
+        actions.append("uninstall_pipx")
+    if probe.get("legacy_src"):
+        actions.append("remove_legacy_src")
+    return actions
+
+
+def _probe_legacy_installs() -> dict:
+    """Best-effort probe of legacy install shapes. Never raises.
+
+    Returns a dict suitable for passing to _detect_legacy_installs().
+    """
+    result = {
+        "user_site_testpilot": False,
+        "pipx_testpilot": False,
+        "legacy_src": False,
+    }
+
+    # Check user site-packages for testpilot dist-info
+    try:
+        import site
+        user_site = site.getusersitepackages()
+        if user_site:
+            user_site_path = Path(user_site)
+            if user_site_path.exists():
+                for entry in user_site_path.iterdir():
+                    name = entry.name.lower()
+                    if (name.startswith("testpilot") or name.startswith("testpilot_core")) and name.endswith(".dist-info"):
+                        result["user_site_testpilot"] = True
+                        break
+    except Exception:
+        pass
+
+    # Check pipx
+    try:
+        proc = subprocess.run(
+            ["pipx", "list", "--short"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0 and "testpilot" in proc.stdout.lower():
+            result["pipx_testpilot"] = True
+    except Exception:
+        pass
+
+    # Check legacy src checkout — use _get_managed_src() (TESTPILOT_HOME-aware)
+    # so detection targets the same path that removal (_default_legacy_src_remover
+    # via _get_managed_src) would delete.
+    try:
+        legacy_src = _get_managed_src()
+        result["legacy_src"] = legacy_src.exists()
+    except Exception:
+        pass
+
+    return result
+
+
+def _default_migration_runner(cmd: list[str]) -> int:
+    """Best-effort subprocess runner for migration actions. Never raises."""
+    try:
+        return subprocess.run(cmd).returncode
+    except Exception as exc:
+        print(f"Warning: migration command failed ({cmd[0]}): {exc}", file=sys.stderr)
+        return 1
+
+
+def _default_legacy_src_remover(path: Path) -> None:
+    """Remove the legacy src checkout only (never the managed venv)."""
+    if path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _handle_install_migrate(*, probe=None, runner=None, remover=None) -> int:
+    """Detect legacy install shapes and migrate them to the wheel model.
+
+    Conservative + best-effort. Actions:
+      - uninstall_user_site: `python -m pip uninstall -y testpilot testpilot-core`
+        using a NON-managed interpreter so it targets the user/system site.
+      - uninstall_pipx: `pipx uninstall testpilot` / `testpilot-core`.
+      - remove_legacy_src: remove ~/.local/share/testpilot/src (NOT the venv).
+    After acting, WARN if `testpilot` still resolves outside the managed venv.
+    """
+    if probe is None:
+        probe = _probe_legacy_installs()
+    if runner is None:
+        runner = _default_migration_runner
+    if remover is None:
+        remover = _default_legacy_src_remover
+
+    actions = _detect_legacy_installs(probe)
+    if not actions:
+        print("No legacy testpilot installs detected; nothing to migrate.")
+        return 0
+
+    venv_bin = _get_managed_venv() / "bin"
+    for action in actions:
+        if action == "uninstall_user_site":
+            system_python = _system_python_outside(venv_bin) or "python3"
+            runner([system_python, "-m", "pip", "uninstall", "-y", "testpilot", "testpilot-core"])
+        elif action == "uninstall_pipx":
+            runner(["pipx", "uninstall", "testpilot"])
+            runner(["pipx", "uninstall", "testpilot-core"])
+        elif action == "remove_legacy_src":
+            remover(_get_managed_src())
+
+    # Warn if testpilot still resolves outside the managed venv after migration.
+    system_python = _system_python_outside(venv_bin)
+    if system_python:
+        try:
+            result = subprocess.run(
+                [system_python, "-c",
+                 "import os, testpilot; print(os.path.dirname(testpilot.__file__))"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                print(
+                    "WARN: testpilot still importable outside the managed venv: "
+                    f"{result.stdout.strip()}",
+                    file=sys.stderr,
+                )
+        except Exception:
+            pass
+
+    print("Legacy migration complete.")
+    return 0
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -545,7 +1141,11 @@ def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> 
     is_eager=True,
     expose_value=True,
     metavar="REF",
-    help="Update managed checkout to REF (default: main) and exit.",
+    help=(
+        "Reinstall and reconcile the managed wheel install from its pinned "
+        "manifest, then exit. REF is accepted but cross-version update is not "
+        "yet implemented; the currently-pinned set is reinstalled."
+    ),
     is_flag=False,
     flag_value="main",
 )
@@ -570,6 +1170,13 @@ def main(
     """TestPilot — plugin-based test automation for embedded devices."""
     # Pre-dispatch: --update and --verify-install run before normal routing.
     if update_ref is not None:
+        if update_ref not in (None, "main"):
+            click.echo(
+                f"note: --update reinstalls the currently-pinned manifest set; "
+                f"targeting REF {update_ref!r} for a cross-version update is not "
+                f"yet implemented.",
+                err=True,
+            )
         _handle_update(update_ref)
         ctx.exit(0)
         return
@@ -707,6 +1314,37 @@ def _register_plugins(root: click.Group) -> None:
             root.commands.clear()
             root.commands.update(commands_before)
             click.echo(f"WARN: skipped plugin '{name}' CLI: {exc}", err=True)
+
+
+@main.command("install-doctor")
+@click.option(
+    "--manifest",
+    "manifest_path",
+    default=None,
+    type=click.Path(),
+    help="Path to install-manifest.yaml (default: install-manifest.yaml in CWD).",
+)
+def install_doctor(manifest_path: str | None) -> None:
+    """Check manifest plugin API-compat against installed core SDK version."""
+    from testpilot.api import API_VERSION
+    from testpilot.install.manifest import load_manifest
+    from testpilot.install.compat import manifest_compat_report
+
+    path = Path(manifest_path) if manifest_path else Path.cwd() / "install-manifest.yaml"
+    m = load_manifest(path)
+    pairs = [(p.name, p.api_version) for p in m.plugins]
+    rep = manifest_compat_report(API_VERSION, pairs)
+    for failure in rep.failures:
+        click.echo(failure)
+    if not rep.ok:
+        raise SystemExit(1)
+    click.echo("manifest compatible")
+
+
+@main.command("install-migrate", hidden=True)
+def install_migrate() -> None:
+    """(hidden) Migrate a legacy user-site / pipx / git-checkout install to the wheel model."""
+    raise SystemExit(_handle_install_migrate())
 
 
 # Plugin CLI commands are install-time registrations from this checkout.

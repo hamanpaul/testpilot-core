@@ -1,6 +1,6 @@
 [project]
-name = "testpilot"
-version = "0.3.0"
+name = "testpilot-core"
+dynamic = ["version"]
 description = "Plugin-based test automation framework for embedded device verification"
 readme = "README.md"
 license = {text = "MIT"}
@@ -27,8 +27,17 @@ testpilot = "testpilot.cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "VERSION"
+pattern = "(?P<version>.+)"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/testpilot"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"skills/testpilot-normal-test" = "testpilot/_skills/testpilot-normal-test"
+"install-manifest.yaml" = "testpilot/_install/install-manifest.yaml"
+"scripts/install.sh" = "testpilot/_install/install.sh"
 
 [tool.ruff]
 target-version = "py311"

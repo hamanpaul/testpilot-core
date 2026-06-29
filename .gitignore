@@ -16,11 +16,6 @@ build/
 .vscode/
 .idea/
 
-# Test reports (auto-generated) — only templates/ allowed
-plugins/wifi_llapi/reports/*
-!plugins/wifi_llapi/reports/templates/
-!plugins/wifi_llapi/reports/.gitkeep
-
 # OS
 .DS_Store
 Thumbs.db

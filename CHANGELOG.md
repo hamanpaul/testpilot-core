@@ -9,6 +9,117 @@ preparation.
 
 ## [Unreleased]
 
+### Added
+
+- `install-manifest.yaml` with pinned core, plugin, and serialwrap versions for manifest-driven managed installs.
+- `testpilot install-doctor` CLI command: checks manifest plugin API-compat against the installed core SDK version (`testpilot.api.API_VERSION`); exits non-zero on incompatibility.
+- Online one-click managed-venv wheel install via `scripts/install.sh` with `TESTPILOT_INSTALL_TOKEN` (downloads pinned wheels via `gh release download`); subset install via `--plugins`.
+- Offline bundle install via `scripts/install.sh --offline <bundle.tar.gz>`; bundle built by `scripts/build-bundle.sh` on a networked Linux box; verifies `SHA256SUMS`, installs with `--no-index`.
+- Wheel-mode `--verify-install`: reports managed venv health and wheel-installed package versions.
+- Wheel-world `--update`: re-resolves manifest, reinstalls pinned wheels, reconciles plugins.
+- Legacy-install migration detection: warns when a `~/.local/share/testpilot/src` git-checkout install is detected and guides migration to the wheel model.
+- Skill `testpilot-normal-test` shipped as wheel data under `testpilot/_skills/testpilot-normal-test` (via `pyproject.toml` `force-include`).
+- CI: wheel build (`uv build --wheel`) and upload to GitHub Release asset after tag-triggered release creation.
+- CI: manifest API-compatibility gate (`testpilot install-doctor --manifest install-manifest.yaml`) and offline bundle smoke test in the PR/push workflow.
+- `tests/test_wheel_contents.py`: wheel-content assertion locking that the skill is present and no runtime report bundle dirs leak into the wheel.
+
+### Fixed
+
+- **`--verify-install` version-mirror check now understands dynamic versions.**
+  `pyproject.toml` uses `dynamic = ["version"]` (sourced from the `VERSION`
+  file via `[tool.hatch.version]`), but `_check_version_mirrors()` still read
+  `data["project"]["version"]` and surfaced a spurious
+  `pyproject.toml unreadable: 'version'` FAIL in checkout-mode verify-install.
+  It now reads the hatch version path (mirroring
+  `tests/test_version_metadata.py` / `scripts/check_release_version.py`) when
+  the version is dynamic.
+- **Rollback snapshot path now honors `TESTPILOT_HOME`.** `_last_good_path()`
+  hardcoded `~/.local/share/testpilot/.last-good.txt` while `_get_managed_venv()`
+  respects `TESTPILOT_HOME`; the snapshot is now derived from the same base so it
+  always sits next to the venv it describes.
+- **Legacy-checkout probe now honors `TESTPILOT_HOME`.** `_probe_legacy_installs()`
+  checked the hardcoded default `~/.local/share/testpilot/src` while removal uses
+  `_get_managed_src()` (TESTPILOT_HOME-aware); the probe now uses
+  `_get_managed_src()` so detection and removal target the same path.
+- **CRITICAL: `--update` rollback can no longer reach a public index.** The
+  rollback path ran `pip install -r <pip-freeze-snapshot>`, which resolves the
+  private `testpilot-core`/plugins against public PyPI (dependency-confusion /
+  install failure) — the same hazard the main install path avoids. Rollback now
+  forces `pip install --no-index --find-links <wheel-cache> -r <snapshot>`
+  against the local wheel cache the installer preserves under
+  `${TESTPILOT_HOME}/.wheel-cache`, checks the runner return code, and on
+  failure (or a missing snapshot) prints a manual-recovery message
+  (`install.sh --offline <bundle>`) and exits nonzero instead of silently
+  retrying online. `scripts/install.sh` online mode now copies each used wheel
+  into `${TESTPILOT_HOME}/.wheel-cache` after a successful install.
+- `scripts/install.sh` robustness: offline mode now validates the bundle's
+  `linux-<arch>` tag against `uname -m` BEFORE extraction (fail fast on
+  wrong-arch); the online per-package wheel download dir is tracked and cleaned
+  by the EXIT trap so it no longer leaks when `pip` aborts under
+  `set -euo pipefail`; and venv creation no longer hides a broken interpreter
+  behind `|| true` — it fails if `${VENV}/bin/python` is missing or not
+  executable.
+- **CRITICAL: `testpilot --update` no longer destroys a real wheel install.** The
+  authoritative `install-manifest.yaml` and `install.sh` now ship inside the
+  wheel (`testpilot/_install/`), so `_resolve_manifest()` resolves them in a
+  real install instead of returning an empty set that made the reconcile loop
+  `pip uninstall` every plugin. An unresolvable manifest now exits nonzero
+  WITHOUT touching the installation.
+- **`--update` reinstall no longer hits public PyPI for private plugins.** The
+  pinned set is reinstalled by delegating to the packaged `install.sh` (via an
+  injectable seam, passing `TESTPILOT_REF` and `TESTPILOT_MANIFEST`) instead of
+  `pip install --upgrade <bare-name>` (dependency-confusion risk). Dropped
+  plugins are still reconciled via the pip runner.
+- `--update` snapshots the environment (`.last-good.txt`) and gates on
+  wheel-mode `--verify-install`; on verify failure it restores from the
+  snapshot and exits nonzero. `REF` is accepted and forwarded as
+  `TESTPILOT_REF`, but cross-version update is not yet implemented — the
+  currently-pinned manifest set is reinstalled regardless of `REF` (a runtime
+  notice is printed for a non-default `REF`). Fetching a new ref's manifest is
+  a tracked follow-up.
+- Legacy-install migration is now wired in (previously dead code): a hidden
+  `testpilot install-migrate` command runs the detect/probe pair and removes
+  legacy user-site / pipx / `~/.local/share/testpilot/src` checkouts via an
+  injectable runner; `scripts/install.sh` invokes it (best-effort) after the
+  managed venv is populated, in both online and offline modes.
+- Wheel-mode stray-import detection now uses a non-managed interpreter
+  (`_system_python_outside`) instead of the managed venv python, so it can
+  actually detect a `testpilot` importable outside the managed venv.
+- `scripts/install.sh` online mode now installs serialwrap WITH its dependency
+  closure (it is public and does not depend on testpilot-core); only core and
+  plugins keep the `--no-deps` path. The install helper's flag is renamed
+  `is_core` → `with_deps` for clarity and the git+https fallback honors it too.
+- `scripts/install.sh` GIT_ASKPASS hardening: the askpass helper now reads the
+  token from the exported env at call time (`exec printf '%s\n' "$GH_TOKEN"`)
+  instead of embedding the literal secret, and its cleanup is registered in the
+  EXIT trap so it is removed even when `pip` fails under `set -euo pipefail`
+  (a function-scoped RETURN trap does not fire on a `set -e` abort).
+
+### Changed
+
+- **CI offline smoke is now a real installer gate.**
+  `tests/test_offline_install_integration.sh` previously `pip install`ed a
+  wheelhouse directly and `exit 0`'d on any network/download failure, so the
+  actual offline-installer paths (checksum, python+arch tag checks, extraction,
+  wrapper, skill sync, post-install verify) were never exercised. It now stages
+  a real bundle (`wheelhouse/` + `requirements.txt` + `SHA256SUMS`, in
+  `build-bundle.sh`'s shape) and runs `bash scripts/install.sh --offline
+  <bundle>` into an isolated `TESTPILOT_HOME`, asserting `testpilot --version`
+  and `testpilot --verify-install` pass. In CI (`CI=true`) a
+  dependency-prep/network failure is a HARD FAIL; locally with no network it
+  prints an explicit SKIP. The CI step pins `CI: "true"`.
+- `--update` help text updated to describe the wheel-model reconcile (was stale
+  "managed checkout" wording); README CLI-help marker blocks regenerated to
+  match.
+- Wheel-mode `--verify-install` now reports a failing plugin with its captured
+  error TYPE (e.g. `failed to load (ImportError)`); only an actual
+  `IncompatiblePluginError` is reported as `api-incompatible`.
+
+### Changed — BREAKING
+
+- **Distribution renamed `testpilot` → `testpilot-core`** (`pip install testpilot-core`); the import package `testpilot` is unchanged.
+- Managed install model changed from git-checkout + editable source to wheel-based venv; `~/.local/share/testpilot/src` is no longer created or used.
+
 ## [0.3.0]
 
 - **CI 可重現性 + 鎖定 click 渲染**: `uv.lock` 改為版控（移出 `.gitignore`），CI

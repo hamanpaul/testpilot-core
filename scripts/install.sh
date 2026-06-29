@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────────────
-# TestPilot Managed Installer
+# TestPilot Managed Installer  (wheel-world model)
 #
 # Creates or updates a managed TestPilot installation:
-#   ~/.local/share/testpilot/src       ← managed checkout
-#   ~/.local/share/testpilot/.venv     ← runtime virtualenv
-#   ~/.local/bin/testpilot             ← wrapper (no source activation needed)
-#   ~/.agents/skills/testpilot-normal-test  ← skill sync
-#   serialwrap from git                ← serialwrap install/update
+#   ~/.local/share/testpilot/.venv     <- runtime virtualenv
+#   ~/.local/bin/testpilot             <- wrapper (no source activation needed)
+#   ~/.agents/skills/testpilot-normal-test  <- skill sync from installed package
 #
 # Usage:
-#   bash scripts/install.sh
-#   # Or with overrides:
-#   TESTPILOT_REPO_URL=file:///path/to/local/testpilot bash scripts/install.sh
+#   bash scripts/install.sh [--plugins <csv>] [--offline <bundle.tar.gz>]
 #
 # Environment variable overrides:
-#   TESTPILOT_REPO_URL       – source repo (default: https://github.com/paulc-arc/testpilot.git)
-#   TESTPILOT_REF            – branch/tag/commit, or "latest-release" (default: latest-release)
-#   TESTPILOT_HOME           – base for managed install (default: ~/.local/share/testpilot)
-#   TESTPILOT_BIN_DIR        – wrapper destination (default: ~/.local/bin)
-#   TESTPILOT_SKILLS_DIR     – skill destination (default: ~/.agents/skills)
-#   SERIALWRAP_REPO_URL      – serialwrap source (default: https://github.com/paulc-arc/serialwrap.git)
-#   SERIALWRAP_INSTALL_DIR   – serialwrap checkout root (default: ~/.local/share/serialwrap)
+#   TESTPILOT_INSTALL_TOKEN  - GH PAT / OAuth token (preferred)
+#   GH_TOKEN                 - fallback token (standard gh CLI env var)
+#   TESTPILOT_REF            - git ref to fetch manifest from (default: HEAD)
+#   TESTPILOT_HOME           - base for managed install (default: ~/.local/share/testpilot)
+#   TESTPILOT_BIN_DIR        - wrapper destination (default: ~/.local/bin)
+#   TESTPILOT_SKILLS_DIR     - skill destination (default: ~/.agents/skills)
+#   TESTPILOT_MANIFEST       - local file path to override manifest fetch
+#
+# SECURITY: tokens are NEVER interpolated into URLs or echoed to stdout.
+#           GH_TOKEN is exported for `gh` CLI use only.
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
+# NOTE: xtrace (debug echo) is intentionally NOT enabled — it would expose GH_TOKEN in CI logs.
 
 BOLD="\033[1m"
 GREEN="\033[32m"
@@ -35,157 +35,464 @@ RESET="\033[0m"
 info()  { echo -e "${CYAN}[INFO]${RESET}  $*"; }
 ok()    { echo -e "${GREEN}[OK]${RESET}    $*"; }
 warn()  { echo -e "${YELLOW}[WARN]${RESET}  $*"; }
-fail()  { echo -e "${RED}[FAIL]${RESET}  $*"; exit 1; }
+fail()  { echo -e "${RED}[FAIL]${RESET}  $*" >&2; exit 1; }
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
-TESTPILOT_REPO_URL="${TESTPILOT_REPO_URL:-https://github.com/paulc-arc/testpilot.git}"
-TESTPILOT_REF="${TESTPILOT_REF:-latest-release}"
 TESTPILOT_HOME="${TESTPILOT_HOME:-${HOME}/.local/share/testpilot}"
 TESTPILOT_BIN_DIR="${TESTPILOT_BIN_DIR:-${HOME}/.local/bin}"
 TESTPILOT_SKILLS_DIR="${TESTPILOT_SKILLS_DIR:-${HOME}/.agents/skills}"
-SERIALWRAP_REPO_URL="${SERIALWRAP_REPO_URL:-https://github.com/paulc-arc/serialwrap.git}"
-SERIALWRAP_INSTALL_DIR="${SERIALWRAP_INSTALL_DIR:-${HOME}/.local/share/serialwrap}"
+TESTPILOT_REF="${TESTPILOT_REF:-}"
+TESTPILOT_MANIFEST="${TESTPILOT_MANIFEST:-}"
 
-MANAGED_SRC="${TESTPILOT_HOME}/src"
-MANAGED_VENV="${TESTPILOT_HOME}/.venv"
-SERIALWRAP_SRC="${SERIALWRAP_INSTALL_DIR}/src"
+VENV="${TESTPILOT_HOME}/.venv"
+# Offline rollback cache: install.sh preserves used wheels here so that
+# `testpilot --update` rollback can reinstall the last-good set with
+# --no-index / --find-links and NEVER reach a public index.
+WHEEL_CACHE="${TESTPILOT_HOME}/.wheel-cache"
 
-# ── 1. Prerequisites ──────────────────────────────────────────────────────────
-info "Checking prerequisites..."
-command -v git     >/dev/null 2>&1 || fail "git not found. Please install git."
-command -v python3 >/dev/null 2>&1 || fail "python3 not found. Please install Python 3.11+."
+# ── Arg parsing ───────────────────────────────────────────────────────────────
+OFFLINE_BUNDLE=""
+SELECTED_PLUGINS=""
 
-PYTHON_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
-PYTHON_MAJOR="${PYTHON_VER%%.*}"
-PYTHON_MINOR="${PYTHON_VER#*.}"
-if [ "$PYTHON_MAJOR" -lt 3 ] || { [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 11 ]; }; then
-    fail "Python 3.11+ required, found $PYTHON_VER"
-fi
-ok "Python $PYTHON_VER"
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --plugins)
+            SELECTED_PLUGINS="${2:-}"
+            shift 2
+            ;;
+        --offline)
+            OFFLINE_BUNDLE="${2:-}"
+            shift 2
+            ;;
+        *)
+            fail "Unknown argument: $1"
+            ;;
+    esac
+done
 
-# Prefer uv
-USE_UV=false
-if command -v uv >/dev/null 2>&1; then
-    USE_UV=true
-    ok "uv found (preferred)"
-else
-    warn "uv not found, using pip/venv"
-fi
-
-# ── 2. Resolve latest-release ref ─────────────────────────────────────────────
-if [ "$TESTPILOT_REF" = "latest-release" ]; then
-    info "Resolving latest-release from $TESTPILOT_REPO_URL ..."
-    RESOLVED=$(
-        git ls-remote --tags "$TESTPILOT_REPO_URL" 'refs/tags/v[0-9]*.[0-9]*.[0-9]*' \
-        | grep -v '\^{}' \
-        | awk '{print $2}' \
-        | sort -V \
-        | tail -1 \
-        | sed 's|refs/tags/||'
-    )
-    if [ -z "$RESOLVED" ]; then
-        warn "No stable vX.Y.Z tag found; falling back to main"
-        TESTPILOT_REF="main"
+# ── Helper: create/refresh managed venv ───────────────────────────────────────
+_create_venv() {
+    info "Setting up managed virtualenv at ${VENV} ..."
+    mkdir -p "$TESTPILOT_HOME"
+    if command -v uv >/dev/null 2>&1; then
+        uv venv "$VENV" 2>/dev/null || true
     else
-        TESTPILOT_REF="$RESOLVED"
-        ok "Resolved latest-release → $TESTPILOT_REF"
+        python3 -m venv "$VENV" 2>/dev/null || true
     fi
-fi
+    # `|| true` keeps creation idempotent (re-running over an existing venv is
+    # fine) but must NOT mask a genuinely broken venv: assert the interpreter
+    # actually exists and is executable before proceeding.
+    [[ -x "${VENV}/bin/python" ]] \
+        || fail "Virtualenv creation failed: ${VENV}/bin/python is missing or not executable."
+    ok "Virtualenv ready: ${VENV}"
+}
 
-info "Installing TestPilot ref: $TESTPILOT_REF from $TESTPILOT_REPO_URL"
-
-# ── 3. Managed checkout ───────────────────────────────────────────────────────
-if [ -d "$MANAGED_SRC/.git" ]; then
-    info "Updating managed checkout at $MANAGED_SRC ..."
-    git -C "$MANAGED_SRC" fetch origin
-    git -C "$MANAGED_SRC" checkout "$TESTPILOT_REF"
-    # Fast-forward local branch to origin; silently skips for tags/commit SHAs.
-    git -C "$MANAGED_SRC" merge --ff-only "origin/$TESTPILOT_REF" 2>/dev/null || \
-        warn "testpilot fast-forward failed (expected for tag/SHA refs; diverged branch may need manual reset)"
-    ok "Managed checkout updated to $TESTPILOT_REF"
-else
-    info "Cloning $TESTPILOT_REPO_URL → $MANAGED_SRC ..."
-    mkdir -p "$(dirname "$MANAGED_SRC")"
-    git clone "$TESTPILOT_REPO_URL" "$MANAGED_SRC"
-    git -C "$MANAGED_SRC" checkout "$TESTPILOT_REF"
-    ok "Managed checkout created"
-fi
-
-# ── 4. Managed virtualenv + TestPilot install ─────────────────────────────────
-info "Setting up managed virtualenv at $MANAGED_VENV ..."
-if $USE_UV; then
-    if [ ! -d "$MANAGED_VENV/bin" ]; then
-        uv venv "$MANAGED_VENV"
+# ── Helper: pip install into managed venv ────────────────────────────────────
+_venv_pip() {
+    if command -v uv >/dev/null 2>&1; then
+        uv pip install --python "${VENV}/bin/python" "$@"
+    else
+        "${VENV}/bin/pip" install "$@"
     fi
-    uv pip install --python "$MANAGED_VENV/bin/python" -e "$MANAGED_SRC" \
-        -e "$MANAGED_SRC/plugins/wifi_llapi" -e "$MANAGED_SRC/plugins/brcm_fw_upgrade"
-else
-    if [ ! -d "$MANAGED_VENV/bin" ]; then
-        python3 -m venv "$MANAGED_VENV"
+}
+
+# ── Helper: write wrapper + sync skill (shared by both modes) ─────────────────
+_write_wrapper_and_skill() {
+    local venv="$1"
+    local bin_dir="$2"
+    local skills_dir="$3"
+
+    # Wrapper
+    info "Creating wrapper at ${bin_dir}/testpilot ..."
+    mkdir -p "$bin_dir"
+    local console_script="${venv}/bin/testpilot"
+    printf '#!/usr/bin/env sh\nexec "%s" "$@"\n' "$console_script" > "${bin_dir}/testpilot"
+    chmod +x "${bin_dir}/testpilot"
+    ok "Wrapper created (exec ${console_script})"
+
+    # Skill sync via importlib.resources from the installed package (no source tree needed)
+    local skill_dst="${skills_dir}/testpilot-normal-test"
+    info "Syncing packaged skill -> ${skill_dst} ..."
+    mkdir -p "$skills_dir"
+    "${venv}/bin/python" -c "
+import importlib.resources as r, shutil, pathlib, sys
+dst = pathlib.Path(sys.argv[1])
+try:
+    pkg = r.files('testpilot') / '_skills' / 'testpilot-normal-test'
+    if dst.exists():
+        shutil.rmtree(str(dst))
+    shutil.copytree(str(pkg), str(dst))
+except Exception as e:
+    print('Skill sync skipped:', e, file=sys.stderr)
+    sys.exit(1)
+" "$skill_dst" 2>&1 && ok "Skill synced" || warn "Skill not found in installed package (skip)"
+}
+
+# ── Helper: migrate legacy installs to the wheel model (best-effort, non-fatal) ─
+# Detects and cleans up old user-site / pipx / git-checkout installs so the
+# managed venv is the single source of truth. Failures here never abort install.
+_run_legacy_migration() {
+    local venv="$1"
+    info "Checking for legacy testpilot installs to migrate ..."
+    "${venv}/bin/testpilot" install-migrate || true
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# OFFLINE MODE
+# ══════════════════════════════════════════════════════════════════════════════
+if [[ -n "$OFFLINE_BUNDLE" ]]; then
+    info "Running in OFFLINE mode with bundle: ${OFFLINE_BUNDLE}"
+    [[ -f "$OFFLINE_BUNDLE" ]] || fail "Bundle file not found: ${OFFLINE_BUNDLE}"
+
+    # 1. Verify SHA256SUMS sidecar
+    # Compare checksums directly using the absolute bundle path (avoids cwd dependency).
+    SUMS_FILE="${OFFLINE_BUNDLE}.SHA256SUMS"
+    [[ -f "$SUMS_FILE" ]] || fail "SHA256SUMS sidecar not found: ${SUMS_FILE}"
+    info "Verifying bundle checksum..."
+    EXPECTED_HASH="$(awk 'NR==1{print $1}' "$SUMS_FILE")"
+    ACTUAL_HASH="$(sha256sum "$OFFLINE_BUNDLE" | awk '{print $1}')"
+    if [[ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]]; then
+        fail "Bundle checksum verification FAILED (expected=${EXPECTED_HASH}, got=${ACTUAL_HASH}). Bundle may be corrupt or tampered."
     fi
-    "$MANAGED_VENV/bin/pip" install -e "$MANAGED_SRC" \
-        -e "$MANAGED_SRC/plugins/wifi_llapi" -e "$MANAGED_SRC/plugins/brcm_fw_upgrade"
-fi
-ok "Managed virtualenv ready"
+    ok "Bundle checksum verified"
 
-# ── 5. Wrapper at TESTPILOT_BIN_DIR/testpilot ────────────────────────────────
-info "Creating wrapper at $TESTPILOT_BIN_DIR/testpilot ..."
-mkdir -p "$TESTPILOT_BIN_DIR"
-# Use printf to avoid heredoc quoting issues; hardcode absolute venv path.
-CONSOLE_SCRIPT="${MANAGED_VENV}/bin/testpilot"
-printf '#!/usr/bin/env sh\nexec "%s" "$@"\n' "$CONSOLE_SCRIPT" > "$TESTPILOT_BIN_DIR/testpilot"
-chmod +x "$TESTPILOT_BIN_DIR/testpilot"
-ok "Wrapper created (exec $CONSOLE_SCRIPT)"
-
-# ── 6. Skill sync ────────────────────────────────────────────────────────────
-SKILL_SRC="$MANAGED_SRC/skills/testpilot-normal-test"
-SKILL_DST="$TESTPILOT_SKILLS_DIR/testpilot-normal-test"
-if [ -d "$SKILL_SRC" ]; then
-    info "Syncing skill testpilot-normal-test → $SKILL_DST ..."
-    mkdir -p "$TESTPILOT_SKILLS_DIR"
-    rm -rf "$SKILL_DST"
-    cp -r "$SKILL_SRC" "$SKILL_DST"
-    ok "Skill synced"
-else
-    warn "Skill source not found at $SKILL_SRC (skip skill sync)"
-fi
-
-# ── 7. Serialwrap install/update ──────────────────────────────────────────────
-info "Installing/updating serialwrap from $SERIALWRAP_REPO_URL ..."
-if [ -d "$SERIALWRAP_SRC/.git" ]; then
-    git -C "$SERIALWRAP_SRC" fetch origin
-    SERIALWRAP_BRANCH=$(git -C "$SERIALWRAP_SRC" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
-    if [ -z "$SERIALWRAP_BRANCH" ] || [ "$SERIALWRAP_BRANCH" = "HEAD" ]; then
-        SERIALWRAP_BRANCH="main"
+    # 2. Assert python minor version matches cp<XY> token in bundle name
+    BUNDLE_BASENAME="$(basename "$OFFLINE_BUNDLE")"
+    if [[ "$BUNDLE_BASENAME" =~ cp([0-9]+) ]]; then
+        BUNDLE_PYMINOR="${BASH_REMATCH[1]}"
+        # e.g. cp311 -> "311"; compare to running python's "3.11" -> "311"
+        RUNNING_PYMINOR="$(python3 -c 'import sys; print(str(sys.version_info.major)+str(sys.version_info.minor))' 2>/dev/null || echo "0")"
+        if [[ "$BUNDLE_PYMINOR" != "$RUNNING_PYMINOR" ]]; then
+            RUNNING_DOT="$(python3 -c 'import sys; print(str(sys.version_info.major)+"."+str(sys.version_info.minor))' 2>/dev/null)"
+            fail "Python version mismatch: bundle requires cp${BUNDLE_PYMINOR} but running python is ${RUNNING_DOT} (cp${RUNNING_PYMINOR}). Install the correct python version or obtain a matching bundle."
+        fi
+        ok "Python version matches bundle (cp${BUNDLE_PYMINOR})"
+    else
+        warn "Bundle name has no cp<XY> token; skipping python version check."
     fi
-    git -C "$SERIALWRAP_SRC" merge --ff-only "origin/$SERIALWRAP_BRANCH" 2>/dev/null || \
-        warn "serialwrap fast-forward failed; manual update may be needed"
-    ok "serialwrap updated"
-else
-    mkdir -p "$(dirname "$SERIALWRAP_SRC")"
-    git clone "$SERIALWRAP_REPO_URL" "$SERIALWRAP_SRC"
-    ok "serialwrap cloned"
-fi
 
-if $USE_UV; then
-    uv pip install --python "$MANAGED_VENV/bin/python" -e "$SERIALWRAP_SRC" 2>/dev/null || \
-        warn "serialwrap install into managed venv failed (may need manual fix)"
-else
-    "$MANAGED_VENV/bin/pip" install -e "$SERIALWRAP_SRC" 2>/dev/null || \
-        warn "serialwrap install into managed venv failed (may need manual fix)"
-fi
+    # 2b. Assert the bundle's linux-<arch> tag matches this machine's arch
+    #     (fail fast BEFORE extraction — a wrong-arch wheelhouse cannot install).
+    RUNNING_ARCH="$(uname -m)"
+    if [[ "$BUNDLE_BASENAME" =~ linux-([A-Za-z0-9_]+)-cp ]]; then
+        BUNDLE_ARCH="${BASH_REMATCH[1]}"
+        if [[ "$BUNDLE_ARCH" != "$RUNNING_ARCH" ]]; then
+            fail "Architecture mismatch: bundle is for linux-${BUNDLE_ARCH} but this machine is ${RUNNING_ARCH}. Obtain a bundle built for ${RUNNING_ARCH}."
+        fi
+        ok "Architecture matches bundle (linux-${BUNDLE_ARCH})"
+    else
+        warn "Bundle name has no linux-<arch> token; skipping architecture check."
+    fi
 
-# ── 8. Summary ────────────────────────────────────────────────────────────────
+    # 3. Extract bundle
+    EXTRACT_DIR="$(mktemp -d)"
+    trap 'rm -rf "$EXTRACT_DIR"' EXIT
+    info "Extracting bundle to ${EXTRACT_DIR} ..."
+    tar -xzf "$OFFLINE_BUNDLE" -C "$EXTRACT_DIR"
+    ok "Bundle extracted"
+
+    # Find the wheelhouse inside the extracted dir (may be nested one level)
+    WHEELHOUSE=""
+    REQ_FILE=""
+    if [[ -d "${EXTRACT_DIR}/wheelhouse" ]]; then
+        WHEELHOUSE="${EXTRACT_DIR}/wheelhouse"
+        REQ_FILE="${EXTRACT_DIR}/requirements.txt"
+    else
+        # Try one directory level deeper
+        for d in "${EXTRACT_DIR}"/*/; do
+            if [[ -d "${d}wheelhouse" ]]; then
+                WHEELHOUSE="${d}wheelhouse"
+                REQ_FILE="${d}requirements.txt"
+                break
+            fi
+        done
+    fi
+    [[ -n "$WHEELHOUSE" ]] || fail "Could not find 'wheelhouse/' inside extracted bundle."
+    [[ -f "$REQ_FILE"   ]] || fail "Could not find 'requirements.txt' inside extracted bundle."
+
+    # 4. Create managed venv
+    _create_venv
+
+    # 5. Install from wheelhouse — NO network, NO token
+    info "Installing packages from offline wheelhouse (--no-index --find-links) ..."
+    _venv_pip --no-index --find-links="$WHEELHOUSE" -r "$REQ_FILE"
+    ok "Packages installed from offline bundle"
+
+    # 6. Wrapper + skill sync
+    _write_wrapper_and_skill "$VENV" "$TESTPILOT_BIN_DIR" "$TESTPILOT_SKILLS_DIR"
+
+    # 6b. Migrate legacy installs (best-effort, non-fatal)
+    _run_legacy_migration "$VENV"
+
+    # 7. Post-install gate
+    info "Running post-install gate: testpilot --verify-install ..."
+    "${VENV}/bin/testpilot" --verify-install \
+        || fail "Post-install gate FAILED. The installation may be incomplete."
+    ok "Post-install gate passed"
+
+else
+# ══════════════════════════════════════════════════════════════════════════════
+# ONLINE MODE
+# ══════════════════════════════════════════════════════════════════════════════
+
+    # 1. Prerequisites
+    info "Checking prerequisites..."
+    command -v python3 >/dev/null 2>&1 || fail "python3 not found. Please install Python 3.11+."
+    command -v gh     >/dev/null 2>&1 || fail "gh (GitHub CLI) not found. Install from https://cli.github.com/"
+
+    PYTHON_VER="$(python3 -c 'import sys; print(str(sys.version_info.major)+"."+str(sys.version_info.minor))' 2>/dev/null || echo "0.0")"
+    PYTHON_MAJOR="${PYTHON_VER%%.*}"
+    PYTHON_MINOR="${PYTHON_VER#*.}"
+    if [[ "$PYTHON_MAJOR" -lt 3 ]] || { [[ "$PYTHON_MAJOR" -eq 3 ]] && [[ "$PYTHON_MINOR" -lt 11 ]]; }; then
+        fail "Python 3.11+ required, found ${PYTHON_VER}"
+    fi
+    ok "Python ${PYTHON_VER}"
+
+    if command -v uv >/dev/null 2>&1; then
+        ok "uv found (preferred)"
+    else
+        warn "uv not found, falling back to pip/venv"
+    fi
+
+    # 2. Token handling — NEVER interpolate into URLs; export for gh CLI only
+    GH_TOKEN="${TESTPILOT_INSTALL_TOKEN:-${GH_TOKEN:-}}"
+    if [[ -n "$GH_TOKEN" ]]; then
+        export GH_TOKEN
+        ok "GH_TOKEN set (from TESTPILOT_INSTALL_TOKEN or GH_TOKEN env)"
+    else
+        warn "No GH_TOKEN / TESTPILOT_INSTALL_TOKEN found; gh CLI will use its own auth"
+    fi
+
+    # 3. Fetch or use local manifest
+    MANIFEST_FILE="$(mktemp)"
+    MANIFEST_PARSE_SCRIPT="$(mktemp /tmp/tp_parse.XXXXXX.py)"
+    # ASKPASS_HELPER is removed by the EXIT trap so the token-passing helper is
+    # cleaned up even when pip fails under `set -euo pipefail` (a function-scoped
+    # RETURN trap does NOT fire on a set -e abort; an EXIT trap does).
+    ASKPASS_HELPER=""
+    # ONLINE_WHEEL_TMP tracks the current per-package wheel download dir so it is
+    # removed even when `pip` aborts under `set -euo pipefail` (a function-scoped
+    # RETURN trap does NOT fire on a set -e abort; this EXIT trap does).
+    ONLINE_WHEEL_TMP=""
+    trap 'rm -f "$MANIFEST_FILE" "$MANIFEST_PARSE_SCRIPT" "$ASKPASS_HELPER"; rm -rf "$ONLINE_WHEEL_TMP"' EXIT
+
+    if [[ -n "$TESTPILOT_MANIFEST" ]]; then
+        info "Using local manifest override: ${TESTPILOT_MANIFEST}"
+        cp "$TESTPILOT_MANIFEST" "$MANIFEST_FILE"
+    else
+        # Uses GH_TOKEN env internally — token never embedded in URL
+        _CORE_REPO_DEFAULT="hamanpaul/testpilot-core"
+        REF_PARAM=""
+        [[ -n "$TESTPILOT_REF" ]] && REF_PARAM="?ref=${TESTPILOT_REF}"
+        info "Fetching install-manifest.yaml from ${_CORE_REPO_DEFAULT}${TESTPILOT_REF:+ @ ${TESTPILOT_REF}}..."
+        gh api "repos/${_CORE_REPO_DEFAULT}/contents/install-manifest.yaml${REF_PARAM}" \
+            -H "Accept: application/vnd.github.raw" \
+            > "$MANIFEST_FILE" \
+            || fail "Failed to fetch install-manifest.yaml from ${_CORE_REPO_DEFAULT}"
+    fi
+    ok "Manifest loaded"
+
+    # 4. Parse manifest with a temp python script (avoids shell quoting issues)
+    # Output format (one value per line, prefixed by key):
+    #   CORE_REPO=<value>
+    #   CORE_VERSION=<value>
+    #   PLUGIN=<name>|<repo>|<version>
+    #   SW_REPO=<value>
+    #   SW_VERSION=<value>
+    cat > "$MANIFEST_PARSE_SCRIPT" << 'PYEOF'
+import re, sys
+
+manifest_path = sys.argv[1]
+text = open(manifest_path).read()
+
+section = None
+core = {}
+plugins = []
+cur_plugin = {}
+serialwrap = {}
+
+for raw_line in text.split('\n'):
+    line = raw_line
+
+    # Detect top-level section
+    if re.match(r'^core:', line):
+        if cur_plugin:
+            plugins.append(cur_plugin); cur_plugin = {}
+        section = 'core'; continue
+    if re.match(r'^plugins:', line):
+        if cur_plugin:
+            plugins.append(cur_plugin); cur_plugin = {}
+        section = 'plugins'; continue
+    if re.match(r'^serialwrap:', line):
+        if cur_plugin:
+            plugins.append(cur_plugin); cur_plugin = {}
+        section = 'serialwrap'; continue
+
+    if section == 'core':
+        m = re.match(r'\s+repo:\s+(\S+)', line)
+        if m: core['repo'] = m.group(1)
+        m = re.match(r'\s+version:\s+["\']?([0-9][^\s"\']*)["\']?', line)
+        if m: core['version'] = m.group(1)
+
+    elif section == 'plugins':
+        m = re.match(r'\s+-\s+name:\s+(\S+)', line)
+        if m:
+            if cur_plugin: plugins.append(cur_plugin)
+            cur_plugin = {'name': m.group(1)}
+            continue
+        if cur_plugin:
+            m = re.match(r'\s+repo:\s+(\S+)', line)
+            if m: cur_plugin['repo'] = m.group(1)
+            m = re.match(r'\s+version:\s+["\']?([0-9][^\s"\']*)["\']?', line)
+            if m: cur_plugin['version'] = m.group(1)
+
+    elif section == 'serialwrap':
+        m = re.match(r'\s+repo:\s+(\S+)', line)
+        if m: serialwrap['repo'] = m.group(1)
+        m = re.match(r'\s+version:\s+["\']?([0-9][^\s"\']*)["\']?', line)
+        if m: serialwrap['version'] = m.group(1)
+
+if cur_plugin:
+    plugins.append(cur_plugin)
+
+print(f"CORE_REPO={core.get('repo','')}")
+print(f"CORE_VERSION={core.get('version','')}")
+for p in plugins:
+    print(f"PLUGIN={p.get('name','')}|{p.get('repo','')}|{p.get('version','')}")
+if serialwrap:
+    print(f"SW_REPO={serialwrap.get('repo','')}")
+    print(f"SW_VERSION={serialwrap.get('version','')}")
+PYEOF
+
+    PARSED="$(python3 "$MANIFEST_PARSE_SCRIPT" "$MANIFEST_FILE")"
+
+    CORE_REPO=""
+    CORE_VERSION=""
+    SERIALWRAP_REPO=""
+    SERIALWRAP_VERSION=""
+    declare -a PLUGIN_ENTRIES=()
+
+    while IFS= read -r parsed_line; do
+        case "$parsed_line" in
+            CORE_REPO=*)      CORE_REPO="${parsed_line#CORE_REPO=}" ;;
+            CORE_VERSION=*)   CORE_VERSION="${parsed_line#CORE_VERSION=}" ;;
+            PLUGIN=*)         PLUGIN_ENTRIES+=("${parsed_line#PLUGIN=}") ;;
+            SW_REPO=*)        SERIALWRAP_REPO="${parsed_line#SW_REPO=}" ;;
+            SW_VERSION=*)     SERIALWRAP_VERSION="${parsed_line#SW_VERSION=}" ;;
+        esac
+    done <<< "$PARSED"
+
+    [[ -n "$CORE_REPO" ]]    || fail "Failed to parse core.repo from manifest"
+    [[ -n "$CORE_VERSION" ]] || fail "Failed to parse core.version from manifest"
+
+    info "Core:       ${CORE_REPO} @ ${CORE_VERSION}"
+    [[ -n "$SERIALWRAP_REPO" ]] && info "Serialwrap: ${SERIALWRAP_REPO} @ ${SERIALWRAP_VERSION}"
+
+    # 5. Create managed venv
+    _create_venv
+
+    # ── Helper: download wheel or fall back to git+https via GIT_ASKPASS ─────
+    # SECURITY: GIT_ASKPASS helper echoes the token to git's password prompt.
+    #           The token is NEVER embedded in the URL or echoed to stdout.
+    # with_deps=true  -> install the package WITH its dependency closure
+    # with_deps=false -> install with --no-deps (plugins depend on core, which is
+    #                    installed first; resolving their deps would re-pull core)
+    _install_pkg_online() {
+        local repo="$1" version="$2" label="$3" with_deps="${4:-false}"
+        local wheel_dir; wheel_dir="$(mktemp -d)"
+        # Track for EXIT-trap cleanup so a pip failure under set -e cannot leak it.
+        ONLINE_WHEEL_TMP="$wheel_dir"
+        local nodeps_flag=""
+        [[ "$with_deps" == "true" ]] || nodeps_flag="--no-deps"
+
+        info "Downloading ${label} ${version} from ${repo} ..."
+
+        # Try gh release download first (GH_TOKEN used via env, not URL)
+        if gh release download "v${version}" \
+                --repo "$repo" \
+                --pattern "*.whl" \
+                --dir "$wheel_dir" \
+                2>/dev/null; then
+            ok "Downloaded wheel(s) for ${label}"
+            if [[ "$with_deps" == "true" ]]; then
+                _venv_pip "$wheel_dir"/*.whl
+            else
+                _venv_pip --no-deps "$wheel_dir"/*.whl
+            fi
+            # Preserve the installed wheel(s) into the offline rollback cache so
+            # `testpilot --update` rollback can reinstall this set with
+            # --no-index (NEVER a public index). Best-effort; never fatal.
+            mkdir -p "$WHEEL_CACHE"
+            cp "$wheel_dir"/*.whl "$WHEEL_CACHE"/ 2>/dev/null || true
+            ok "${label} installed from wheel"
+        else
+            # Fallback: git+https with GIT_ASKPASS helper (token never in URL)
+            warn "No wheel asset for ${label} ${version}; falling back to git+https"
+            if [[ -n "${GH_TOKEN:-}" ]]; then
+                # Use the script-global ASKPASS_HELPER (cleaned by the EXIT trap)
+                # so the helper is removed even if pip fails under set -e.
+                ASKPASS_HELPER="$(mktemp /tmp/tp_askpass.XXXXXX)"
+                chmod 700 "$ASKPASS_HELPER"
+                # Helper reads the token from the EXPORTED env at call time;
+                # the literal secret is NEVER written into the helper file.
+                printf '#!/bin/sh\nexec printf '\''%%s\\n'\'' "$GH_TOKEN"\n' > "$ASKPASS_HELPER"
+                GH_TOKEN="$GH_TOKEN" GIT_ASKPASS="$ASKPASS_HELPER" \
+                    "${VENV}/bin/pip" install ${nodeps_flag} \
+                    "git+https://github.com/${repo}@v${version}"
+                rm -f "$ASKPASS_HELPER"
+                ASKPASS_HELPER=""
+            else
+                "${VENV}/bin/pip" install ${nodeps_flag} \
+                    "git+https://github.com/${repo}@v${version}"
+            fi
+            ok "${label} installed via git+https"
+        fi
+        rm -rf "$wheel_dir"
+        ONLINE_WHEEL_TMP=""
+    }
+
+    # 6. Install core first (with its deps)
+    _install_pkg_online "$CORE_REPO" "$CORE_VERSION" "core" "true"
+
+    # 7. Install selected (or all) plugins with --no-deps
+    for plugin_entry in "${PLUGIN_ENTRIES[@]:-}"; do
+        [[ -z "$plugin_entry" ]] && continue
+        IFS='|' read -r pname prepo pver <<< "$plugin_entry"
+        [[ -z "$pname" ]] && continue
+
+        # Filter by --plugins csv if provided
+        if [[ -n "$SELECTED_PLUGINS" ]]; then
+            if ! echo ",$SELECTED_PLUGINS," | grep -q ",${pname},"; then
+                info "Skipping plugin ${pname} (not in --plugins list)"
+                continue
+            fi
+        fi
+        _install_pkg_online "$prepo" "$pver" "plugin:${pname}" "false"
+    done
+
+    # 8. Install serialwrap WITH deps (public; does not depend on testpilot-core)
+    if [[ -n "$SERIALWRAP_REPO" && -n "$SERIALWRAP_VERSION" ]]; then
+        _install_pkg_online "$SERIALWRAP_REPO" "$SERIALWRAP_VERSION" "serialwrap" "true"
+    fi
+
+    # 9. Wrapper + skill sync
+    _write_wrapper_and_skill "$VENV" "$TESTPILOT_BIN_DIR" "$TESTPILOT_SKILLS_DIR"
+
+    # 10. Migrate legacy installs (best-effort, non-fatal)
+    _run_legacy_migration "$VENV"
+
+fi  # end ONLINE/OFFLINE branch
+
+# ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}${GREEN}════════════════════════════════════════${RESET}"
+echo -e "${BOLD}${GREEN}================================================${RESET}"
 echo -e "${BOLD}${GREEN}  TestPilot managed install complete!${RESET}"
-echo -e "${BOLD}${GREEN}════════════════════════════════════════${RESET}"
+echo -e "${BOLD}${GREEN}================================================${RESET}"
 echo ""
-echo -e "  Checkout : $MANAGED_SRC"
-echo -e "  Venv     : $MANAGED_VENV"
-echo -e "  Wrapper  : $TESTPILOT_BIN_DIR/testpilot"
-echo -e "  Skill    : $SKILL_DST"
+echo -e "  Venv    : ${VENV}"
+echo -e "  Wrapper : ${TESTPILOT_BIN_DIR}/testpilot"
+echo -e "  Skills  : ${TESTPILOT_SKILLS_DIR}"
 echo ""
-echo -e "  Add ${BOLD}$TESTPILOT_BIN_DIR${RESET} to your PATH if not already present."
+echo -e "  Add ${BOLD}${TESTPILOT_BIN_DIR}${RESET} to your PATH if not already present."
 echo -e "  Then run: testpilot --version"
 echo ""
