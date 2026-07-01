@@ -49,7 +49,7 @@ def test_project_policy_declares_help_sync_markers() -> None:
 
     policy = _read_policy()
     assert policy["policy_profile"] == "flat"
-    assert policy["policy_version"] == "1.0.5"
+    assert policy["policy_version"] == "1.0.10"
     markers = {entry["marker"] for entry in policy["cli"]}
 
     assert {
@@ -77,8 +77,8 @@ def test_agent_instruction_files_are_synchronized() -> None:
         assert contents[relative_path] == reference
 
     content = reference.decode("utf-8")
-    assert "<!-- managed-by: hamanpaul/paulsha-conventions@v1.0.5 -->" in content
-    assert "policy_version: 1.0.5" in content
+    assert "<!-- managed-by: hamanpaul/paulsha-conventions@v1.0.10 -->" in content
+    assert "policy_version: 1.0.10" in content
     # 同步 payload 不得引用已退役的 .paul-project.yml(本 repo canonical 是 .project-policy.yml;
     # codex review #90)——否則 agent 會看/建錯 config。
     assert ".paul-project.yml" not in content, (
