@@ -1,0 +1,145 @@
+{
+  "run_id": "20260628T161216789768",
+  "plugin": "wifi_llapi",
+  "case_id": "wifi-llapi-D004-kickstation",
+  "source_row": 4,
+  "execution": {
+    "scope": "per_case",
+    "mode": "sequential",
+    "max_concurrency": 1,
+    "failure_policy": "retry_then_fail_and_continue",
+    "retry": {
+      "max_attempts": 2,
+      "backoff_seconds": 5.0
+    },
+    "timeout": {
+      "base_seconds": 120.0,
+      "per_step_seconds": 45.0,
+      "retry_multiplier": 1.25,
+      "max_seconds": 900.0
+    }
+  },
+  "selection_trace": {
+    "timestamp": "2026-06-28T16:12:16.977488",
+    "case_id": "wifi-llapi-D004-kickstation",
+    "candidates": [
+      {
+        "priority": 1,
+        "cli_agent": "copilot",
+        "model": "gpt-5.4",
+        "effort": "high",
+        "enabled": true
+      },
+      {
+        "priority": 2,
+        "cli_agent": "copilot",
+        "model": "sonnet-4.6",
+        "effort": "high",
+        "enabled": true
+      },
+      {
+        "priority": 3,
+        "cli_agent": "copilot",
+        "model": "gpt-5-mini",
+        "effort": "high",
+        "enabled": true
+      }
+    ],
+    "fallback": {
+      "applied": false,
+      "reason": ""
+    },
+    "runtime": {
+      "module_available": true,
+      "method": "module.select_runner",
+      "reason": "",
+      "availability": {},
+      "selection": [
+        {
+          "priority": 1,
+          "cli_agent": "copilot",
+          "model": "gpt-5.4",
+          "status": "selected",
+          "unavailable_reason": null
+        }
+      ]
+    },
+    "selected": {
+      "priority": 1,
+      "cli_agent": "copilot",
+      "model": "gpt-5.4",
+      "effort": "high",
+      "enabled": true
+    },
+    "session_plan": {
+      "provider": "copilot-sdk",
+      "session_id": "run-20260628T161216789768-case-wifi-llapi-D004-kickstation",
+      "model": "gpt-5.4",
+      "reasoning_effort": "high",
+      "status": "planned"
+    }
+  },
+  "attempts": [
+    {
+      "attempt": 1,
+      "timeout_seconds": 795.0,
+      "runner": {
+        "priority": 1,
+        "cli_agent": "copilot",
+        "model": "gpt-5.4",
+        "effort": "high",
+        "enabled": true
+      },
+      "verdict": true,
+      "evaluation_verdict": "Pass",
+      "comment": "",
+      "commands": [
+        "iw dev wl0 link",
+        "wl -i wl0 assoclist | tr 'A-F' 'a-f' | sed -n 's/^assoclist \\([^ ]*\\).*$/AssocMac5g=\\1/p'",
+        "ubus-cli \"WiFi.AccessPoint.1.AssociatedDevice.1.DisassociationTime?\"",
+        "ubus-cli \"WiFi.AccessPoint.1.kickStation(MACAddress=2c:59:17:00:19:95)\"",
+        "ubus-cli \"WiFi.AccessPoint.1.AssociatedDevice.1.DisassociationTime?\"",
+        "iw dev wl1 link\nwpa_cli -p /var/run/wpa_supplicant -i wl1 status\nwl -i wl1 status",
+        "wl -i wl1 assoclist | tr 'A-F' 'a-f' | sed -n 's/^assoclist \\([^ ]*\\).*$/AssocMac6g=\\1/p'",
+        "ubus-cli \"WiFi.AccessPoint.3.AssociatedDevice.1.DisassociationTime?\"",
+        "ubus-cli \"WiFi.AccessPoint.3.kickStation(MACAddress=2c:59:17:00:19:96)\"",
+        "ubus-cli \"WiFi.AccessPoint.3.AssociatedDevice.1.DisassociationTime?\"",
+        "iw dev wl2 link",
+        "wl -i wl2 assoclist | tr 'A-F' 'a-f' | sed -n 's/^assoclist \\([^ ]*\\).*$/AssocMac24g=\\1/p'",
+        "ubus-cli \"WiFi.AccessPoint.5.AssociatedDevice.1.DisassociationTime?\"",
+        "ubus-cli \"WiFi.AccessPoint.5.kickStation(MACAddress=2c:59:17:00:19:a7)\"",
+        "ubus-cli \"WiFi.AccessPoint.5.AssociatedDevice.1.DisassociationTime?\""
+      ],
+      "outputs": [
+        "Connected to 2c:59:17:00:42:15 (on wl0)\nSSID: testpilot5G\nfreq: 5180\nRX: 448 bytes (2 packets)\nTX: 0 bytes (11 packets)\nsignal: -39 dBm\ntx bitrate: 649.9 MBit/s",
+        "]*\\).*$/AssocMac5g=\\1/p'\nAssocMac5g=2c:59:17:00:19:95",
+        "e?\"\nWiFi.AccessPoint.1.AssociatedDevice.1.DisassociationTime=\"2026-04-21T18:27:50Z\"",
+        "9:95)\"\nWiFi.AccessPoint.1.kickStation() returned\n[\n\"\",\n{\nMACAddress = \"2c:59:17:00:19:95\"\n}\n]",
+        "e?\"\nWiFi.AccessPoint.1.AssociatedDevice.1.DisassociationTime=\"2026-04-21T18:27:58Z\"",
+        "Connected to 2c:59:17:00:42:16 (on wl1)\nSSID: testpilot6G\nfreq: 5955\nRX: 448 bytes (2 packets)\nTX: 0 bytes (11 packets)\nsignal: -75 dBm\ntx bitrate: 6.0 MBit/s\nbssid=2c:59:17:00:42:16\nfreq=5955\nssid=testpilot6G\nid=0\nmode=station\nwifi_generation=6\npairwise_cipher=CCMP\ngroup_cipher=CCMP\nkey_mgmt=SAE\npmf=2\nmgmt_group_cipher=BIP\nsae_group=19\nsae_h2e=1\nsae_pk=0\nwpa_state=COMPLETED\naddress=2c:59:17:00:19:96\nuuid=07effc44-4fe4-5920-9b05-3f7dbab41ad0\nSSID: \"testpilot6G\"\nMode: Managed\tRSSI: -72 dBm\tSNR: 25 dB\tnoise: -97 dBm\tFlags: FromBcn RSSI on-channel \tChannel: 6g1\nBSSID: 2C:59:17:00:42:16\tCapability: ESS WEP RRM\nBeacon Interval: 100 msecs\tDTIM Period: 3\nSupported Rates: [ 6(b) 9 12 18 24(b) 36 48 54 ]\nRSN (WPA3-SAE):\nmulticast cipher: AES-CCMP\nunicast ciphers(1): AES-CCMP\nAKM Suites(1): SAE\nCapabilities(0x00cc): No Pre-Auth, Pairwise, 16 PTK Replay Ctrs1 GTK Replay Ctr, MFP: Required\nExtended Capabilities: IW BSS_Transition\nEHT Capable:\nChanspec: 6GHz channel 1 20MHz (0x5001)\nPrimary channel: 1\nNegotiated HE MCS:\n20/40/80 MHz:\nNSS1 Tx: 0-11        Rx: 0-11\nNSS2 Tx: 0-11        Rx: 0-11\nNSS3 Tx: 0-11        Rx: 0-11\nNSS4 Tx: 0-11        Rx: 0-11\n160 MHz:\nNSS1 Tx: 0-11        Rx: 0-11\nNSS2 Tx: 0-11        Rx: 0-11\nNSS3 Tx: 0-11        Rx: 0-11\nNSS4 Tx: 0-11        Rx: 0-11\nBSS Color: 0x28\t\tPartial BSS Color: false\nBSS Color Disabled: true\nNegotiated EHT MCS:\n20/40/80 MHz:\nNSS1 Tx: 0-13        Rx: 0-13\nNSS2 Tx: 0-13        Rx: 0-13\nNSS3 Tx: 0-13        Rx: 0-13\nNSS4 Tx: 0-13        Rx: 0-13\n160 MHz:\nNSS1 Tx: 0-13        Rx: 0-13\nNSS2 Tx: 0-13        Rx: 0-13\nNSS3 Tx: 0-13        Rx: 0-13\nNSS4 Tx: 0-13        Rx: 0-13\n320 MHz:\nNSS1 Tx: 0-13        Rx: 0-13\nNSS2 Tx: 0-13        Rx: 0-13\nNSS3 Tx: 0-13        Rx: 0-13\nNSS4 Tx: 0-13        Rx: 0-13\nVS_IE:dd090010180200001c0000\nVS_IE:dd180050f2020101020003a4000027a4000042435e0062322f00\nVS_IE:dd07506f9a16010100\nQBSS Channel Utilization: 0xb (4 %)",
+        "]*\\).*$/AssocMac6g=\\1/p'\nAssocMac6g=2c:59:17:00:19:96",
+        "e?\"\nWiFi.AccessPoint.3.AssociatedDevice.1.DisassociationTime=\"2026-04-21T18:27:42Z\"",
+        "9:96)\"\nWiFi.AccessPoint.3.kickStation() returned\n[\n\"\",\n{\nMACAddress = \"2c:59:17:00:19:96\"\n}\n]",
+        "e?\"\nWiFi.AccessPoint.3.AssociatedDevice.1.DisassociationTime=\"2026-04-21T18:28:52Z\"",
+        "Connected to 2c:59:17:00:42:27 (on wl2)\nSSID: testpilot2G\nfreq: 2412\nRX: 448 bytes (2 packets)\nTX: 0 bytes (11 packets)\nsignal: -28 dBm\ntx bitrate: 1.0 MBit/s",
+        "]*\\).*$/AssocMac24g=\\1/p'\nAssocMac24g=2c:59:17:00:19:a7",
+        "e?\"\nWiFi.AccessPoint.5.AssociatedDevice.1.DisassociationTime=\"2026-04-21T18:29:19Z\"",
+        "9:a7)\"\nWiFi.AccessPoint.5.kickStation() returned\n[\n\"\",\n{\nMACAddress = \"2c:59:17:00:19:a7\"\n}\n]",
+        "e?\"\nWiFi.AccessPoint.5.AssociatedDevice.1.DisassociationTime=\"2026-04-21T18:29:28Z\""
+      ],
+      "failure_snapshot": null,
+      "remediation_decision": null,
+      "status": "Pass"
+    }
+  ],
+  "final": {
+    "status": "Pass",
+    "evaluation_verdict": "Pass",
+    "attempts_used": 1,
+    "comment": "",
+    "diagnostic_status": "Pass"
+  },
+  "diagnostic_status": "Pass",
+  "remediation_history": [],
+  "failure_snapshot": null
+}

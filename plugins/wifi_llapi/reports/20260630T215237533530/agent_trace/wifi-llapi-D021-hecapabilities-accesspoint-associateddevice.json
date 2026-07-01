@@ -1,0 +1,346 @@
+{
+  "run_id": "20260630T215237533530",
+  "plugin": "wifi_llapi",
+  "case_id": "wifi-llapi-D021-hecapabilities-accesspoint-associateddevice",
+  "source_row": 21,
+  "execution": {
+    "scope": "per_case",
+    "mode": "sequential",
+    "max_concurrency": 1,
+    "failure_policy": "retry_then_fail_and_continue",
+    "retry": {
+      "max_attempts": 2,
+      "backoff_seconds": 5.0
+    },
+    "timeout": {
+      "base_seconds": 120.0,
+      "per_step_seconds": 45.0,
+      "retry_multiplier": 1.25,
+      "max_seconds": 900.0
+    }
+  },
+  "selection_trace": {
+    "timestamp": "2026-07-01T00:01:46.388652",
+    "case_id": "wifi-llapi-D021-hecapabilities-accesspoint-associateddevice",
+    "candidates": [
+      {
+        "priority": 1,
+        "cli_agent": "copilot",
+        "model": "gpt-5.4",
+        "effort": "high",
+        "enabled": true
+      },
+      {
+        "priority": 2,
+        "cli_agent": "copilot",
+        "model": "sonnet-4.6",
+        "effort": "high",
+        "enabled": true
+      },
+      {
+        "priority": 3,
+        "cli_agent": "copilot",
+        "model": "gpt-5-mini",
+        "effort": "high",
+        "enabled": true
+      }
+    ],
+    "fallback": {
+      "applied": false,
+      "reason": ""
+    },
+    "runtime": {
+      "module_available": true,
+      "method": "module.select_runner",
+      "reason": "",
+      "availability": {},
+      "selection": [
+        {
+          "priority": 1,
+          "cli_agent": "copilot",
+          "model": "gpt-5.4",
+          "status": "selected",
+          "unavailable_reason": null
+        }
+      ]
+    },
+    "selected": {
+      "priority": 1,
+      "cli_agent": "copilot",
+      "model": "gpt-5.4",
+      "effort": "high",
+      "enabled": true
+    },
+    "session_plan": {
+      "provider": "copilot-sdk",
+      "session_id": "run-20260630T215237533530-case-wifi-llapi-D021-hecapabilities-accesspoint-associateddevice",
+      "model": "gpt-5.4",
+      "reasoning_effort": "high",
+      "status": "planned"
+    }
+  },
+  "attempts": [
+    {
+      "attempt": 1,
+      "timeout_seconds": 255.0,
+      "runner": {
+        "priority": 1,
+        "cli_agent": "copilot",
+        "model": "gpt-5.4",
+        "effort": "high",
+        "enabled": true
+      },
+      "verdict": false,
+      "evaluation_verdict": "Fail",
+      "comment": "setup_env failed",
+      "commands": [],
+      "outputs": [],
+      "failure_snapshot": {
+        "case_id": "wifi-llapi-D021-hecapabilities-accesspoint-associateddevice",
+        "attempt_index": 1,
+        "phase": "setup_env",
+        "comment": "sta_env_setup failed",
+        "step_id": "",
+        "category": "environment",
+        "reason_code": "sta_band_link_failed",
+        "device": "STA",
+        "band": "5g",
+        "command": "iw dev wl0 link",
+        "output": "Not connected.",
+        "evidence": [],
+        "metadata": {
+          "field_name": "sta_env_setup",
+          "index": 48
+        }
+      },
+      "remediation_decision": {
+        "case_id": "wifi-llapi-D021-hecapabilities-accesspoint-associateddevice",
+        "attempt_index": 1,
+        "summary": "sta_env_setup failed",
+        "source": "builtin-fallback",
+        "approved": true,
+        "failure": {
+          "case_id": "wifi-llapi-D021-hecapabilities-accesspoint-associateddevice",
+          "attempt_index": 1,
+          "phase": "setup_env",
+          "comment": "sta_env_setup failed",
+          "step_id": "",
+          "category": "environment",
+          "reason_code": "sta_band_link_failed",
+          "device": "STA",
+          "band": "5g",
+          "command": "iw dev wl0 link",
+          "output": "Not connected.",
+          "evidence": [],
+          "metadata": {
+            "field_name": "sta_env_setup",
+            "index": 48
+          }
+        },
+        "actions": [
+          {
+            "executor_key": "sta_band_rebaseline",
+            "description": "rebuild STA band baseline and reconnect",
+            "device": "",
+            "band": "5g",
+            "params": {
+              "bands": [
+                "5g"
+              ]
+            },
+            "safety_class": "safe_env",
+            "source": "builtin-fallback"
+          },
+          {
+            "executor_key": "dut_band_rebaseline",
+            "description": "re-apply DUT band baseline",
+            "device": "",
+            "band": "5g",
+            "params": {
+              "bands": [
+                "5g"
+              ]
+            },
+            "safety_class": "safe_env",
+            "source": "builtin-fallback"
+          },
+          {
+            "executor_key": "case_env_reverify",
+            "description": "rerun environment verification after baseline repair",
+            "device": "",
+            "band": "",
+            "params": {},
+            "safety_class": "safe_env",
+            "source": "builtin-fallback"
+          }
+        ]
+      },
+      "status": "Fail"
+    },
+    {
+      "attempt": 2,
+      "timeout_seconds": 318.75,
+      "runner": {
+        "priority": 1,
+        "cli_agent": "copilot",
+        "model": "gpt-5.4",
+        "effort": "high",
+        "enabled": true
+      },
+      "verdict": false,
+      "evaluation_verdict": "Fail",
+      "comment": "setup_env failed",
+      "commands": [],
+      "outputs": [],
+      "failure_snapshot": {
+        "case_id": "wifi-llapi-D021-hecapabilities-accesspoint-associateddevice",
+        "attempt_index": 2,
+        "phase": "setup_env",
+        "comment": "sta_env_setup failed",
+        "step_id": "",
+        "category": "environment",
+        "reason_code": "sta_band_link_failed",
+        "device": "STA",
+        "band": "5g",
+        "command": "iw dev wl0 link",
+        "output": "Not connected.",
+        "evidence": [],
+        "metadata": {
+          "field_name": "sta_env_setup",
+          "index": 48
+        }
+      },
+      "remediation_decision": {
+        "case_id": "wifi-llapi-D021-hecapabilities-accesspoint-associateddevice",
+        "attempt_index": 2,
+        "summary": "sta_env_setup failed",
+        "source": "builtin-fallback",
+        "approved": true,
+        "failure": {
+          "case_id": "wifi-llapi-D021-hecapabilities-accesspoint-associateddevice",
+          "attempt_index": 2,
+          "phase": "setup_env",
+          "comment": "sta_env_setup failed",
+          "step_id": "",
+          "category": "environment",
+          "reason_code": "sta_band_link_failed",
+          "device": "STA",
+          "band": "5g",
+          "command": "iw dev wl0 link",
+          "output": "Not connected.",
+          "evidence": [],
+          "metadata": {
+            "field_name": "sta_env_setup",
+            "index": 48
+          }
+        },
+        "actions": [
+          {
+            "executor_key": "sta_band_rebaseline",
+            "description": "rebuild STA band baseline and reconnect",
+            "device": "",
+            "band": "5g",
+            "params": {
+              "bands": [
+                "5g"
+              ]
+            },
+            "safety_class": "safe_env",
+            "source": "builtin-fallback"
+          },
+          {
+            "executor_key": "dut_band_rebaseline",
+            "description": "re-apply DUT band baseline",
+            "device": "",
+            "band": "5g",
+            "params": {
+              "bands": [
+                "5g"
+              ]
+            },
+            "safety_class": "safe_env",
+            "source": "builtin-fallback"
+          },
+          {
+            "executor_key": "case_env_reverify",
+            "description": "rerun environment verification after baseline repair",
+            "device": "",
+            "band": "",
+            "params": {},
+            "safety_class": "safe_env",
+            "source": "builtin-fallback"
+          }
+        ]
+      },
+      "status": "Fail"
+    }
+  ],
+  "final": {
+    "status": "Fail",
+    "evaluation_verdict": "Fail",
+    "attempts_used": 2,
+    "comment": "setup_env failed (failed after 2/2 attempts)",
+    "diagnostic_status": "FailEnv"
+  },
+  "diagnostic_status": "FailEnv",
+  "remediation_history": [
+    {
+      "case_id": "wifi-llapi-D021-hecapabilities-accesspoint-associateddevice",
+      "attempt_index": 2,
+      "decision_source": "builtin-fallback",
+      "summary": "sta_env_setup failed",
+      "failure_snapshot": {
+        "case_id": "wifi-llapi-D021-hecapabilities-accesspoint-associateddevice",
+        "attempt_index": 1,
+        "phase": "setup_env",
+        "comment": "sta_env_setup failed",
+        "step_id": "",
+        "category": "environment",
+        "reason_code": "sta_band_link_failed",
+        "device": "STA",
+        "band": "5g",
+        "command": "iw dev wl0 link",
+        "output": "Not connected.",
+        "evidence": [],
+        "metadata": {
+          "field_name": "sta_env_setup",
+          "index": 48
+        }
+      },
+      "executed_actions": [
+        {
+          "executor_key": "sta_band_rebaseline",
+          "band": "5g",
+          "params": {
+            "bands": [
+              "5g"
+            ]
+          },
+          "success": false,
+          "comment": "failed"
+        }
+      ],
+      "applied": false,
+      "verify_after": null,
+      "comment": "sta_band_rebaseline failed"
+    }
+  ],
+  "failure_snapshot": {
+    "case_id": "wifi-llapi-D021-hecapabilities-accesspoint-associateddevice",
+    "attempt_index": 2,
+    "phase": "setup_env",
+    "comment": "sta_env_setup failed",
+    "step_id": "",
+    "category": "environment",
+    "reason_code": "sta_band_link_failed",
+    "device": "STA",
+    "band": "5g",
+    "command": "iw dev wl0 link",
+    "output": "Not connected.",
+    "evidence": [],
+    "metadata": {
+      "field_name": "sta_env_setup",
+      "index": 48
+    }
+  }
+}

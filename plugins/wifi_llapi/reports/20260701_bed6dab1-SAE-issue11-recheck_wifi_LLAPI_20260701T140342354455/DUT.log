@@ -1,0 +1,1126 @@
+wl -i wl0 bss
+down
+root@prplOS:/# ubus-cli WiFi.Radio.1.Enable=1
+ubus-cli WiFi.Radio.1.Enable=1
+> WiFi.Radio.1.Enable=1
+WiFi.Radio.1.
+WiFi.Radio.1.Enable=1
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.2.Enable=0
+ubus-cli WiFi.AccessPoint.2.Enable=0
+> WiFi.AccessPoint.2.Enable=0
+WiFi.AccessPoint.2.
+WiFi.AccessPoint.2.Enable=0
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.1.Enable=0
+ubus-cli WiFi.AccessPoint.1.Enable=0
+> WiFi.AccessPoint.1.Enable=0
+WiFi.AccessPoint.1.
+WiFi.AccessPoint.1.Enable=0
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.1.MultiAPType=None
+ubus-cli WiFi.AccessPoint.1.MultiAPType=None
+> WiFi.AccessPoint.1.MultiAPType=None
+WiFi.AccessPoint.1.
+WiFi.AccessPoint.1.MultiAPType="None"
+
+root@prplOS:/# ubus-cli WiFi.Radio.1.Channel=36
+ubus-cli WiFi.Radio.1.Channel=36
+> WiFi.Radio.1.Channel=36
+WiFi.Radio.1.
+WiFi.Radio.1.Channel=36
+
+root@prplOS:/# ubus-cli WiFi.SSID.4.SSID=testpilot5G
+ubus-cli WiFi.SSID.4.SSID=testpilot5G
+> WiFi.SSID.4.SSID=testpilot5G
+WiFi.SSID.4.
+WiFi.SSID.4.SSID="testpilot5G"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.1.Security.ModeEnabled=WPA3-Personal
+ubus-cli WiFi.AccessPoint.1.Security.ModeEnabled=WPA3-Personal
+> WiFi.AccessPoint.1.Security.ModeEnabled=WPA3-Personal
+WiFi.AccessPoint.1.Security.
+WiFi.AccessPoint.1.Security.ModeEnabled="WPA3-Personal"
+
+root@prplOS:/# ubus-cli 'WiFi.AccessPoint.1.Security.SAEPassphrase="00000000"'
+ubus-cli 'WiFi.AccessPoint.1.Security.SAEPassphrase="00000000"'
+> WiFi.AccessPoint.1.Security.SAEPassphrase="00000000"
+WiFi.AccessPoint.1.Security.
+WiFi.AccessPoint.1.Security.SAEPassphrase="00000000"
+
+root@prplOS:/# ubus-cli 'WiFi.AccessPoint.1.Security.KeyPassPhrase="00000000"'
+ubus-cli 'WiFi.AccessPoint.1.Security.KeyPassPhrase="00000000"'
+> WiFi.AccessPoint.1.Security.KeyPassPhrase="00000000"
+WiFi.AccessPoint.1.Security.
+WiFi.AccessPoint.1.Security.KeyPassPhrase="00000000"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.1.Security.MFPConfig=Required
+ubus-cli WiFi.AccessPoint.1.Security.MFPConfig=Required
+> WiFi.AccessPoint.1.Security.MFPConfig=Required
+WiFi.AccessPoint.1.Security.
+WiFi.AccessPoint.1.Security.MFPConfig="Required"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.1.Enable=1
+ubus-cli WiFi.AccessPoint.1.Enable=1
+> WiFi.AccessPoint.1.Enable=1
+WiFi.AccessPoint.1.
+WiFi.AccessPoint.1.Enable=1
+
+root@prplOS:/# sed -i '/^bss=wl0\.1$/,$d' /tmp/wl0_hapd.conf
+sed -i '/^bss=wl0\.1$/,$d' /tmp/wl0_hapd.conf
+root@prplOS:/# sed -i 's/^wpa_key_mgmt=.*/wpa_key_mgmt=SAE/' /tmp/wl0_hapd.conf
+sed -i 's/^wpa_key_mgmt=.*/wpa_key_mgmt=SAE/' /tmp/wl0_hapd.conf
+root@prplOS:/# sed -i 's/^ieee80211w=.*/ieee80211w=2/' /tmp/wl0_hapd.conf
+sed -i 's/^ieee80211w=.*/ieee80211w=2/' /tmp/wl0_hapd.conf
+root@prplOS:/# sed -i 's/^ieee80211be=.*/ieee80211be=0/' /tmp/wl0_hapd.conf
+sed -i 's/^ieee80211be=.*/ieee80211be=0/' /tmp/wl0_hapd.conf
+root@prplOS:/# sed -i '/^qos_map_set=/d; /^multi_ap=/d; /^mlo_aff_link_kde=/d' /tmp/wl0_hapd.conf
+sed -i '/^qos_map_set=/d; /^multi_ap=/d; /^mlo_aff_link_kde=/d' /
+tmp/wl0_hapd.conf
+root@prplOS:/# sed -i '/^sae_password=/d; /^sae_pwe=/d; /^ocv=/d' /tmp/wl0_hapd.conf
+sed -i '/^sae_password=/d; /^sae_pwe=/d; /^ocv=/d' /tmp/wl0_hapd.
+conf
+root@prplOS:/# sed -i '/^wpa_passphrase=/a sae_password=00000000' /tmp/wl0_hapd.conf
+sed -i '/^wpa_passphrase=/a sae_password=00000000' /tmp/wl0_hapd.
+conf
+root@prplOS:/# echo 'sae_pwe=2' >> /tmp/wl0_hapd.conf
+echo 'sae_pwe=2' >> /tmp/wl0_hapd.conf
+root@prplOS:/# echo 'ocv=0' >> /tmp/wl0_hapd.conf
+echo 'ocv=0' >> /tmp/wl0_hapd.conf
+root@prplOS:/# pid=$(pgrep -f '/tmp/wl0_hapd.conf' 2>/dev/null | head -n1); if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+pid=$(pgrep -f '/tmp/wl0_hapd.conf' 2>/dev/null | head -n1); if [
+ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+root@prplOS:/# sleep 2
+sleep 2
+--wl0 FSM DONE--
+root@prplOS:/# rm -f /var/run/hostapd/wl0 /var/run/hostapd/wl0.1
+rm -f /var/run/hostapd/wl0 /var/run/hostapd/wl0.1
+root@prplOS:/# wl -i wl0 ap 1
+wl -i wl0 ap 1
+root@prplOS:/# wl -i wl0 up
+wl -i wl0 up
+root@prplOS:/# ifconfig wl0 up
+ifconfig wl0 up
+root@prplOS:/# --wl0 FSM DONE--
+hostapd -ddt -B /tmp/wl0_hapd.conf
+hostapd -ddt -B /tmp/wl0_hapd.conf
+1782880433.321035: random: Trying to read entropy from /dev/urandom
+1782880433.321091: Configuration file: /tmp/wl0_hapd.conf
+1782880433.322403: nl80211: TDLS supported
+1782880433.322430: nl80211: Supported cipher 00-0f-ac:1
+1782880433.322435: nl80211: Supported cipher 00-0f-ac:5
+1782880433.322439: nl80211: Supported cipher 00-0f-ac:2
+1782880433.322443: nl80211: Supported cipher 00-0f-ac:4
+1782880433.322446: nl80211: Supported cipher 00-0f-ac:6
+1782880433.322449: nl80211: Supported cipher 00-90-4c:0
+1782880433.322452: nl80211: Supported cipher 00-0f-ac:8
+1782880433.322455: nl80211: Supported cipher 00-0f-ac:9
+1782880433.322458: nl80211: Supported cipher 00-0f-ac:11
+1782880433.322461: nl80211: Supported cipher 00-0f-ac:12
+1782880433.322488: nl80211: Using driver-based off-channel TX
+1782880433.322497: nl80211: Supported vendor command: vendor_id=0x1018 subcmd=1
+1782880433.322501: nl80211: Supported vendor command: vendor_id=0x1018 subcmd=2
+1782880433.322505: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=0
+1782880433.322508: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=1
+1782880433.322511: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=2
+1782880433.322527: nl80211: key_mgmt=0xf0f enc=0x76f auth=0x7 flags=0x400000001a08d1c4 rrm_flags=0x0 probe_resp_offloads=0x0 max_stations=0 max_remain_on_chan=5000 max_scan_ssids=10
+1782880433.322534: nl80211: interface wl0 in phy phy0
+1782880433.353285: nl80211: Set mode ifindex 21 iftype 3 (AP)
+1782880433.353349: nl80211: Setup AP(wl0) - device_ap_sme=1 use_monitor=0
+1782880433.354885: nl80211: Subscribe to mgmt frames with AP handle 0x556d385ca0 (device SME)
+1782880433.354913: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x556d385ca0 match=04 multicast=0
+1782880433.354979: nl80211: kernel reports: Match already configured
+1782880433.354996: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880433.355001: nl80211: Register frame match - hexdump(len=1): 04
+1782880433.355006: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x556d385ca0 match=0501 multicast=0
+1782880433.355026: nl80211: kernel reports: Match already configured
+1782880433.355032: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880433.355036: nl80211: Register frame match - hexdump(len=2): 05 01
+1782880433.355041: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x556d385ca0 match=0503 multicast=0
+1782880433.355058: nl80211: kernel reports: Match already configured
+1782880433.355063: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880433.355068: nl80211: Register frame match - hexdump(len=2): 05 03
+1782880433.355072: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x556d385ca0 match=0504 multicast=0
+1782880433.355089: nl80211: kernel reports: Match already configured
+1782880433.355094: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880433.355098: nl80211: Register frame match - hexdump(len=2): 05 04
+1782880433.355102: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x556d385ca0 match=06 multicast=0
+1782880433.355119: nl80211: kernel reports: Match already configured
+1782880433.355125: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880433.355129: nl80211: Register frame match - hexdump(len=1): 06
+1782880433.355132: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x556d385ca0 match=08 multicast=0
+1782880433.355149: nl80211: kernel reports: Match already configured
+1782880433.355154: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880433.355158: nl80211: Register frame match - hexdump(len=1): 08
+1782880433.355162: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x556d385ca0 match=09 multicast=0
+1782880433.355178: nl80211: kernel reports: Match already configured
+1782880433.355184: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880433.355188: nl80211: Register frame match - hexdump(len=1): 09
+1782880433.355192: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x556d385ca0 match=0a multicast=0
+1782880433.355671: nl80211: kernel reports: Match already configured
+1782880433.355685: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880433.687376: nl80211: Register frame match - hexdump(len=1): 0a
+1782880433.687401: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x556d385ca0 match=11 multicast=0
+1782880433.687497: nl80211: kernel reports: Match already configured
+1782880433.687517: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880433.687521: nl80211: Register frame match - hexdump(len=1): 11
+1782880433.687526: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x556d385ca0 match=7f multicast=0
+1782880433.687550: nl80211: kernel reports: Match already configured
+1782880433.687557: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880433.687561: nl80211: Register frame match - hexdump(len=1): 7f
+1782880433.687605: nl80211: Failed to subscribe for mgmt frames from SME driver - trying to run without it
+1782880433.687641: nl80211: Enable Probe Request reporting nl_preq=0x556d385ca0
+1782880433.687646: nl80211: Register frame type=0x40 (WLAN_FC_STYPE_PROBE_REQ) nl_handle=0x556d385ca0 match= multicast=0
+1782880433.687668: nl80211: kernel reports: Match already configured
+1782880433.687677: nl80211: Register frame command failed (type=64): ret=-114 (Operation already in progress)
+1782880433.687681: nl80211: Register frame match - hexdump(len=0): [NULL]
+1782880433.687696: nl80211: Failed to enable Probe Request frame reporting in AP mode
+1782880433.687812: rfkill: Cannot open RFKILL control device
+1782880433.687817: nl80211: RFKILL status not available
+1782880433.688477: nl80211: Interface wl0 is in bridge br-lan
+1782880433.688525: nl80211: Add own interface ifindex 24 (ifidx_reason 21)
+1782880433.688532: nl80211: if_indices[16]: 24(21)
+1782880433.688542: nl80211: Add own interface ifindex 24 (ifidx_reason 21)
+1782880433.688546: nl80211: ifindex 24 already in the list
+1782880433.688549: nl80211: Add own interface ifindex 21 (ifidx_reason -1)
+1782880433.688553: nl80211: if_indices[16]: 24(21) 21(-1)
+1782880433.688615: phy: phy0
+1782880433.688647: Using existing control interface directory.
+1782880433.688691: Using existing control interface directory.
+1782880433.688713: wl0: interface state UNINITIALIZED->COUNTRY_UPDATE
+1782880433.688752: Previous country code 00, new country code #a 
+1782880433.688757: Continue interface setup after channel list update
+1782880433.688763: ctrl_iface not configured!
+root@prplOS:/# --wl0 FSM DONE--
+sleep 2
+sleep 2
+root@prplOS:/# wl -i wl0 bss up
+wl -i wl0 bss up
+root@prplOS:/# sleep 2
+sleep 2
+root@prplOS:/# grep -q '^wpa_key_mgmt=SAE$' /tmp/wl0_hapd.conf
+grep -q '^wpa_key_mgmt=SAE$' /tmp/wl0_hapd.conf
+root@prplOS:/# grep -q '^sae_pwe=2$' /tmp/wl0_hapd.conf
+grep -q '^sae_pwe=2$' /tmp/wl0_hapd.conf
+root@prplOS:/# grep -q '^ieee80211w=2$' /tmp/wl0_hapd.conf
+grep -q '^ieee80211w=2$' /tmp/wl0_hapd.conf
+root@prplOS:/# ! grep -Eq "^ieee80211be=1$" /tmp/wl0_hapd.conf
+! grep -Eq "^ieee80211be=1$" /tmp/wl0_hapd.conf
+root@prplOS:/# ! grep -Eq "^bss=wl0\.1$" /tmp/wl0_hapd.conf
+! grep -Eq "^bss=wl0\.1$" /tmp/wl0_hapd.conf
+root@prplOS:/# ! grep -Eq "^multi_ap=[1-9]" /tmp/wl0_hapd.conf
+! grep -Eq "^multi_ap=[1-9]" /tmp/wl0_hapd.conf
+root@prplOS:/# sleep 5
+sleep 5
+root@prplOS:/# wl -i wl0 bss
+wl -i wl0 bss
+up
+root@prplOS:/# ubus-cli "WiFi.AccessPoint.1.AssociatedDevice.*.MACAddress?"
+ubus-cli "WiFi.AccessPoint.1.AssociatedDevice.*.MACAddress?"
+> WiFi.AccessPoint.1.AssociatedDevice.*.MACAddress?
+WiFi.AccessPoint.1.AssociatedDevice.1.MACAddress="2C:59:17:00:19:95"
+
+root@prplOS:/# dmesg -n 1
+dmesg -n 1
+root@prplOS:/# echo "__testpilot_env_gate__"
+echo "__testpilot_env_gate__"
+__testpilot_env_gate__
+root@prplOS:/# ubus-cli "WiFi.AccessPoint.1.AssociatedDevice.*.MACAddress?"
+ubus-cli "WiFi.AccessPoint.1.AssociatedDevice.*.MACAddress?"
+> WiFi.AccessPoint.1.AssociatedDevice.*.MACAddress?
+WiFi.AccessPoint.1.AssociatedDevice.1.MACAddress="2C:59:17:00:19:95"
+
+root@prplOS:/# wl -i wl1 bss
+wl -i wl1 bss
+up
+root@prplOS:/# ubus-cli WiFi.Radio.2.Enable=1
+ubus-cli WiFi.Radio.2.Enable=1
+> WiFi.Radio.2.Enable=1
+WiFi.Radio.2.
+WiFi.Radio.2.Enable=1
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.4.Enable=0
+ubus-cli WiFi.AccessPoint.4.Enable=0
+> WiFi.AccessPoint.4.Enable=0
+WiFi.AccessPoint.4.
+WiFi.AccessPoint.4.Enable=0
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.3.Enable=0
+ubus-cli WiFi.AccessPoint.3.Enable=0
+> WiFi.AccessPoint.3.Enable=0
+WiFi.AccessPoint.3.
+WiFi.AccessPoint.3.Enable=0
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.3.MultiAPType=None
+ubus-cli WiFi.AccessPoint.3.MultiAPType=None
+> WiFi.AccessPoint.3.MultiAPType=None
+WiFi.AccessPoint.3.
+WiFi.AccessPoint.3.MultiAPType="None"
+
+root@prplOS:/# ubus-cli WiFi.SSID.6.SSID=testpilot6G
+ubus-cli WiFi.SSID.6.SSID=testpilot6G
+> WiFi.SSID.6.SSID=testpilot6G
+WiFi.SSID.6.
+WiFi.SSID.6.SSID="testpilot6G"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.3.Security.ModeEnabled=WPA3-Personal
+ubus-cli WiFi.AccessPoint.3.Security.ModeEnabled=WPA3-Personal
+> WiFi.AccessPoint.3.Security.ModeEnabled=WPA3-Personal
+WiFi.AccessPoint.3.Security.
+WiFi.AccessPoint.3.Security.ModeEnabled="WPA3-Personal"
+
+root@prplOS:/# ubus-cli 'WiFi.AccessPoint.3.Security.SAEPassphrase="00000000"'
+ubus-cli 'WiFi.AccessPoint.3.Security.SAEPassphrase="00000000"'
+> WiFi.AccessPoint.3.Security.SAEPassphrase="00000000"
+WiFi.AccessPoint.3.Security.
+WiFi.AccessPoint.3.Security.SAEPassphrase="00000000"
+
+root@prplOS:/# ubus-cli 'WiFi.AccessPoint.3.Security.KeyPassPhrase="00000000"'
+ubus-cli 'WiFi.AccessPoint.3.Security.KeyPassPhrase="00000000"'
+> WiFi.AccessPoint.3.Security.KeyPassPhrase="00000000"
+WiFi.AccessPoint.3.Security.
+WiFi.AccessPoint.3.Security.KeyPassPhrase="00000000"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.3.Security.MFPConfig=Required
+ubus-cli WiFi.AccessPoint.3.Security.MFPConfig=Required
+> WiFi.AccessPoint.3.Security.MFPConfig=Required
+WiFi.AccessPoint.3.Security.
+WiFi.AccessPoint.3.Security.MFPConfig="Required"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.3.Enable=1
+ubus-cli WiFi.AccessPoint.3.Enable=1
+> WiFi.AccessPoint.3.Enable=1
+WiFi.AccessPoint.3.
+WiFi.AccessPoint.3.Enable=1
+
+root@prplOS:/# grep -q ieee80211w /tmp/wl1_hapd.conf 2>/dev/null && echo READY || echo WAIT
+grep -q ieee80211w /tmp/wl1_hapd.conf 2>/dev/null && echo READY |
+| echo WAIT
+READY
+root@prplOS:/# sed -i 's/^sae_pwe=.*/sae_pwe=2/g' /tmp/wl1_hapd.conf
+sed -i 's/^sae_pwe=.*/sae_pwe=2/g' /tmp/wl1_hapd.conf
+root@prplOS:/# sed -i 's/^ieee80211be=.*/ieee80211be=0/g' /tmp/wl1_hapd.conf
+sed -i 's/^ieee80211be=.*/ieee80211be=0/g' /tmp/wl1_hapd.conf
+root@prplOS:/# sed -i '/^bss=wl1\.1$/,$d' /tmp/wl1_hapd.conf
+sed -i '/^bss=wl1\.1$/,$d' /tmp/wl1_hapd.conf
+root@prplOS:/# sed -i '/^ocv=/d; /^ieee80211w=/a ocv=0' /tmp/wl1_hapd.conf
+sed -i '/^ocv=/d; /^ieee80211w=/a ocv=0' /tmp/wl1_hapd.conf
+root@prplOS:/# grep '^ocv=0' /tmp/wl1_hapd.conf 2>&1
+grep '^ocv=0' /tmp/wl1_hapd.conf 2>&1
+ocv=0
+root@prplOS:/# wl -i wl1 bss
+wl -i wl1 bss
+up
+root@prplOS:/# pid=$(pgrep -f '/tmp/wl1_hapd.conf' 2>/dev/null | head -n1); if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+pid=$(pgrep -f '/tmp/wl1_hapd.conf' 2>/dev/null | head -n1); if [
+ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+root@prplOS:/# sleep 2
+sleep 2
+--wl1 FSM DONE--
+root@prplOS:/# rm -f /var/run/hostapd/wl1 /var/run/hostapd/wl1.1
+rm -f /var/run/hostapd/wl1 /var/run/hostapd/wl1.1
+root@prplOS:/# wl -i wl1 ap 1
+wl -i wl1 ap 1
+root@prplOS:/# wl -i wl1 up
+wl -i wl1 up
+root@prplOS:/# ifconfig wl1 up
+ifconfig wl1 up
+root@prplOS:/# hostapd -ddt -B /tmp/wl1_hapd.conf
+hostapd -ddt -B /tmp/wl1_hapd.conf
+1782880469.710340: random: Trying to read entropy from /dev/urandom
+1782880469.710392: Configuration file: /tmp/wl1_hapd.conf
+1782880469.711663: nl80211: TDLS supported
+1782880469.711686: nl80211: Supported cipher 00-0f-ac:1
+1782880469.711692: nl80211: Supported cipher 00-0f-ac:5
+1782880469.711696: nl80211: Supported cipher 00-0f-ac:2
+1782880469.711699: nl80211: Supported cipher 00-0f-ac:4
+1782880469.711702: nl80211: Supported cipher 00-0f-ac:6
+1782880469.711705: nl80211: Supported cipher 00-90-4c:0
+1782880469.711709: nl80211: Supported cipher 00-0f-ac:8
+1782880469.711712: nl80211: Supported cipher 00-0f-ac:9
+1782880469.711715: nl80211: Supported cipher 00-0f-ac:11
+1782880469.711717: nl80211: Supported cipher 00-0f-ac:12
+1782880469.711764: nl80211: Using driver-based off-channel TX
+1782880469.711775: nl80211: Supported vendor command: vendor_id=0x1018 subcmd=1
+1782880469.711779: nl80211: Supported vendor command: vendor_id=0x1018 subcmd=2
+1782880469.711782: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=0
+1782880469.711785: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=1
+1782880469.711788: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=2
+1782880469.711805: nl80211: key_mgmt=0xf0f enc=0x76f auth=0x7 flags=0x400000001a08d1c4 rrm_flags=0x0 probe_resp_offloads=0x0 max_stations=0 max_remain_on_chan=5000 max_scan_ssids=10
+1782880469.711812: nl80211: interface wl1 in phy phy1
+1782880469.721609: nl80211: Set mode ifindex 22 iftype 3 (AP)
+1782880469.721664: nl80211: Setup AP(wl1) - device_ap_sme=1 use_monitor=0
+1782880469.721898: nl80211: Subscribe to mgmt frames with AP handle 0x55c3d80000 (device SME)
+1782880469.721919: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55c3d80000 match=04 multicast=0
+1782880469.721968: nl80211: kernel reports: Match already configured
+1782880469.721985: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880469.721990: nl80211: Register frame match - hexdump(len=1): 04
+1782880469.721996: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55c3d80000 match=0501 multicast=0
+1782880469.722015: nl80211: kernel reports: Match already configured
+1782880469.722023: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880469.722027: nl80211: Register frame match - hexdump(len=2): 05 01
+1782880469.722032: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55c3d80000 match=0503 multicast=0
+1782880469.722095: nl80211: kernel reports: Match already configured
+1782880469.722102: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880469.722106: nl80211: Register frame match - hexdump(len=2): 05 03
+1782880469.722111: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55c3d80000 match=0504 multicast=0
+1782880469.722129: nl80211: kernel reports: Match already configured
+1782880469.722135: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880469.722139: nl80211: Register frame match - hexdump(len=2): 05 04
+1782880469.722143: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55c3d80000 match=06 multicast=0
+1782880469.722160: nl80211: kernel reports: Match already configured
+1782880469.722166: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880469.722170: nl80211: Register frame match - hexdump(len=1): 06
+1782880469.722174: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55c3d80000 match=08 multicast=0
+1782880469.722191: nl80211: kernel reports: Match already configured
+1782880469.722197: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880469.722201: nl80211: Register frame match - hexdump(len=1): 08
+1782880469.722205: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55c3d80000 match=09 multicast=0
+1782880469.722221: nl80211: kernel reports: Match already configured
+1782880469.722227: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880469.722231: nl80211: Register frame match - hexdump(len=1): 09
+1782880470.053181: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55c3d80000 match=0a multicast=0
+1782880470.053298: nl80211: kernel reports: Match already configured
+1782880470.053317: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880470.053322: nl80211: Register frame match - hexdump(len=1): 0a
+1782880470.053327: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55c3d80000 match=11 multicast=0
+1782880470.053346: nl80211: kernel reports: Match already configured
+1782880470.053352: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880470.053356: nl80211: Register frame match - hexdump(len=1): 11
+1782880470.053360: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55c3d80000 match=7f multicast=0
+1782880470.053378: nl80211: kernel reports: Match already configured
+1782880470.053383: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880470.053387: nl80211: Register frame match - hexdump(len=1): 7f
+1782880470.053426: nl80211: Failed to subscribe for mgmt frames from SME driver - trying to run without it
+1782880470.053461: nl80211: Enable Probe Request reporting nl_preq=0x55c3d80000
+1782880470.053465: nl80211: Register frame type=0x40 (WLAN_FC_STYPE_PROBE_REQ) nl_handle=0x55c3d80000 match= multicast=0
+1782880470.053484: nl80211: kernel reports: Match already configured
+1782880470.053491: nl80211: Register frame command failed (type=64): ret=-114 (Operation already in progress)
+1782880470.053495: nl80211: Register frame match - hexdump(len=0): [NULL]
+1782880470.053505: nl80211: Failed to enable Probe Request frame reporting in AP mode
+1782880470.053622: rfkill: Cannot open RFKILL control device
+1782880470.053628: nl80211: RFKILL status not available
+1782880470.078909: nl80211: Interface wl1 is in bridge br-lan
+1782880470.078987: nl80211: Add own interface ifindex 24 (ifidx_reason 22)
+1782880470.078995: nl80211: if_indices[16]: 24(22)
+1782880470.078998: nl80211: Add own interface ifindex 22 (ifidx_reason -1)
+1782880470.079002: nl80211: if_indices[16]: 24(22) 22(-1)
+1782880470.079087: phy: phy1
+1782880470.079124: Using existing control interface directory.
+1782880470.079168: wl1: interface state UNINITIALIZED->COUNTRY_UPDATE
+1782880470.079207: Previous country code 00, new country code #a 
+1782880470.079212: Continue interface setup after channel list update
+1782880470.079218: ctrl_iface not configured!
+root@prplOS:/# sleep 2
+sleep 2
+root@prplOS:/# wl -i wl1 bss up
+wl -i wl1 bss up
+root@prplOS:/# sleep 2
+sleep 2
+root@prplOS:/# sleep 3
+sleep 3
+root@prplOS:/# grep '^ocv=0' /tmp/wl1_hapd.conf 2>&1
+grep '^ocv=0' /tmp/wl1_hapd.conf 2>&1
+ocv=0
+root@prplOS:/# test -S /var/run/hostapd/wl1 && echo READY || echo WAIT
+test -S /var/run/hostapd/wl1 && echo READY || echo WAIT
+WAIT
+root@prplOS:/# pgrep -f '/tmp/wl1_hapd.conf' >/dev/null && echo READY || echo WAIT
+pgrep -f '/tmp/wl1_hapd.conf' >/dev/null && echo READY || echo WA
+IT
+READY
+root@prplOS:/# wl -i wl1 bss
+wl -i wl1 bss
+up
+root@prplOS:/# grep -q '^sae_pwe=2$' /tmp/wl1_hapd.conf
+grep -q '^sae_pwe=2$' /tmp/wl1_hapd.conf
+root@prplOS:/# ! grep -Eq "^ieee80211be=1$" /tmp/wl1_hapd.conf
+! grep -Eq "^ieee80211be=1$" /tmp/wl1_hapd.conf
+root@prplOS:/# ! grep -Eq "^bss=wl1\.1$" /tmp/wl1_hapd.conf
+! grep -Eq "^bss=wl1\.1$" /tmp/wl1_hapd.conf
+root@prplOS:/# ! grep -Eq "^multi_ap=[1-9]" /tmp/wl1_hapd.conf
+! grep -Eq "^multi_ap=[1-9]" /tmp/wl1_hapd.conf
+root@prplOS:/# sleep 5
+sleep 5
+root@prplOS:/# wl -i wl1 bss
+wl -i wl1 bss
+up
+root@prplOS:/# ubus-cli "WiFi.AccessPoint.3.AssociatedDevice.*.MACAddress?"
+ubus-cli "WiFi.AccessPoint.3.AssociatedDevice.*.MACAddress?"
+> WiFi.AccessPoint.3.AssociatedDevice.*.MACAddress?
+WiFi.AccessPoint.3.AssociatedDevice.1.MACAddress="2C:59:17:00:19:96"
+
+root@prplOS:/# wl -i wl2 bss
+wl -i wl2 bss
+up
+root@prplOS:/# ubus-cli WiFi.Radio.3.Enable=1
+ubus-cli WiFi.Radio.3.Enable=1
+> WiFi.Radio.3.Enable=1
+WiFi.Radio.3.
+WiFi.Radio.3.Enable=1
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.6.Enable=0
+ubus-cli WiFi.AccessPoint.6.Enable=0
+> WiFi.AccessPoint.6.Enable=0
+WiFi.AccessPoint.6.
+WiFi.AccessPoint.6.Enable=0
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.5.Enable=0
+ubus-cli WiFi.AccessPoint.5.Enable=0
+> WiFi.AccessPoint.5.Enable=0
+WiFi.AccessPoint.5.
+WiFi.AccessPoint.5.Enable=0
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.5.MultiAPType=None
+ubus-cli WiFi.AccessPoint.5.MultiAPType=None
+> WiFi.AccessPoint.5.MultiAPType=None
+WiFi.AccessPoint.5.
+WiFi.AccessPoint.5.MultiAPType="None"
+
+root@prplOS:/# ubus-cli WiFi.SSID.8.SSID=testpilot2G
+ubus-cli WiFi.SSID.8.SSID=testpilot2G
+> WiFi.SSID.8.SSID=testpilot2G
+WiFi.SSID.8.
+WiFi.SSID.8.SSID="testpilot2G"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.5.Security.ModeEnabled=WPA3-Personal
+ubus-cli WiFi.AccessPoint.5.Security.ModeEnabled=WPA3-Personal
+> WiFi.AccessPoint.5.Security.ModeEnabled=WPA3-Personal
+WiFi.AccessPoint.5.Security.
+WiFi.AccessPoint.5.Security.ModeEnabled="WPA3-Personal"
+
+root@prplOS:/# ubus-cli 'WiFi.AccessPoint.5.Security.SAEPassphrase="00000000"'
+ubus-cli 'WiFi.AccessPoint.5.Security.SAEPassphrase="00000000"'
+> WiFi.AccessPoint.5.Security.SAEPassphrase="00000000"
+WiFi.AccessPoint.5.Security.
+WiFi.AccessPoint.5.Security.SAEPassphrase="00000000"
+
+root@prplOS:/# ubus-cli 'WiFi.AccessPoint.5.Security.KeyPassPhrase="00000000"'
+ubus-cli 'WiFi.AccessPoint.5.Security.KeyPassPhrase="00000000"'
+> WiFi.AccessPoint.5.Security.KeyPassPhrase="00000000"
+WiFi.AccessPoint.5.Security.
+WiFi.AccessPoint.5.Security.KeyPassPhrase="00000000"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.5.Security.MFPConfig=Required
+ubus-cli WiFi.AccessPoint.5.Security.MFPConfig=Required
+> WiFi.AccessPoint.5.Security.MFPConfig=Required
+WiFi.AccessPoint.5.Security.
+WiFi.AccessPoint.5.Security.MFPConfig="Required"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.5.Enable=1
+ubus-cli WiFi.AccessPoint.5.Enable=1
+> WiFi.AccessPoint.5.Enable=1
+WiFi.AccessPoint.5.
+WiFi.AccessPoint.5.Enable=1
+
+root@prplOS:/# sed -i '/^bss=wl2\.1$/,$d' /tmp/wl2_hapd.conf
+sed -i '/^bss=wl2\.1$/,$d' /tmp/wl2_hapd.conf
+root@prplOS:/# sed -i 's/^wpa_key_mgmt=.*/wpa_key_mgmt=SAE/' /tmp/wl2_hapd.conf
+sed -i 's/^wpa_key_mgmt=.*/wpa_key_mgmt=SAE/' /tmp/wl2_hapd.conf
+root@prplOS:/# sed -i 's/^ieee80211w=.*/ieee80211w=2/' /tmp/wl2_hapd.conf
+sed -i 's/^ieee80211w=.*/ieee80211w=2/' /tmp/wl2_hapd.conf
+root@prplOS:/# sed -i 's/^ieee80211be=.*/ieee80211be=0/' /tmp/wl2_hapd.conf
+sed -i 's/^ieee80211be=.*/ieee80211be=0/' /tmp/wl2_hapd.conf
+root@prplOS:/# sed -i '/^qos_map_set=/d; /^multi_ap=/d; /^mlo_aff_link_kde=/d' /tmp/wl2_hapd.conf
+sed -i '/^qos_map_set=/d; /^multi_ap=/d; /^mlo_aff_link_kde=/d' /
+tmp/wl2_hapd.conf
+root@prplOS:/# sed -i '/^sae_password=/d; /^sae_pwe=/d; /^ocv=/d' /tmp/wl2_hapd.conf
+sed -i '/^sae_password=/d; /^sae_pwe=/d; /^ocv=/d' /tmp/wl2_hapd.
+conf
+root@prplOS:/# sed -i '/^wpa_passphrase=/a sae_password=00000000' /tmp/wl2_hapd.conf
+sed -i '/^wpa_passphrase=/a sae_password=00000000' /tmp/wl2_hapd.
+conf
+root@prplOS:/# echo 'sae_pwe=2' >> /tmp/wl2_hapd.conf
+echo 'sae_pwe=2' >> /tmp/wl2_hapd.conf
+root@prplOS:/# echo 'ocv=0' >> /tmp/wl2_hapd.conf
+echo 'ocv=0' >> /tmp/wl2_hapd.conf
+root@prplOS:/# pid=$(pgrep -f '/tmp/wl2_hapd.conf' 2>/dev/null | head -n1); if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+pid=$(pgrep -f '/tmp/wl2_hapd.conf' 2>/dev/null | head -n1); if [
+ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+root@prplOS:/# sleep 2
+sleep 2
+--wl2 FSM DONE--
+--wl2 FSM DONE--
+root@prplOS:/# rm -f /var/run/hostapd/wl2 /var/run/hostapd/wl2.1
+rm -f /var/run/hostapd/wl2 /var/run/hostapd/wl2.1
+root@prplOS:/# wl -i wl2 ap 1
+wl -i wl2 ap 1
+root@prplOS:/# wl -i wl2 up
+wl -i wl2 up
+root@prplOS:/# ifconfig wl2 up
+ifconfig wl2 up
+root@prplOS:/# hostapd -ddt -B /tmp/wl2_hapd.conf
+hostapd -ddt -B /tmp/wl2_hapd.conf
+1782880523.229969: random: Trying to read entropy from /dev/urandom
+1782880523.230035: Configuration file: /tmp/wl2_hapd.conf
+1782880523.231427: nl80211: TDLS supported
+1782880523.231450: nl80211: Supported cipher 00-0f-ac:1
+1782880523.231455: nl80211: Supported cipher 00-0f-ac:5
+1782880523.231459: nl80211: Supported cipher 00-0f-ac:2
+1782880523.231463: nl80211: Supported cipher 00-0f-ac:4
+1782880523.231466: nl80211: Supported cipher 00-0f-ac:6
+1782880523.231469: nl80211: Supported cipher 00-90-4c:0
+1782880523.231472: nl80211: Supported cipher 00-0f-ac:8
+1782880523.231475: nl80211: Supported cipher 00-0f-ac:9
+1782880523.231478: nl80211: Supported cipher 00-0f-ac:11
+1782880523.231481: nl80211: Supported cipher 00-0f-ac:12
+1782880523.231500: nl80211: Using driver-based off-channel TX
+1782880523.231509: nl80211: Supported vendor command: vendor_id=0x1018 subcmd=1
+1782880523.231513: nl80211: Supported vendor command: vendor_id=0x1018 subcmd=2
+1782880523.231517: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=0
+1782880523.231520: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=1
+1782880523.231523: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=2
+1782880523.231539: nl80211: key_mgmt=0xf0f enc=0x76f auth=0x7 flags=0x400000001a08d1c4 rrm_flags=0x0 probe_resp_offloads=0x0 max_stations=0 max_remain_on_chan=5000 max_scan_ssids=10
+1782880523.231546: nl80211: interface wl2 in phy phy2
+1782880523.249952: nl80211: Set mode ifindex 23 iftype 3 (AP)
+1782880523.250016: nl80211: Setup AP(wl2) - device_ap_sme=1 use_monitor=0
+1782880523.250061: nl80211: Subscribe to mgmt frames with AP handle 0x557ced4ca0 (device SME)
+1782880523.250069: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x557ced4ca0 match=04 multicast=0
+1782880523.250100: nl80211: kernel reports: Match already configured
+1782880523.250115: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880523.250120: nl80211: Register frame match - hexdump(len=1): 04
+1782880523.250125: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x557ced4ca0 match=0501 multicast=0
+1782880523.250143: nl80211: kernel reports: Match already configured
+1782880523.250149: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880523.250153: nl80211: Register frame match - hexdump(len=2): 05 01
+1782880523.250157: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x557ced4ca0 match=0503 multicast=0
+1782880523.250174: nl80211: kernel reports: Match already configured
+1782880523.250180: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880523.250184: nl80211: Register frame match - hexdump(len=2): 05 03
+1782880523.250188: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x557ced4ca0 match=0504 multicast=0
+1782880523.250205: nl80211: kernel reports: Match already configured
+1782880523.250211: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880523.250215: nl80211: Register frame match - hexdump(len=2): 05 04
+1782880523.250219: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x557ced4ca0 match=06 multicast=0
+1782880523.250236: nl80211: kernel reports: Match already configured
+1782880523.250242: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880523.250246: nl80211: Register frame match - hexdump(len=1): 06
+1782880523.250250: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x557ced4ca0 match=08 multicast=0
+1782880523.250267: nl80211: kernel reports: Match already configured
+1782880523.250272: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880523.250276: nl80211: Register frame match - hexdump(len=1): 08
+1782880523.250280: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x557ced4ca0 match=09 multicast=0
+1782880523.250297: nl80211: kernel reports: Match already configured
+1782880523.250303: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880523.250307: nl80211: Register frame match - hexdump(len=1): 09
+1782880523.250311: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x557ced4ca0 match=0a multicast=0
+1782880523.581195: nl80211: kernel reports: Match already configured
+1782880523.581228: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880523.581234: nl80211: Register frame match - hexdump(len=1): 0a
+1782880523.581241: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x557ced4ca0 match=11 multicast=0
+1782880523.581261: nl80211: kernel reports: Match already configured
+1782880523.581267: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880523.581271: nl80211: Register frame match - hexdump(len=1): 11
+1782880523.581275: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x557ced4ca0 match=7f multicast=0
+1782880523.581292: nl80211: kernel reports: Match already configured
+1782880523.581297: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880523.581301: nl80211: Register frame match - hexdump(len=1): 7f
+1782880523.581344: nl80211: Failed to subscribe for mgmt frames from SME driver - trying to run without it
+1782880523.581379: nl80211: Enable Probe Request reporting nl_preq=0x557ced4ca0
+1782880523.581384: nl80211: Register frame type=0x40 (WLAN_FC_STYPE_PROBE_REQ) nl_handle=0x557ced4ca0 match= multicast=0
+1782880523.581403: nl80211: kernel reports: Match already configured
+1782880523.581409: nl80211: Register frame command failed (type=64): ret=-114 (Operation already in progress)
+1782880523.581413: nl80211: Register frame match - hexdump(len=0): [NULL]
+1782880523.581424: nl80211: Failed to enable Probe Request frame reporting in AP mode
+1782880523.581557: rfkill: Cannot open RFKILL control device
+1782880523.581562: nl80211: RFKILL status not available
+1782880523.606978: nl80211: Interface wl2 is in bridge br-lan
+1782880523.607023: nl80211: Add own interface ifindex 24 (ifidx_reason 23)
+1782880523.607030: nl80211: if_indices[16]: 24(23)
+1782880523.607041: nl80211: Add own interface ifindex 24 (ifidx_reason 23)
+1782880523.607045: nl80211: ifindex 24 already in the list
+1782880523.607048: nl80211: Add own interface ifindex 23 (ifidx_reason -1)
+1782880523.607051: nl80211: if_indices[16]: 24(23) 23(-1)
+1782880523.607110: phy: phy2
+1782880523.607158: Using existing control interface directory.
+1782880523.607213: Using existing control interface directory.
+1782880523.607234: wl2: interface state UNINITIALIZED->COUNTRY_UPDATE
+1782880523.607272: Previous country code 00, new country code #a 
+1782880523.607277: Continue interface setup after channel list update
+1782880523.607283: ctrl_iface not configured!
+root@prplOS:/# sleep 2
+sleep 2
+root@prplOS:/# wl -i wl2 bss up
+wl -i wl2 bss up
+root@prplOS:/# sleep 2
+sleep 2
+root@prplOS:/# grep -q '^wpa_key_mgmt=SAE$' /tmp/wl2_hapd.conf
+grep -q '^wpa_key_mgmt=SAE$' /tmp/wl2_hapd.conf
+root@prplOS:/# grep -q '^sae_pwe=2$' /tmp/wl2_hapd.conf
+grep -q '^sae_pwe=2$' /tmp/wl2_hapd.conf
+root@prplOS:/# grep -q '^ieee80211w=2$' /tmp/wl2_hapd.conf
+grep -q '^ieee80211w=2$' /tmp/wl2_hapd.conf
+root@prplOS:/# ! grep -Eq "^ieee80211be=1$" /tmp/wl2_hapd.conf
+! grep -Eq "^ieee80211be=1$" /tmp/wl2_hapd.conf
+root@prplOS:/# ! grep -Eq "^bss=wl2\.1$" /tmp/wl2_hapd.conf
+! grep -Eq "^bss=wl2\.1$" /tmp/wl2_hapd.conf
+root@prplOS:/# ! grep -Eq "^multi_ap=[1-9]" /tmp/wl2_hapd.conf
+! grep -Eq "^multi_ap=[1-9]" /tmp/wl2_hapd.conf
+root@prplOS:/# sleep 5
+sleep 5
+root@prplOS:/# wl -i wl2 bss
+wl -i wl2 bss
+up
+root@prplOS:/# ubus-cli "WiFi.AccessPoint.5.AssociatedDevice.*.MACAddress?"
+ubus-cli "WiFi.AccessPoint.5.AssociatedDevice.*.MACAddress?"
+> WiFi.AccessPoint.5.AssociatedDevice.*.MACAddress?
+WiFi.AccessPoint.5.AssociatedDevice.1.MACAddress="2C:59:17:00:19:A7"
+
+root@prplOS:/# wl -i wl0 bss
+wl -i wl0 bss
+up
+root@prplOS:/# ubus-cli WiFi.Radio.1.Enable=1
+ubus-cli WiFi.Radio.1.Enable=1
+> WiFi.Radio.1.Enable=1
+WiFi.Radio.1.
+WiFi.Radio.1.Enable=1
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.2.Enable=0
+ubus-cli WiFi.AccessPoint.2.Enable=0
+> WiFi.AccessPoint.2.Enable=0
+WiFi.AccessPoint.2.
+WiFi.AccessPoint.2.Enable=0
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.1.Enable=0
+ubus-cli WiFi.AccessPoint.1.Enable=0
+> WiFi.AccessPoint.1.Enable=0
+WiFi.AccessPoint.1.
+WiFi.AccessPoint.1.Enable=0
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.1.MultiAPType=None
+ubus-cli WiFi.AccessPoint.1.MultiAPType=None
+> WiFi.AccessPoint.1.MultiAPType=None
+WiFi.AccessPoint.1.
+WiFi.AccessPoint.1.MultiAPType="None"
+
+root@prplOS:/# ubus-cli WiFi.Radio.1.Channel=36
+ubus-cli WiFi.Radio.1.Channel=36
+> WiFi.Radio.1.Channel=36
+WiFi.Radio.1.
+WiFi.Radio.1.Channel=36
+
+root@prplOS:/# ubus-cli WiFi.SSID.4.SSID=testpilot5G
+ubus-cli WiFi.SSID.4.SSID=testpilot5G
+> WiFi.SSID.4.SSID=testpilot5G
+WiFi.SSID.4.
+WiFi.SSID.4.SSID="testpilot5G"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.1.Security.ModeEnabled=WPA3-Personal
+ubus-cli WiFi.AccessPoint.1.Security.ModeEnabled=WPA3-Personal
+> WiFi.AccessPoint.1.Security.ModeEnabled=WPA3-Personal
+WiFi.AccessPoint.1.Security.
+WiFi.AccessPoint.1.Security.ModeEnabled="WPA3-Personal"
+
+root@prplOS:/# ubus-cli 'WiFi.AccessPoint.1.Security.SAEPassphrase="00000000"'
+ubus-cli 'WiFi.AccessPoint.1.Security.SAEPassphrase="00000000"'
+> WiFi.AccessPoint.1.Security.SAEPassphrase="00000000"
+WiFi.AccessPoint.1.Security.
+WiFi.AccessPoint.1.Security.SAEPassphrase="00000000"
+
+root@prplOS:/# ubus-cli 'WiFi.AccessPoint.1.Security.KeyPassPhrase="00000000"'
+ubus-cli 'WiFi.AccessPoint.1.Security.KeyPassPhrase="00000000"'
+> WiFi.AccessPoint.1.Security.KeyPassPhrase="00000000"
+WiFi.AccessPoint.1.Security.
+WiFi.AccessPoint.1.Security.KeyPassPhrase="00000000"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.1.Security.MFPConfig=Required
+ubus-cli WiFi.AccessPoint.1.Security.MFPConfig=Required
+> WiFi.AccessPoint.1.Security.MFPConfig=Required
+WiFi.AccessPoint.1.Security.
+WiFi.AccessPoint.1.Security.MFPConfig="Required"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.1.Enable=1
+ubus-cli WiFi.AccessPoint.1.Enable=1
+> WiFi.AccessPoint.1.Enable=1
+WiFi.AccessPoint.1.
+WiFi.AccessPoint.1.Enable=1
+
+root@prplOS:/# sed -i '/^bss=wl0\.1$/,$d' /tmp/wl0_hapd.conf
+sed -i '/^bss=wl0\.1$/,$d' /tmp/wl0_hapd.conf
+root@prplOS:/# sed -i 's/^wpa_key_mgmt=.*/wpa_key_mgmt=SAE/' /tmp/wl0_hapd.conf
+sed -i 's/^wpa_key_mgmt=.*/wpa_key_mgmt=SAE/' /tmp/wl0_hapd.conf
+root@prplOS:/# sed -i 's/^ieee80211w=.*/ieee80211w=2/' /tmp/wl0_hapd.conf
+sed -i 's/^ieee80211w=.*/ieee80211w=2/' /tmp/wl0_hapd.conf
+root@prplOS:/# sed -i 's/^ieee80211be=.*/ieee80211be=0/' /tmp/wl0_hapd.conf
+sed -i 's/^ieee80211be=.*/ieee80211be=0/' /tmp/wl0_hapd.conf
+root@prplOS:/# sed -i '/^qos_map_set=/d; /^multi_ap=/d; /^mlo_aff_link_kde=/d' /tmp/wl0_hapd.conf
+sed -i '/^qos_map_set=/d; /^multi_ap=/d; /^mlo_aff_link_kde=/d' /
+tmp/wl0_hapd.conf
+root@prplOS:/# sed -i '/^sae_password=/d; /^sae_pwe=/d; /^ocv=/d' /tmp/wl0_hapd.conf
+sed -i '/^sae_password=/d; /^sae_pwe=/d; /^ocv=/d' /tmp/wl0_hapd.
+conf
+root@prplOS:/# sed -i '/^wpa_passphrase=/a sae_password=00000000' /tmp/wl0_hapd.conf
+sed -i '/^wpa_passphrase=/a sae_password=00000000' /tmp/wl0_hapd.
+conf
+root@prplOS:/# echo 'sae_pwe=2' >> /tmp/wl0_hapd.conf
+echo 'sae_pwe=2' >> /tmp/wl0_hapd.conf
+root@prplOS:/# echo 'ocv=0' >> /tmp/wl0_hapd.conf
+echo 'ocv=0' >> /tmp/wl0_hapd.conf
+root@prplOS:/# pid=$(pgrep -f '/tmp/wl0_hapd.conf' 2>/dev/null | head -n1); if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+pid=$(pgrep -f '/tmp/wl0_hapd.conf' 2>/dev/null | head -n1); if [
+ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+--wl0 FSM DONE--
+root@prplOS:/# sleep 2
+sleep 2
+--wl0 FSM DONE--
+root@prplOS:/# rm -f /var/run/hostapd/wl0 /var/run/hostapd/wl0.1
+rm -f /var/run/hostapd/wl0 /var/run/hostapd/wl0.1
+root@prplOS:/# wl -i wl0 ap 1
+wl -i wl0 ap 1
+root@prplOS:/# wl -i wl0 up
+wl -i wl0 up
+root@prplOS:/# ifconfig wl0 up
+ifconfig wl0 up
+root@prplOS:/# hostapd -ddt -B /tmp/wl0_hapd.conf
+hostapd -ddt -B /tmp/wl0_hapd.conf
+1782880560.352103: random: Trying to read entropy from /dev/urandom
+1782880560.352176: Configuration file: /tmp/wl0_hapd.conf
+1782880560.353585: nl80211: TDLS supported
+1782880560.353617: nl80211: Supported cipher 00-0f-ac:1
+1782880560.353623: nl80211: Supported cipher 00-0f-ac:5
+1782880560.353627: nl80211: Supported cipher 00-0f-ac:2
+1782880560.353630: nl80211: Supported cipher 00-0f-ac:4
+1782880560.353633: nl80211: Supported cipher 00-0f-ac:6
+1782880560.353636: nl80211: Supported cipher 00-90-4c:0
+1782880560.353640: nl80211: Supported cipher 00-0f-ac:8
+1782880560.353643: nl80211: Supported cipher 00-0f-ac:9
+1782880560.353646: nl80211: Supported cipher 00-0f-ac:11
+1782880560.353649: nl80211: Supported cipher 00-0f-ac:12
+1782880560.353675: nl80211: Using driver-based off-channel TX
+1782880560.353684: nl80211: Supported vendor command: vendor_id=0x1018 subcmd=1
+1782880560.353688: nl80211: Supported vendor command: vendor_id=0x1018 subcmd=2
+1782880560.353691: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=0
+1782880560.353695: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=1
+1782880560.353698: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=2
+1782880560.353714: nl80211: key_mgmt=0xf0f enc=0x76f auth=0x7 flags=0x400000001a08d1c4 rrm_flags=0x0 probe_resp_offloads=0x0 max_stations=0 max_remain_on_chan=5000 max_scan_ssids=10
+1782880560.353721: nl80211: interface wl0 in phy phy0
+1782880560.373333: nl80211: Set mode ifindex 21 iftype 3 (AP)
+1782880560.373375: nl80211: Setup AP(wl0) - device_ap_sme=1 use_monitor=0
+1782880560.373408: nl80211: Subscribe to mgmt frames with AP handle 0x55ca3e1ca0 (device SME)
+1782880560.373415: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55ca3e1ca0 match=04 multicast=0
+1782880560.373443: nl80211: kernel reports: Match already configured
+1782880560.373458: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880560.373462: nl80211: Register frame match - hexdump(len=1): 04
+1782880560.373467: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55ca3e1ca0 match=0501 multicast=0
+1782880560.373484: nl80211: kernel reports: Match already configured
+1782880560.373491: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880560.373494: nl80211: Register frame match - hexdump(len=2): 05 01
+1782880560.373499: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55ca3e1ca0 match=0503 multicast=0
+1782880560.373516: nl80211: kernel reports: Match already configured
+1782880560.373521: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880560.373525: nl80211: Register frame match - hexdump(len=2): 05 03
+1782880560.373531: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55ca3e1ca0 match=0504 multicast=0
+1782880560.373551: nl80211: kernel reports: Match already configured
+1782880560.373557: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880560.373561: nl80211: Register frame match - hexdump(len=2): 05 04
+1782880560.373565: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55ca3e1ca0 match=06 multicast=0
+1782880560.373585: nl80211: kernel reports: Match already configured
+1782880560.373592: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880560.373596: nl80211: Register frame match - hexdump(len=1): 06
+1782880560.373600: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55ca3e1ca0 match=08 multicast=0
+1782880560.373618: nl80211: kernel reports: Match already configured
+1782880560.373624: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880560.373628: nl80211: Register frame match - hexdump(len=1): 08
+1782880560.373632: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55ca3e1ca0 match=09 multicast=0
+1782880560.373653: nl80211: kernel reports: Match already configured
+1782880560.373659: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880560.373664: nl80211: Register frame match - hexdump(len=1): 09
+1782880560.373668: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55ca3e1ca0 match=0a multicast=0
+--wl0 FSM DONE--
+1782880560.723850: nl80211: kernel reports: Match already configured
+1782880560.723892: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880560.723899: nl80211: Register frame match - hexdump(len=1): 0a
+1782880560.723907: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55ca3e1ca0 match=11 multicast=0
+1782880560.723953: nl80211: kernel reports: Match already configured
+1782880560.723965: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880560.723969: nl80211: Register frame match - hexdump(len=1): 11
+1782880560.723973: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55ca3e1ca0 match=7f multicast=0
+1782880560.723998: nl80211: kernel reports: Match already configured
+1782880560.724005: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880560.724009: nl80211: Register frame match - hexdump(len=1): 7f
+1782880560.724050: nl80211: Failed to subscribe for mgmt frames from SME driver - trying to run without it
+1782880560.724080: nl80211: Enable Probe Request reporting nl_preq=0x55ca3e1ca0
+1782880560.724085: nl80211: Register frame type=0x40 (WLAN_FC_STYPE_PROBE_REQ) nl_handle=0x55ca3e1ca0 match= multicast=0
+1782880560.724186: nl80211: kernel reports: Match already configured
+1782880560.724200: nl80211: Register frame command failed (type=64): ret=-114 (Operation already in progress)
+1782880560.724205: nl80211: Register frame match - hexdump(len=0): [NULL]
+1782880560.724228: nl80211: Failed to enable Probe Request frame reporting in AP mode
+1782880560.724355: rfkill: Cannot open RFKILL control device
+1782880560.724362: nl80211: RFKILL status not available
+1782880560.759741: nl80211: Interface wl0 is in bridge br-lan
+1782880560.759784: nl80211: Add own interface ifindex 24 (ifidx_reason 21)
+1782880560.759791: nl80211: if_indices[16]: 24(21)
+1782880560.759800: nl80211: Add own interface ifindex 24 (ifidx_reason 21)
+1782880560.759805: nl80211: ifindex 24 already in the list
+1782880560.759808: nl80211: Add own interface ifindex 21 (ifidx_reason -1)
+1782880560.759812: nl80211: if_indices[16]: 24(21) 21(-1)
+1782880560.759919: phy: phy0
+1782880560.759959: Using existing control interface directory.
+1782880560.760004: Using existing control interface directory.
+1782880560.760025: wl0: interface state UNINITIALIZED->COUNTRY_UPDATE
+1782880560.760068: Previous country code 00, new country code #a 
+1782880560.760077: Continue interface setup after channel list update
+1782880560.760083: ctrl_iface not configured!
+root@prplOS:/# sleep 2
+sleep 2
+root@prplOS:/# wl -i wl0 bss up
+wl -i wl0 bss up
+root@prplOS:/# sleep 2
+sleep 2
+root@prplOS:/# grep -q '^wpa_key_mgmt=SAE$' /tmp/wl0_hapd.conf
+grep -q '^wpa_key_mgmt=SAE$' /tmp/wl0_hapd.conf
+root@prplOS:/# grep -q '^sae_pwe=2$' /tmp/wl0_hapd.conf
+grep -q '^sae_pwe=2$' /tmp/wl0_hapd.conf
+root@prplOS:/# grep -q '^ieee80211w=2$' /tmp/wl0_hapd.conf
+grep -q '^ieee80211w=2$' /tmp/wl0_hapd.conf
+root@prplOS:/# ! grep -Eq "^ieee80211be=1$" /tmp/wl0_hapd.conf
+! grep -Eq "^ieee80211be=1$" /tmp/wl0_hapd.conf
+root@prplOS:/# ! grep -Eq "^bss=wl0\.1$" /tmp/wl0_hapd.conf
+! grep -Eq "^bss=wl0\.1$" /tmp/wl0_hapd.conf
+root@prplOS:/# ! grep -Eq "^multi_ap=[1-9]" /tmp/wl0_hapd.conf
+! grep -Eq "^multi_ap=[1-9]" /tmp/wl0_hapd.conf
+root@prplOS:/# sleep 5
+sleep 5
+root@prplOS:/# wl -i wl0 bss
+wl -i wl0 bss
+up
+root@prplOS:/# ubus-cli "WiFi.AccessPoint.1.AssociatedDevice.*.MACAddress?"
+ubus-cli "WiFi.AccessPoint.1.AssociatedDevice.*.MACAddress?"
+> WiFi.AccessPoint.1.AssociatedDevice.*.MACAddress?
+WiFi.AccessPoint.1.AssociatedDevice.1.MACAddress="2C:59:17:00:19:95"
+
+root@prplOS:/# wl -i wl0 assoclist | tr 'A-F' 'a-f' | sed -n 's/^assoclist \([^ ]*\).*$/AssocMac5g=\1/p'
+wl -i wl0 assoclist | tr 'A-F' 'a-f' | sed -n 's/^assoclist \([^ 
+]*\).*$/AssocMac5g=\1/p'
+AssocMac5g=2c:59:17:00:19:95
+root@prplOS:/# printf '%s' 'STA_MAC=$(wl -i wl0 assoclist | awk '\''NR==1{print $2}'\''); [ -n "$STA_MAC" ] &' > /tmp/_tp_cmd.sh
+printf '%s' 'STA_MAC=$(wl -i wl0 assoclist | awk '\''NR==1{print 
+$2}'\''); [ -n "$STA_MAC" ] &' > /tmp/_tp_cmd.sh
+root@prplOS:/# printf '%s' '& wl -i wl0 sta_info $STA_MAC | sed -n '\''s/.*smoothed rssi: *\(-*[0-9][0-9]*\).' >> /tmp/_tp_cmd.sh
+printf '%s' '& wl -i wl0 sta_info $STA_MAC | sed -n '\''s/.*smoot
+hed rssi: *\(-*[0-9][0-9]*\).' >> /tmp/_tp_cmd.sh
+root@prplOS:/# printf '%s\n' '*/DriverSmoothedRSSI5g=\1/p'\''' >> /tmp/_tp_cmd.sh
+printf '%s\n' '*/DriverSmoothedRSSI5g=\1/p'\''' >> /tmp/_tp_cmd.s
+h
+root@prplOS:/# sh /tmp/_tp_cmd.sh; rm -f /tmp/_tp_cmd.sh
+sh /tmp/_tp_cmd.sh; rm -f /tmp/_tp_cmd.sh
+DriverSmoothedRSSI5g=-36
+root@prplOS:/# ubus-cli "WiFi.AccessPoint.1.AssociatedDevice.1.AvgSignalStrength?"
+ubus-cli "WiFi.AccessPoint.1.AssociatedDevice.1.AvgSignalStrength
+?"
+> WiFi.AccessPoint.1.AssociatedDevice.1.AvgSignalStrength?
+WiFi.AccessPoint.1.AssociatedDevice.1.AvgSignalStrength=0
+
+root@prplOS:/# wl -i wl1 bss
+wl -i wl1 bss
+up
+root@prplOS:/# ubus-cli WiFi.Radio.2.Enable=1
+ubus-cli WiFi.Radio.2.Enable=1
+> WiFi.Radio.2.Enable=1
+WiFi.Radio.2.
+WiFi.Radio.2.Enable=1
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.4.Enable=0
+ubus-cli WiFi.AccessPoint.4.Enable=0
+> WiFi.AccessPoint.4.Enable=0
+WiFi.AccessPoint.4.
+WiFi.AccessPoint.4.Enable=0
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.3.Enable=0
+ubus-cli WiFi.AccessPoint.3.Enable=0
+> WiFi.AccessPoint.3.Enable=0
+WiFi.AccessPoint.3.
+WiFi.AccessPoint.3.Enable=0
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.3.MultiAPType=None
+ubus-cli WiFi.AccessPoint.3.MultiAPType=None
+> WiFi.AccessPoint.3.MultiAPType=None
+WiFi.AccessPoint.3.
+WiFi.AccessPoint.3.MultiAPType="None"
+
+root@prplOS:/# ubus-cli WiFi.SSID.6.SSID=testpilot6G
+ubus-cli WiFi.SSID.6.SSID=testpilot6G
+> WiFi.SSID.6.SSID=testpilot6G
+WiFi.SSID.6.
+WiFi.SSID.6.SSID="testpilot6G"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.3.Security.ModeEnabled=WPA3-Personal
+ubus-cli WiFi.AccessPoint.3.Security.ModeEnabled=WPA3-Personal
+> WiFi.AccessPoint.3.Security.ModeEnabled=WPA3-Personal
+WiFi.AccessPoint.3.Security.
+WiFi.AccessPoint.3.Security.ModeEnabled="WPA3-Personal"
+
+root@prplOS:/# ubus-cli 'WiFi.AccessPoint.3.Security.SAEPassphrase="00000000"'
+ubus-cli 'WiFi.AccessPoint.3.Security.SAEPassphrase="00000000"'
+> WiFi.AccessPoint.3.Security.SAEPassphrase="00000000"
+WiFi.AccessPoint.3.Security.
+WiFi.AccessPoint.3.Security.SAEPassphrase="00000000"
+
+root@prplOS:/# ubus-cli 'WiFi.AccessPoint.3.Security.KeyPassPhrase="00000000"'
+ubus-cli 'WiFi.AccessPoint.3.Security.KeyPassPhrase="00000000"'
+> WiFi.AccessPoint.3.Security.KeyPassPhrase="00000000"
+WiFi.AccessPoint.3.Security.
+WiFi.AccessPoint.3.Security.KeyPassPhrase="00000000"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.3.Security.MFPConfig=Required
+ubus-cli WiFi.AccessPoint.3.Security.MFPConfig=Required
+> WiFi.AccessPoint.3.Security.MFPConfig=Required
+WiFi.AccessPoint.3.Security.
+WiFi.AccessPoint.3.Security.MFPConfig="Required"
+
+root@prplOS:/# ubus-cli WiFi.AccessPoint.3.Enable=1
+ubus-cli WiFi.AccessPoint.3.Enable=1
+> WiFi.AccessPoint.3.Enable=1
+WiFi.AccessPoint.3.
+WiFi.AccessPoint.3.Enable=1
+
+root@prplOS:/# grep -q ieee80211w /tmp/wl1_hapd.conf 2>/dev/null && echo READY || echo WAIT
+grep -q ieee80211w /tmp/wl1_hapd.conf 2>/dev/null && echo READY |
+| echo WAIT
+READY
+root@prplOS:/# sed -i 's/^sae_pwe=.*/sae_pwe=2/g' /tmp/wl1_hapd.conf
+sed -i 's/^sae_pwe=.*/sae_pwe=2/g' /tmp/wl1_hapd.conf
+root@prplOS:/# sed -i 's/^ieee80211be=.*/ieee80211be=0/g' /tmp/wl1_hapd.conf
+sed -i 's/^ieee80211be=.*/ieee80211be=0/g' /tmp/wl1_hapd.conf
+root@prplOS:/# sed -i '/^bss=wl1\.1$/,$d' /tmp/wl1_hapd.conf
+sed -i '/^bss=wl1\.1$/,$d' /tmp/wl1_hapd.conf
+root@prplOS:/# sed -i '/^ocv=/d; /^ieee80211w=/a ocv=0' /tmp/wl1_hapd.conf
+sed -i '/^ocv=/d; /^ieee80211w=/a ocv=0' /tmp/wl1_hapd.conf
+root@prplOS:/# grep '^ocv=0' /tmp/wl1_hapd.conf 2>&1
+grep '^ocv=0' /tmp/wl1_hapd.conf 2>&1
+ocv=0
+root@prplOS:/# wl -i wl1 bss
+wl -i wl1 bss
+down
+root@prplOS:/# pid=$(pgrep -f '/tmp/wl1_hapd.conf' 2>/dev/null | head -n1); if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+pid=$(pgrep -f '/tmp/wl1_hapd.conf' 2>/dev/null | head -n1); if [
+ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
+root@prplOS:/# sleep 2
+sleep 2
+--wl1 FSM DONE--
+root@prplOS:/# rm -f /var/run/hostapd/wl1 /var/run/hostapd/wl1.1
+rm -f /var/run/hostapd/wl1 /var/run/hostapd/wl1.1
+root@prplOS:/# wl -i wl1 ap 1
+wl -i wl1 ap 1
+root@prplOS:/# wl -i wl1 up
+wl -i wl1 up
+root@prplOS:/# ifconfig wl1 up
+ifconfig wl1 up
+root@prplOS:/# hostapd -ddt -B /tmp/wl1_hapd.conf
+hostapd -ddt -B /tmp/wl1_hapd.conf
+1782880596.287336: random: Trying to read entropy from /dev/urandom
+1782880596.287410: Configuration file: /tmp/wl1_hapd.conf
+1782880596.288612: nl80211: TDLS supported
+1782880596.288629: nl80211: Supported cipher 00-0f-ac:1
+1782880596.288634: nl80211: Supported cipher 00-0f-ac:5
+1782880596.288638: nl80211: Supported cipher 00-0f-ac:2
+1782880596.288642: nl80211: Supported cipher 00-0f-ac:4
+1782880596.288645: nl80211: Supported cipher 00-0f-ac:6
+1782880596.288648: nl80211: Supported cipher 00-90-4c:0
+1782880596.288651: nl80211: Supported cipher 00-0f-ac:8
+1782880596.288654: nl80211: Supported cipher 00-0f-ac:9
+1782880596.288657: nl80211: Supported cipher 00-0f-ac:11
+1782880596.288660: nl80211: Supported cipher 00-0f-ac:12
+1782880596.288713: nl80211: Using driver-based off-channel TX
+1782880596.288722: nl80211: Supported vendor command: vendor_id=0x1018 subcmd=1
+1782880596.288726: nl80211: Supported vendor command: vendor_id=0x1018 subcmd=2
+1782880596.288729: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=0
+1782880596.288732: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=1
+1782880596.288735: nl80211: Supported vendor event: vendor_id=0x1018 subcmd=2
+1782880596.288751: nl80211: key_mgmt=0xf0f enc=0x76f auth=0x7 flags=0x400000001a08d1c4 rrm_flags=0x0 probe_resp_offloads=0x0 max_stations=0 max_remain_on_chan=5000 max_scan_ssids=10
+1782880596.288758: nl80211: interface wl1 in phy phy1
+1782880596.300649: nl80211: Set mode ifindex 22 iftype 3 (AP)
+1782880596.301055: nl80211: Setup AP(wl1) - device_ap_sme=1 use_monitor=0
+1782880596.301113: nl80211: Subscribe to mgmt frames with AP handle 0x55b0f38000 (device SME)
+1782880596.301121: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55b0f38000 match=04 multicast=0
+1782880596.301154: nl80211: kernel reports: Match already configured
+1782880596.301170: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880596.302218: nl80211: Register frame match - hexdump(len=1): 04
+1782880596.302236: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55b0f38000 match=0501 multicast=0
+1782880596.302281: nl80211: kernel reports: Match already configured
+1782880596.302298: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880596.302302: nl80211: Register frame match - hexdump(len=2): 05 01
+1782880596.302308: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55b0f38000 match=0503 multicast=0
+1782880596.302327: nl80211: kernel reports: Match already configured
+1782880596.302334: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880596.302338: nl80211: Register frame match - hexdump(len=2): 05 03
+1782880596.302343: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55b0f38000 match=0504 multicast=0
+1782880596.302360: nl80211: kernel reports: Match already configured
+1782880596.302366: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880596.302370: nl80211: Register frame match - hexdump(len=2): 05 04
+1782880596.302375: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55b0f38000 match=06 multicast=0
+1782880596.302392: nl80211: kernel reports: Match already configured
+1782880596.302397: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880596.302401: nl80211: Register frame match - hexdump(len=1): 06
+1782880596.302405: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55b0f38000 match=08 multicast=0
+1782880596.302422: nl80211: kernel reports: Match already configured
+1782880596.302428: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880596.302432: nl80211: Register frame match - hexdump(len=1): 08
+1782880596.302436: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55b0f38000 match=09 multicast=0
+1782880596.302452: nl80211: kernel reports: Match already configured
+1782880596.302498: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880596.302504: nl80211: Register frame match - hexdump(len=1): 09
+1782880596.632943: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55b0f38000 match=0a multicast=0
+1782880596.633011: nl80211: kernel reports: Match already configured
+1782880596.633026: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880596.633031: nl80211: Register frame match - hexdump(len=1): 0a
+1782880596.633036: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55b0f38000 match=11 multicast=0
+1782880596.633054: nl80211: kernel reports: Match already configured
+1782880596.633060: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880596.633064: nl80211: Register frame match - hexdump(len=1): 11
+1782880596.633068: nl80211: Register frame type=0xd0 (WLAN_FC_STYPE_ACTION) nl_handle=0x55b0f38000 match=7f multicast=0
+1782880596.633085: nl80211: kernel reports: Match already configured
+1782880596.633091: nl80211: Register frame command failed (type=208): ret=-114 (Operation already in progress)
+1782880596.633095: nl80211: Register frame match - hexdump(len=1): 7f
+1782880596.633142: nl80211: Failed to subscribe for mgmt frames from SME driver - trying to run without it
+1782880596.633180: nl80211: Enable Probe Request reporting nl_preq=0x55b0f38000
+1782880596.633184: nl80211: Register frame type=0x40 (WLAN_FC_STYPE_PROBE_REQ) nl_handle=0x55b0f38000 match= multicast=0
+1782880596.633203: nl80211: kernel reports: Match already configured
+1782880596.633209: nl80211: Register frame command failed (type=64): ret=-114 (Operation already in progress)
+1782880596.633213: nl80211: Register frame match - hexdump(len=0): [NULL]
+1782880596.633224: nl80211: Failed to enable Probe Request frame reporting in AP mode
+1782880596.633375: rfkill: Cannot open RFKILL control device
+1782880596.633380: nl80211: RFKILL status not available
+1782880596.657162: nl80211: Interface wl1 is in bridge br-lan
+1782880596.657208: nl80211: Add own interface ifindex 24 (ifidx_reason 22)
+1782880596.657215: nl80211: if_indices[16]: 24(22)
+1782880596.657218: nl80211: Add own interface ifindex 22 (ifidx_reason -1)
+1782880596.657222: nl80211: if_indices[16]: 24(22) 22(-1)
+1782880596.657279: phy: phy1
+1782880596.657333: Using existing control interface directory.
+1782880596.657376: wl1: interface state UNINITIALIZED->COUNTRY_UPDATE
+1782880596.657413: Previous country code 00, new country code #a 
+1782880596.657418: Continue interface setup after channel list update
+1782880596.657424: ctrl_iface not configured!
+root@prplOS:/# sleep 2
+sleep 2
+root@prplOS:/# wl -i wl1 bss up
+wl -i wl1 bss up
+root@prplOS:/# sleep 2
+sleep 2
+root@prplOS:/# sleep 3
+sleep 3
+root@prplOS:/# grep '^ocv=0' /tmp/wl1_hapd.conf 2>&1
+grep '^ocv=0' /tmp/wl1_hapd.conf 2>&1
+ocv=0
+root@prplOS:/# test -S /var/run/hostapd/wl1 && echo READY || echo WAIT
+test -S /var/run/hostapd/wl1 && echo READY || echo WAIT
+WAIT
+root@prplOS:/# pgrep -f '/tmp/wl1_hapd.conf' >/dev/null && echo READY || echo WAIT
+pgrep -f '/tmp/wl1_hapd.conf' >/dev/null && echo READY || echo WA
+IT
+READY
+root@prplOS:/# wl -i wl1 bss
+wl -i wl1 bss
+up
+root@prplOS:/# grep -q '^sae_pwe=2$' /tmp/wl1_hapd.conf
+grep -q '^sae_pwe=2$' /tmp/wl1_hapd.conf
+root@prplOS:/# ! grep -Eq "^ieee80211be=1$" /tmp/wl1_hapd.conf
+! grep -Eq "^ieee80211be=1$" /tmp/wl1_hapd.conf
+root@prplOS:/# ! grep -Eq "^bss=wl1\.1$" /tmp/wl1_hapd.conf
+! grep -Eq "^bss=wl1\.1$" /tmp/wl1_hapd.conf
+root@prplOS:/# ! grep -Eq "^multi_ap=[1-9]" /tmp/wl1_hapd.conf
+! grep -Eq "^multi_ap=[1-9]" /tmp/wl1_hapd.conf
+root@prplOS:/# sleep 5
+sleep 5
+root@prplOS:/# 
