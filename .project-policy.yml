@@ -24,4 +24,4 @@ policy_check:
   repository: hamanpaul/paulsha-conventions
   config: .project-policy.yml
   pin_required: true
-  workflow_ref: hamanpaul/paulsha-conventions/.github/workflows/reusable-policy-check.yml@v1.0.10
+  workflow_ref: hamanpaul/paulsha-conventions/.github/workflows/reusable-policy-check.yml@ee87a6d5ed91209d944934a2559f4f2622fd1ac2
