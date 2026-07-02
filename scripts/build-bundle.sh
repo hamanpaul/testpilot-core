@@ -293,12 +293,25 @@ for plugin_entry in "${PLUGIN_ENTRIES[@]:-}"; do
     IFS='|' read -r pname prepo pver <<< "$plugin_entry"
     [[ -z "$pname" ]] && continue
 
+    # Selection filter accepts `name` or `name@ver` (the @ver suffix pins), matching install.sh.
+    PIN_VER=""
     if [[ -n "$SELECTED_PLUGINS" ]]; then
-        if ! echo ",$SELECTED_PLUGINS," | grep -q ",${pname},"; then
+        SELECTED="false"; _OLDIFS="$IFS"; IFS=','
+        for _sel in $SELECTED_PLUGINS; do
+            _sname="${_sel%@*}"
+            if [[ "$_sname" == "$pname" ]]; then
+                SELECTED="true"
+                [[ "$_sel" == *@* ]] && PIN_VER="${_sel#*@}"
+                break
+            fi
+        done
+        IFS="$_OLDIFS"
+        if [[ "$SELECTED" != "true" ]]; then
             info "Skipping plugin ${pname} (not in --plugins list)"
             continue
         fi
     fi
+    [[ -n "$PIN_VER" ]] && pver="$PIN_VER"
     if [[ -z "$pver" ]]; then
         info "plugin:${pname}: resolving newest compatible release of ${prepo} ..."
         pver="$(_resolve_compatible_plugin "$prepo" "$CORE_API")" \

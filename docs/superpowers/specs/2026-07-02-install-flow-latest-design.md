@@ -16,6 +16,16 @@
   - build-bundle.sh gains a **build-time API-compat gate**: after the offline
     dry-run install it loads the resolved plugin wheels against the resolved core
     (`_check_api_compat`) and fails the build on incompatibility.
+  - No-metadata resolution: when no plugin release publishes `api-version.txt`
+    yet (current state, pre metadata rollout), `_resolve_compatible_plugin` falls
+    back to *latest* rather than a per-candidate wheel probe. This is safe in the
+    default all-latest flow because core also flows latest, and a repo's latest
+    core + latest plugin are released compatibly by construction; a mismatch only
+    arises when core is explicitly pinned to an older version while plugins flow
+    latest, which the post-install/gate + explicit `--plugins name@ver` cover. The
+    per-candidate throwaway-venv probe (select the newest *compatible* release
+    when metadata is absent) is the tracked robustness follow-up that lands with,
+    or ahead of, the plugin `api-version.txt` metadata rollout.
   - Known limitation (pre-existing, tracked follow-up): offline rollback replays a
     `pip freeze` snapshot against the local wheel cache, which holds first-party
     release wheels but not necessarily every transitive dependency wheel; if a
