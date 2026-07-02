@@ -180,6 +180,42 @@ def test_rollback_failure_prints_manual_recovery_and_exits_nonzero(
     assert rollback and "--no-index" in rollback[0]
 
 
+def test_installer_failure_triggers_rollback(tmp_path: Path) -> None:
+    """No-compatible-release / installer abort mid-update must restore the prior
+    working set from the snapshot (installer may have swapped core before aborting),
+    never leave a half-updated venv, and exit nonzero."""
+    venv = _setup_venv(tmp_path)
+    share = tmp_path / "share"
+    share.mkdir()
+    last_good = share / ".last-good.txt"
+    last_good.write_text("wifi_llapi==0.3.0\n")
+    wheel_cache = share / ".wheel-cache"
+    wheel_cache.mkdir()
+
+    runner_calls: list[list[str]] = []
+
+    with patch.object(cli_mod, "_get_managed_venv", return_value=venv):
+        with patch.object(cli_mod, "_resolve_manifest", return_value=_fake_manifest(["wifi_llapi"])):
+            with patch.object(cli_mod, "_packaged_manifest_path", return_value=Path("/pkg/m.yaml")):
+                with patch.object(cli_mod, "_probe_installed_plugins", return_value={"wifi_llapi"}):
+                    with patch.object(cli_mod, "_last_good_path", return_value=last_good):
+                        with patch.object(cli_mod, "_wheel_cache_path", return_value=wheel_cache):
+                            with patch.object(cli_mod, "_snapshot_environment", return_value=None):
+                                with pytest.raises(SystemExit) as exc:
+                                    _handle_update(
+                                        "main",
+                                        runner=lambda args: runner_calls.append(args) or 0,
+                                        installer=lambda env: 1,  # installer aborts (e.g. no compatible release)
+                                        verifier=lambda: True,
+                                    )
+
+    assert exc.value.code != 0
+    rollback = [c for c in runner_calls if "install" in c and "-r" in c]
+    assert rollback, f"installer-failure must roll back from snapshot: {runner_calls}"
+    assert "--no-index" in rollback[0], f"rollback must be offline-only: {rollback[0]}"
+    assert str(wheel_cache) in rollback[0]
+
+
 def test_wheel_cache_path_respects_testpilot_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

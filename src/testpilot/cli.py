@@ -823,6 +823,42 @@ def _verify_after_update() -> bool:
     return all(ok for ok, _ in rows)
 
 
+def _rollback_from_snapshot(last_good: Path, runner) -> None:
+    """Restore the previous pinned set from the snapshot, OFFLINE-ONLY.
+
+    Used both when the installer aborts mid-update (e.g. no API-compatible
+    release, after it may have swapped core) and when the post-update verify
+    gate fails. CRITICAL: rollback must never resolve private packages from a
+    public index — force ``--no-index`` against the local wheel cache. Prints a
+    clear manual-recovery path if the offline rollback itself fails.
+    """
+    manual_recovery = (
+        "Automatic rollback failed; reinstall from a known-good bundle via "
+        "`install.sh --offline <bundle>`."
+    )
+    if last_good.exists():
+        wheel_cache = _wheel_cache_path()
+        rc = runner(
+            [
+                "install",
+                "--no-index",
+                "--find-links",
+                str(wheel_cache),
+                "-r",
+                str(last_good),
+            ]
+        )
+        if rc != 0:
+            # Never silently fall back to a public index — surface a clear
+            # manual-recovery path.
+            print(manual_recovery, file=sys.stderr)
+    else:
+        print(
+            f"No rollback snapshot found at {last_good}. {manual_recovery}",
+            file=sys.stderr,
+        )
+
+
 def _handle_update(ref, *, runner=None, installer=None, verifier=None) -> int:
     """Handle --update pre-dispatch: update testpilot in-place using the wheel model.
 
@@ -883,7 +919,14 @@ def _handle_update(ref, *, runner=None, installer=None, verifier=None) -> int:
     }
     rc = _run_installer(installer_env, runner=installer)
     if rc != 0:
-        print("Update failed: installer returned nonzero.", file=sys.stderr)
+        # The installer may have swapped core before aborting (e.g. a plugin has
+        # no API-compatible release); restore the prior working set so a failed
+        # update never leaves a half-updated / bricked venv.
+        print(
+            "Update failed: installer returned nonzero; rolling back from snapshot.",
+            file=sys.stderr,
+        )
+        _rollback_from_snapshot(last_good, runner)
         sys.exit(1)
 
     # Uninstall dropped plugins (only when the manifest is non-empty).
@@ -899,37 +942,7 @@ def _handle_update(ref, *, runner=None, installer=None, verifier=None) -> int:
             "Post-update verify-install failed; rolling back from snapshot.",
             file=sys.stderr,
         )
-        _manual_recovery = (
-            "Automatic rollback failed; reinstall from a known-good bundle via "
-            "`install.sh --offline <bundle>`."
-        )
-        if last_good.exists():
-            # CRITICAL: rollback must be OFFLINE-ONLY. A bare `pip install -r`
-            # resolves the snapshot (which pins the private testpilot-core and
-            # plugins) against public PyPI — the exact dependency-confusion /
-            # failure hazard the main path avoids. Force --no-index and resolve
-            # only from the local wheel cache that install.sh preserved.
-            wheel_cache = _wheel_cache_path()
-            rc = runner(
-                [
-                    "install",
-                    "--no-index",
-                    "--find-links",
-                    str(wheel_cache),
-                    "-r",
-                    str(last_good),
-                ]
-            )
-            if rc != 0:
-                # Never silently fall back to a public index — surface a clear
-                # manual-recovery path and exit nonzero.
-                print(_manual_recovery, file=sys.stderr)
-        else:
-            print(
-                "No rollback snapshot found at "
-                f"{last_good}. {_manual_recovery}",
-                file=sys.stderr,
-            )
+        _rollback_from_snapshot(last_good, runner)
         sys.exit(1)
 
     print("Update complete.")

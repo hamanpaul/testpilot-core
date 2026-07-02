@@ -137,6 +137,79 @@ _run_legacy_migration() {
     "${venv}/bin/testpilot" install-migrate || true
 }
 
+# ── Helper: shared post-install verify gate (online AND offline) ──────────────
+# The gate MUST run on both paths so a resolved-latest incompatible plugin can
+# never be installed by the default online path without a hard failure.
+_post_install_gate() {
+    local venv="$1"
+    info "Running post-install gate: testpilot --verify-install ..."
+    "${venv}/bin/testpilot" --verify-install \
+        || fail "Post-install gate FAILED. The installation may be incomplete."
+    ok "Post-install gate passed"
+}
+
+# ── Helper: SDK api_version compatibility (PluginLoader rule) ─────────────────
+# compatible iff major equal AND provided(core) minor >= requested(plugin) minor
+_api_compatible() {
+    local plugin_api="$1" core_api="$2"
+    [[ -n "$plugin_api" && -n "$core_api" ]] || return 1
+    local p_major="${plugin_api%%.*}" p_minor="${plugin_api#*.}"
+    local c_major="${core_api%%.*}" c_minor="${core_api#*.}"
+    [[ "$p_major" == "$c_major" ]] || return 1
+    [[ "$c_minor" -ge "$p_minor" ]] 2>/dev/null || return 1
+}
+
+# ── Helper: read the installed core's SDK API_VERSION from the managed venv ───
+_installed_core_api() {
+    local venv="$1"
+    "${venv}/bin/python" -c 'import testpilot.api as a; print(a.API_VERSION)' 2>/dev/null | tr -d '[:space:]'
+}
+
+# ── Helper: resolve a repo's latest release tag (sans leading v) ──────────────
+_resolve_latest_version() {
+    local repo="$1" tag
+    tag="$(gh release view --repo "$repo" --json tagName --jq .tagName 2>/dev/null)" \
+        || fail "Could not resolve latest release for ${repo} (no release / no access)."
+    [[ -n "$tag" ]] || fail "Could not resolve latest release for ${repo} (empty tag)."
+    printf '%s\n' "${tag#v}"
+}
+
+# ── Helper: read a release's published api_version metadata (empty if none) ───
+# Primary compatibility signal: an `api-version.txt` asset on the plugin release.
+_read_release_api_version() {
+    local repo="$1" tag="$2"
+    gh release download "$tag" --repo "$repo" --pattern 'api-version.txt' --output - 2>/dev/null \
+        | tr -d '[:space:]'
+}
+
+# ── Helper: resolve newest API-compatible plugin release ─────────────────────
+# Echoes the chosen version (sans v). Behavior:
+#   - metadata present on candidates: pick newest compatible; abort if none.
+#   - no metadata anywhere: fall back to latest (the post-install gate verifies).
+_resolve_compatible_plugin() {
+    local repo="$1" core_api="$2"
+    local -a tags
+    mapfile -t tags < <(gh release list --repo "$repo" --json tagName --jq '.[].tagName' 2>/dev/null)
+    [[ "${#tags[@]}" -gt 0 ]] || fail "Could not list releases for ${repo} (no release / no access)."
+    local saw_metadata="false" tag api
+    for tag in "${tags[@]}"; do
+        api="$(_read_release_api_version "$repo" "$tag")"
+        if [[ -n "$api" ]]; then
+            saw_metadata="true"
+            if _api_compatible "$api" "$core_api"; then
+                printf '%s\n' "${tag#v}"
+                return 0
+            fi
+        fi
+    done
+    if [[ "$saw_metadata" == "true" ]]; then
+        fail "No API-compatible release for ${repo} (core provides SDK API ${core_api}); pin a compatible version with --plugins ${repo##*/}@<ver> or update core."
+    fi
+    # No per-release metadata published yet: install latest; the post-install
+    # gate (testpilot --verify-install) is the compatibility backstop.
+    _resolve_latest_version "$repo"
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # OFFLINE MODE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -224,11 +297,8 @@ if [[ -n "$OFFLINE_BUNDLE" ]]; then
     # 6b. Migrate legacy installs (best-effort, non-fatal)
     _run_legacy_migration "$VENV"
 
-    # 7. Post-install gate
-    info "Running post-install gate: testpilot --verify-install ..."
-    "${VENV}/bin/testpilot" --verify-install \
-        || fail "Post-install gate FAILED. The installation may be incomplete."
-    ok "Post-install gate passed"
+    # 7. Post-install gate (shared with the online path)
+    _post_install_gate "$VENV"
 
 else
 # ══════════════════════════════════════════════════════════════════════════════
@@ -382,11 +452,21 @@ PYEOF
         esac
     done <<< "$PARSED"
 
-    [[ -n "$CORE_REPO" ]]    || fail "Failed to parse core.repo from manifest"
-    [[ -n "$CORE_VERSION" ]] || fail "Failed to parse core.version from manifest"
+    [[ -n "$CORE_REPO" ]] || fail "Failed to parse core.repo from manifest"
 
+    # core version is optional in the manifest: absent => resolve latest release.
+    if [[ -z "$CORE_VERSION" ]]; then
+        info "core: no pinned version; resolving latest release of ${CORE_REPO} ..."
+        CORE_VERSION="$(_resolve_latest_version "$CORE_REPO")"
+    fi
     info "Core:       ${CORE_REPO} @ ${CORE_VERSION}"
-    [[ -n "$SERIALWRAP_REPO" ]] && info "Serialwrap: ${SERIALWRAP_REPO} @ ${SERIALWRAP_VERSION}"
+
+    # serialwrap stays pinned: a declared serialwrap repo MUST carry a version.
+    if [[ -n "$SERIALWRAP_REPO" ]]; then
+        [[ -n "$SERIALWRAP_VERSION" ]] \
+            || fail "serialwrap must be pinned in install-manifest.yaml (missing version)."
+        info "Serialwrap: ${SERIALWRAP_REPO} @ ${SERIALWRAP_VERSION} (pinned)"
+    fi
 
     # 5. Create managed venv
     _create_venv
@@ -451,26 +531,53 @@ PYEOF
         ONLINE_WHEEL_TMP=""
     }
 
-    # 6. Install core first (with its deps)
+    # 6. Install core first (with its deps), then read its SDK API_VERSION so
+    #    plugins can be resolved to the newest release compatible with THIS core.
     _install_pkg_online "$CORE_REPO" "$CORE_VERSION" "core" "true"
+    CORE_API="$(_installed_core_api "$VENV")"
+    if [[ -n "$CORE_API" ]]; then
+        info "Core SDK API: ${CORE_API}"
+    else
+        warn "Could not read core SDK API_VERSION; plugin compatibility relies on the post-install gate"
+    fi
 
-    # 7. Install selected (or all) plugins with --no-deps
+    # 7. Install selected (or all) plugins with --no-deps.
+    #    Version precedence:  --plugins name@ver  >  manifest version:  >  resolve newest compatible.
     for plugin_entry in "${PLUGIN_ENTRIES[@]:-}"; do
         [[ -z "$plugin_entry" ]] && continue
         IFS='|' read -r pname prepo pver <<< "$plugin_entry"
         [[ -z "$pname" ]] && continue
 
-        # Filter by --plugins csv if provided
+        # Filter by --plugins (csv of name or name@ver); PIN_VER is the @ver override.
+        PIN_VER=""
         if [[ -n "$SELECTED_PLUGINS" ]]; then
-            if ! echo ",$SELECTED_PLUGINS," | grep -q ",${pname},"; then
+            SELECTED="false"
+            _OLDIFS="$IFS"; IFS=','
+            for _sel in $SELECTED_PLUGINS; do
+                _sname="${_sel%@*}"
+                if [[ "$_sname" == "$pname" ]]; then
+                    SELECTED="true"
+                    [[ "$_sel" == *@* ]] && PIN_VER="${_sel#*@}"
+                    break
+                fi
+            done
+            IFS="$_OLDIFS"
+            if [[ "$SELECTED" != "true" ]]; then
                 info "Skipping plugin ${pname} (not in --plugins list)"
                 continue
             fi
         fi
-        _install_pkg_online "$prepo" "$pver" "plugin:${pname}" "false"
+
+        USE_VER="$pver"
+        [[ -n "$PIN_VER" ]] && USE_VER="$PIN_VER"
+        if [[ -z "$USE_VER" ]]; then
+            info "plugin:${pname}: resolving newest compatible release of ${prepo} ..."
+            USE_VER="$(_resolve_compatible_plugin "$prepo" "$CORE_API")"
+        fi
+        _install_pkg_online "$prepo" "$USE_VER" "plugin:${pname}" "false"
     done
 
-    # 8. Install serialwrap WITH deps (public; does not depend on testpilot-core)
+    # 8. Install serialwrap WITH deps (public; pinned — not flow-latest)
     if [[ -n "$SERIALWRAP_REPO" && -n "$SERIALWRAP_VERSION" ]]; then
         _install_pkg_online "$SERIALWRAP_REPO" "$SERIALWRAP_VERSION" "serialwrap" "true"
     fi
@@ -480,6 +587,9 @@ PYEOF
 
     # 10. Migrate legacy installs (best-effort, non-fatal)
     _run_legacy_migration "$VENV"
+
+    # 11. Post-install gate (shared with the offline path) — compatibility backstop
+    _post_install_gate "$VENV"
 
 fi  # end ONLINE/OFFLINE branch
 

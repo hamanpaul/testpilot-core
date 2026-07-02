@@ -79,7 +79,7 @@ def test_serialwrap_installed_with_deps():
 
     # Plugins must still use the no-deps path.
     plugin_call = re.search(
-        r'_install_pkg_online\s+"\$prepo"\s+"\$pver"\s+"plugin:\$\{pname\}"\s+"(\w+)"',
+        r'_install_pkg_online\s+"\$prepo"\s+"\$USE_VER"\s+"plugin:\$\{pname\}"\s+"(\w+)"',
         SH,
     )
     assert plugin_call is not None and plugin_call.group(1) == "false", (

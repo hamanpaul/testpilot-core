@@ -9,6 +9,24 @@ preparation.
 
 ## [Unreleased]
 
+### Changed
+
+- **Install flow now resolves latest-compatible for core/plugins** instead of
+  exact-pinning them in `install-manifest.yaml`. Online install/`--update` and
+  the offline-bundle build resolve each repo's newest release that is
+  API-compatible with the installed core; `serialwrap` stays manifest-pinned (no
+  API contract). `core` no longer needs a re-pin release when a plugin bumps.
+  - `install-manifest.yaml`: `version:` dropped for core/plugins (optional; add
+    it back or use `--plugins name@ver` to pin); `serialwrap` `version:` required.
+  - `scripts/install.sh`: the post-install `testpilot --verify-install` gate now
+    runs on the **online** path too (previously offline-only); latest-compatible
+    transactional resolution aborts loudly with no compatible release rather than
+    installing a broken set.
+  - `testpilot --update`: reinstalls newest-compatible and rolls back from the
+    snapshot if the installer aborts or verify fails (never bricks a working install).
+  - `scripts/build-bundle.sh`: resolves latest at build time, keeps the exact
+    SHA256-verified snapshot, and records a `resolved-manifest.yaml` for provenance.
+
 ## [0.3.2]
 
 ### Changed

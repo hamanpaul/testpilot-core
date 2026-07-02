@@ -6,7 +6,7 @@
 
 ## Install
 
-This README is the canonical install reference. For online install (managed venv + pinned wheels), see [Quick Start](#quick-start). For offline environments or update procedures, see [Managed Install and Update](#managed-install-and-update). After any install or update, run `testpilot --verify-install` to confirm health.
+This README is the canonical install reference. For online install (managed venv, newest API-compatible core/plugins; serialwrap pinned), see [Quick Start](#quick-start). For offline environments or update procedures, see [Managed Install and Update](#managed-install-and-update). After any install or update, run `testpilot --verify-install` to confirm health.
 
 ## Usage
 
@@ -104,7 +104,11 @@ testpilot run <plugin>
 
 ### Managed Install and Update
 
-The supported QC/TEST install uses a managed venv with pinned wheels (no git checkout):
+The supported QC/TEST install uses a managed venv (no git checkout). Online
+install resolves the **newest API-compatible** `core` and plugin releases;
+`serialwrap` stays pinned in `install-manifest.yaml`. An offline bundle is an
+exact, SHA256-verified snapshot. Pin any component explicitly with
+`--plugins <name>@<version>` (or by adding a `version:` back to the manifest):
 
 ```bash
 ~/.local/share/testpilot/.venv   # managed runtime virtualenv
@@ -132,7 +136,7 @@ bash scripts/install.sh --offline testpilot-bundle-<ver>-linux-<arch>-cp<XY>.tar
 **Update and verify:**
 
 ```bash
-testpilot --update            # re-resolves manifest, reinstalls pinned wheels, reconciles plugins
+testpilot --update            # reinstalls newest-compatible core/plugins (serialwrap pinned), reconciles plugins
 testpilot --verify-install    # report install health
 ```
 
