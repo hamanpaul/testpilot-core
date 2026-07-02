@@ -178,6 +178,64 @@ _resolve_latest_version() {
     printf '%s\n' "${tag#v}"
 }
 
+# SDK api_version compatibility (PluginLoader rule): major equal AND core.minor >= plugin.minor.
+_api_compatible() {
+    local plugin_api="$1" core_api="$2"
+    [[ -n "$plugin_api" && -n "$core_api" ]] || return 1
+    local p_major="${plugin_api%%.*}" p_minor="${plugin_api#*.}"
+    local c_major="${core_api%%.*}" c_minor="${core_api#*.}"
+    [[ "$p_major" == "$c_major" ]] || return 1
+    [[ "$c_minor" -ge "$p_minor" ]] 2>/dev/null || return 1
+}
+
+# Read core's SDK API_VERSION from a downloaded core wheel (no install). Always returns 0.
+_read_wheel_api_version() {
+    python3 - "$1" <<'PY' 2>/dev/null || true
+import sys, zipfile, re
+try:
+    with zipfile.ZipFile(sys.argv[1]) as z:
+        for n in z.namelist():
+            if n.endswith("testpilot/api/__init__.py"):
+                m = re.search(r'API_VERSION\s*=\s*["\']([0-9]+\.[0-9]+)', z.read(n).decode("utf-8", "replace"))
+                if m:
+                    print(m.group(1)); break
+except Exception:
+    pass
+PY
+}
+
+# Read a plugin release's published api_version metadata asset (empty if none). Always returns 0.
+_read_release_api_version() {
+    gh release download "$2" --repo "$1" --pattern 'api-version.txt' --output - 2>/dev/null \
+        | tr -d '[:space:]' || true
+}
+
+# Resolve the newest API-compatible plugin release (sans v). Prints version, else return 1 + stderr.
+_resolve_compatible_plugin() {
+    local repo="$1" core_api="$2"
+    local -a tags
+    mapfile -t tags < <(gh release list --repo "$repo" --json tagName --jq '.[].tagName' 2>/dev/null)
+    if [[ "${#tags[@]}" -eq 0 ]]; then
+        echo "[FAIL]  Could not list releases for ${repo} (no release / no access)." >&2
+        return 1
+    fi
+    local saw_metadata="false" tag api
+    for tag in "${tags[@]}"; do
+        api="$(_read_release_api_version "$repo" "$tag")"
+        if [[ -n "$api" ]]; then
+            saw_metadata="true"
+            if _api_compatible "$api" "$core_api"; then
+                printf '%s\n' "${tag#v}"; return 0
+            fi
+        fi
+    done
+    if [[ "$saw_metadata" == "true" ]]; then
+        echo "[FAIL]  No API-compatible release for ${repo} (core provides SDK API ${core_api:-unknown})." >&2
+        return 1
+    fi
+    _resolve_latest_version "$repo"   # no metadata anywhere: fall back to latest (gate backstops)
+}
+
 if [[ -z "$CORE_VERSION" ]]; then
     info "core: no pinned version; resolving latest release of ${CORE_REPO} ..."
     CORE_VERSION="$(_resolve_latest_version "$CORE_REPO")" \
@@ -217,10 +275,19 @@ _download_wheel() {
     ok "Wheel downloaded: ${label}"
 }
 
-# Core
+# Core — download first, then read its SDK API_VERSION so plugins resolve to the
+# newest release compatible with THIS core (mirrors the installer's resolution).
 _download_wheel "$CORE_REPO" "$CORE_VERSION" "core"
+CORE_API=""
+CORE_WHEEL="$(ls "$WHEELHOUSE"/testpilot_core-*.whl 2>/dev/null | head -1 || true)"
+[[ -n "$CORE_WHEEL" ]] && CORE_API="$(_read_wheel_api_version "$CORE_WHEEL")"
+if [[ -n "$CORE_API" ]]; then
+    info "Core SDK API: ${CORE_API}"
+else
+    warn "Could not read core SDK API_VERSION from wheel; unpinned plugins fall back to latest (build-time gate backstops)"
+fi
 
-# Plugins
+# Plugins — pinned version wins; otherwise resolve newest API-compatible release.
 for plugin_entry in "${PLUGIN_ENTRIES[@]:-}"; do
     [[ -z "$plugin_entry" ]] && continue
     IFS='|' read -r pname prepo pver <<< "$plugin_entry"
@@ -233,9 +300,9 @@ for plugin_entry in "${PLUGIN_ENTRIES[@]:-}"; do
         fi
     fi
     if [[ -z "$pver" ]]; then
-        info "plugin:${pname}: resolving latest release of ${prepo} ..."
-        pver="$(_resolve_latest_version "$prepo")" \
-            || fail "Could not resolve latest release for plugin ${pname} (${prepo})."
+        info "plugin:${pname}: resolving newest compatible release of ${prepo} ..."
+        pver="$(_resolve_compatible_plugin "$prepo" "$CORE_API")" \
+            || fail "No installable API-compatible release for plugin ${pname} (${prepo})."
     fi
     _download_wheel "$prepo" "$pver" "plugin:${pname}"
     RESOLVED_PLUGINS+=("${pname}|${prepo}|${pver}")

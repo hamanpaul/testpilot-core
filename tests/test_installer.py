@@ -132,6 +132,8 @@ def _build_stub_bin(tmp_path: Path, gh_log: Path, uv_log: Path) -> Path:
             chmod +x "$VENV_DIR/bin/pip"
             ;;
           pip)
+            # Simulate an install-step failure (exercises rollback/cleanup wiring).
+            if [ -n "$STUB_PIP_FAIL" ]; then echo "pip install failed (stub)" >&2; exit 1; fi
             : # no-op for pip install
             ;;
         esac
@@ -707,6 +709,18 @@ class TestLatestCompatibleResolution:
         """Published api metadata compatible with core -> install succeeds."""
         result = _run_installer(fake_home, stubs, {"STUB_PLUGIN_API": "1.0"})
         assert result.returncode == 0, result.stderr
+
+    def test_install_step_failure_aborts_and_cleans(
+        self, fake_home: Path, stubs: Path
+    ) -> None:
+        """A post-snapshot install-step (pip) failure must abort via rollback
+        wiring — not silently continue — and remove a fresh half-built venv."""
+        result = _run_installer(fake_home, stubs, {"STUB_PIP_FAIL": "1"})
+        assert result.returncode != 0
+        venv = fake_home / ".local" / "share" / "testpilot" / ".venv"
+        assert not venv.exists(), (
+            "fresh venv must be removed when an install step fails mid-way"
+        )
 
     def test_explicit_pin_bypasses_resolution(
         self, fake_home: Path, stubs: Path, gh_log: Path

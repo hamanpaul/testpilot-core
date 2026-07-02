@@ -27,10 +27,12 @@ preparation.
     on the **online** path too (previously offline-only).
   - `testpilot --update`: reinstalls newest-compatible and rolls back from the
     snapshot if the installer aborts or verify fails (never bricks a working install).
-  - `scripts/build-bundle.sh`: resolves latest at build time, adds a **build-time
-    API-compat gate** (loads the resolved plugin wheels against the resolved core
-    and fails the build on incompatibility, not just on the target), keeps the
-    exact SHA256-verified snapshot, and records a `resolved-manifest.yaml`.
+  - `scripts/build-bundle.sh`: resolves **newest-compatible** core/plugins at
+    build time (reads core API from the downloaded wheel; serialwrap pinned),
+    adds a **build-time API-compat gate** (loads the resolved plugin wheels
+    against the resolved core and fails the build on incompatibility, not just on
+    the target), keeps the exact SHA256-verified snapshot, and records a
+    `resolved-manifest.yaml`.
 
 ## [0.3.2]
 

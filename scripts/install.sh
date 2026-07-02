@@ -644,6 +644,7 @@ PYEOF
 
     # Roll back an existing install (or remove a fresh venv), then abort.
     _abort_after_mutation() {
+        trap - ERR   # stop re-entrancy while we roll back
         if [[ "$EXISTING_INSTALL" == "true" && -s "${INSTALL_SNAPSHOT:-}" ]]; then
             warn "Install failed after mutation; rolling back to the previous set (offline) ..."
             "${VENV}/bin/pip" install --no-index --find-links "$WHEEL_CACHE" \
@@ -654,6 +655,17 @@ PYEOF
         fi
         fail "$1"
     }
+
+    # Route EVERY post-snapshot mutation failure through rollback. Under
+    # `set -e` a failing install/download step exits immediately, so wire an ERR
+    # trap (in addition to the explicit gate handling) so core/plugin/serialwrap
+    # install failures also restore the previous set / remove a fresh venv.
+    # (Failures inside `if`/`||`/`&&` — e.g. the git+https fallback probe — are
+    # exempt from ERR, so the normal fallback logic is unaffected.)
+    # `set -E` (errtrace) makes the ERR trap fire for failures INSIDE the install
+    # helper functions too (bash does not inherit ERR traps into functions otherwise).
+    set -E
+    trap '_abort_after_mutation "Install failed after mutation; the managed venv was rolled back or cleaned."' ERR
 
     # 7. Install core (from the pre-downloaded wheel; git+https fallback if none).
     if compgen -G "$CORE_WHEEL_DIR/*.whl" >/dev/null 2>&1; then
@@ -688,6 +700,7 @@ PYEOF
     "${VENV}/bin/testpilot" --verify-install \
         || _abort_after_mutation "Post-install gate FAILED. The installation may be incomplete."
     ok "Post-install gate passed"
+    trap - ERR; set +E   # install succeeded — stop routing failures to rollback
     [[ -n "${INSTALL_SNAPSHOT:-}" ]] && rm -f "$INSTALL_SNAPSHOT"
 
 fi  # end ONLINE/OFFLINE branch
