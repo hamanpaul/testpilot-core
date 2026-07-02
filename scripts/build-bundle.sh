@@ -159,11 +159,98 @@ while IFS= read -r parsed_line; do
     esac
 done <<< "$PARSED"
 
-[[ -n "$CORE_REPO" ]]    || fail "Failed to parse core.repo from manifest"
-[[ -n "$CORE_VERSION" ]] || fail "Failed to parse core.version from manifest"
+[[ -n "$CORE_REPO" ]] || fail "Failed to parse core.repo from manifest"
 
+# ── Helper: resolve a repo's latest release tag (sans leading v) ──────────────
+# core/plugins may be unpinned in the manifest: resolve latest at build time so
+# the bundle snapshots the current release set. serialwrap stays pinned.
+# Compatibility of the resolved set is enforced by the dry-run gate below and by
+# the post-install verify gate when the bundle is later installed offline.
+# Prints version on success; on failure prints to stderr and returns 1 (callers
+# guard with `|| fail` — `set -e` does not reliably abort on `var=$(...)`).
+_resolve_latest_version() {
+    local repo="$1" tag
+    tag="$(gh release view --repo "$repo" --json tagName --jq .tagName 2>/dev/null)" || tag=""
+    if [[ -z "$tag" ]]; then
+        echo "[FAIL]  Could not resolve latest release for ${repo} (no release / no access)." >&2
+        return 1
+    fi
+    printf '%s\n' "${tag#v}"
+}
+
+# SDK api_version compatibility (PluginLoader rule): major equal AND core.minor >= plugin.minor.
+_api_compatible() {
+    local plugin_api="$1" core_api="$2"
+    [[ -n "$plugin_api" && -n "$core_api" ]] || return 1
+    local p_major="${plugin_api%%.*}" p_minor="${plugin_api#*.}"
+    local c_major="${core_api%%.*}" c_minor="${core_api#*.}"
+    [[ "$p_major" == "$c_major" ]] || return 1
+    [[ "$c_minor" -ge "$p_minor" ]] 2>/dev/null || return 1
+}
+
+# Read core's SDK API_VERSION from a downloaded core wheel (no install). Always returns 0.
+_read_wheel_api_version() {
+    python3 - "$1" <<'PY' 2>/dev/null || true
+import sys, zipfile, re
+try:
+    with zipfile.ZipFile(sys.argv[1]) as z:
+        for n in z.namelist():
+            if n.endswith("testpilot/api/__init__.py"):
+                m = re.search(r'API_VERSION\s*=\s*["\']([0-9]+\.[0-9]+)', z.read(n).decode("utf-8", "replace"))
+                if m:
+                    print(m.group(1)); break
+except Exception:
+    pass
+PY
+}
+
+# Read a plugin release's published api_version metadata asset (empty if none). Always returns 0.
+_read_release_api_version() {
+    gh release download "$2" --repo "$1" --pattern 'api-version.txt' --output - 2>/dev/null \
+        | tr -d '[:space:]' || true
+}
+
+# Resolve the newest API-compatible plugin release (sans v). Prints version, else return 1 + stderr.
+_resolve_compatible_plugin() {
+    local repo="$1" core_api="$2"
+    local -a tags
+    mapfile -t tags < <(gh release list --repo "$repo" --json tagName --jq '.[].tagName' 2>/dev/null)
+    if [[ "${#tags[@]}" -eq 0 ]]; then
+        echo "[FAIL]  Could not list releases for ${repo} (no release / no access)." >&2
+        return 1
+    fi
+    local saw_metadata="false" tag api
+    for tag in "${tags[@]}"; do
+        api="$(_read_release_api_version "$repo" "$tag")"
+        if [[ -n "$api" ]]; then
+            saw_metadata="true"
+            if _api_compatible "$api" "$core_api"; then
+                printf '%s\n' "${tag#v}"; return 0
+            fi
+        fi
+    done
+    if [[ "$saw_metadata" == "true" ]]; then
+        echo "[FAIL]  No API-compatible release for ${repo} (core provides SDK API ${core_api:-unknown})." >&2
+        return 1
+    fi
+    _resolve_latest_version "$repo"   # no metadata anywhere: fall back to latest (gate backstops)
+}
+
+if [[ -z "$CORE_VERSION" ]]; then
+    info "core: no pinned version; resolving latest release of ${CORE_REPO} ..."
+    CORE_VERSION="$(_resolve_latest_version "$CORE_REPO")" \
+        || fail "Could not resolve latest core release for ${CORE_REPO}."
+fi
 info "Core: ${CORE_REPO} @ ${CORE_VERSION}"
-[[ -n "$SERIALWRAP_REPO" ]] && info "Serialwrap: ${SERIALWRAP_REPO} @ ${SERIALWRAP_VERSION}"
+
+if [[ -n "$SERIALWRAP_REPO" ]]; then
+    [[ -n "$SERIALWRAP_VERSION" ]] \
+        || fail "serialwrap must be pinned in install-manifest.yaml (missing version)."
+    info "Serialwrap: ${SERIALWRAP_REPO} @ ${SERIALWRAP_VERSION} (pinned)"
+fi
+
+# Records "name|repo|version" for the resolved plugin set (provenance manifest).
+declare -a RESOLVED_PLUGINS=()
 
 # ── Stage dir ─────────────────────────────────────────────────────────────────
 BUNDLE_NAME="testpilot-bundle-${CORE_VERSION}-linux-${ARCH}-cp${PYMINOR}"
@@ -188,22 +275,50 @@ _download_wheel() {
     ok "Wheel downloaded: ${label}"
 }
 
-# Core
+# Core — download first, then read its SDK API_VERSION so plugins resolve to the
+# newest release compatible with THIS core (mirrors the installer's resolution).
 _download_wheel "$CORE_REPO" "$CORE_VERSION" "core"
+CORE_API=""
+CORE_WHEEL="$(ls "$WHEELHOUSE"/testpilot_core-*.whl 2>/dev/null | head -1 || true)"
+[[ -n "$CORE_WHEEL" ]] && CORE_API="$(_read_wheel_api_version "$CORE_WHEEL")"
+if [[ -n "$CORE_API" ]]; then
+    info "Core SDK API: ${CORE_API}"
+else
+    warn "Could not read core SDK API_VERSION from wheel; unpinned plugins fall back to latest (build-time gate backstops)"
+fi
 
-# Plugins
+# Plugins — pinned version wins; otherwise resolve newest API-compatible release.
 for plugin_entry in "${PLUGIN_ENTRIES[@]:-}"; do
     [[ -z "$plugin_entry" ]] && continue
     IFS='|' read -r pname prepo pver <<< "$plugin_entry"
     [[ -z "$pname" ]] && continue
 
+    # Selection filter accepts `name` or `name@ver` (the @ver suffix pins), matching install.sh.
+    PIN_VER=""
     if [[ -n "$SELECTED_PLUGINS" ]]; then
-        if ! echo ",$SELECTED_PLUGINS," | grep -q ",${pname},"; then
+        SELECTED="false"; _OLDIFS="$IFS"; IFS=','
+        for _sel in $SELECTED_PLUGINS; do
+            _sname="${_sel%@*}"
+            if [[ "$_sname" == "$pname" ]]; then
+                SELECTED="true"
+                [[ "$_sel" == *@* ]] && PIN_VER="${_sel#*@}"
+                break
+            fi
+        done
+        IFS="$_OLDIFS"
+        if [[ "$SELECTED" != "true" ]]; then
             info "Skipping plugin ${pname} (not in --plugins list)"
             continue
         fi
     fi
+    [[ -n "$PIN_VER" ]] && pver="$PIN_VER"
+    if [[ -z "$pver" ]]; then
+        info "plugin:${pname}: resolving newest compatible release of ${prepo} ..."
+        pver="$(_resolve_compatible_plugin "$prepo" "$CORE_API")" \
+            || fail "No installable API-compatible release for plugin ${pname} (${prepo})."
+    fi
     _download_wheel "$prepo" "$pver" "plugin:${pname}"
+    RESOLVED_PLUGINS+=("${pname}|${prepo}|${pver}")
 done
 
 # Serialwrap
@@ -273,6 +388,29 @@ if [[ -n "$TESTBED_EXAMPLE" ]]; then
     ok "testbed.yaml.example copied"
 fi
 
+# ── resolved-manifest.yaml — provenance of the exact versions this bundle pins ─
+info "Writing resolved-manifest.yaml (provenance) ..."
+{
+    echo "# Auto-generated by build-bundle.sh — exact versions snapshotted in this bundle."
+    echo "core:"
+    echo "  repo: ${CORE_REPO}"
+    echo "  version: \"${CORE_VERSION}\""
+    echo "plugins:"
+    for _entry in "${RESOLVED_PLUGINS[@]:-}"; do
+        [[ -z "$_entry" ]] && continue
+        IFS='|' read -r _rp_name _rp_repo _rp_ver <<< "$_entry"
+        echo "  - name: ${_rp_name}"
+        echo "    repo: ${_rp_repo}"
+        echo "    version: \"${_rp_ver}\""
+    done
+    if [[ -n "$SERIALWRAP_REPO" ]]; then
+        echo "serialwrap:"
+        echo "  repo: ${SERIALWRAP_REPO}"
+        echo "  version: \"${SERIALWRAP_VERSION}\""
+    fi
+} > "${STAGE_DIR}/resolved-manifest.yaml"
+ok "resolved-manifest.yaml written"
+
 # ── DRY-RUN GATE: verify the wheelhouse actually installs cleanly ─────────────
 info "Dry-run gate: testing offline install in a throwaway venv..."
 DRY_VENV="$(mktemp -d)/dryrun_venv"
@@ -287,6 +425,40 @@ if ! "$DRY_VENV/bin/pip" install \
     fail "DRY-RUN GATE FAILED: offline install check did not succeed. Bundle NOT produced. Fix missing wheels and retry."
 fi
 ok "Dry-run gate passed"
+
+# ── BUILD-TIME API-COMPAT GATE ────────────────────────────────────────────────
+# Enforce plugin<->core SDK API compatibility on the RESOLVED wheels now, so an
+# incompatible latest plugin fails the build rather than only the air-gapped
+# target. Loads each installed plugin entry point and applies the PluginLoader
+# rule against the installed core API_VERSION.
+info "Build-time plugin API-compat gate ..."
+if ! "$DRY_VENV/bin/python" - <<'PYEOF'
+import sys
+from importlib.metadata import entry_points
+try:
+    from testpilot.api import API_VERSION
+    from testpilot.core.plugin_loader import _check_api_compat
+    from testpilot.core.plugin_base import IncompatiblePluginError
+except Exception as exc:  # core import failure is itself a bundle defect
+    print(f"cannot import core SDK: {exc}", file=sys.stderr)
+    sys.exit(1)
+bad = []
+for ep in entry_points(group="testpilot.plugins"):
+    try:
+        cls = ep.load()
+        _check_api_compat(ep.name, getattr(cls, "api_version", None), API_VERSION)
+    except IncompatiblePluginError as exc:
+        bad.append(str(exc))
+    except Exception as exc:
+        bad.append(f"{ep.name}: load error: {exc}")
+if bad:
+    print("; ".join(bad), file=sys.stderr)
+    sys.exit(1)
+PYEOF
+then
+    fail "BUILD-TIME API-COMPAT GATE FAILED: a resolved plugin is not API-compatible with the resolved core. Bundle NOT produced. Pin a compatible plugin or update core."
+fi
+ok "Build-time API-compat gate passed"
 rm -rf "$(dirname "$DRY_VENV")"
 
 # ── Produce tarball ───────────────────────────────────────────────────────────

@@ -1,20 +1,22 @@
+# Repo registry + SDK API contract for the managed install.
+# core/plugins have NO pinned version: the installer/bundle builder resolve the
+# newest release that is API-compatible with the installed core (escape hatch:
+# `--plugins name@ver`, or add a `version:` here to pin a single component).
+# serialwrap has no API contract, so it stays pinned via `version:`.
 core:
   distribution: testpilot-core
   repo: hamanpaul/testpilot-core
-  version: "0.3.2"
   private: true
 plugins:
   - name: wifi_llapi
     repo: hamanpaul/wifi_llapi
-    version: "0.3.1"
-    api_version: "1.1"
+    api_version: "1.1"        # minimum SDK contract core must satisfy
     private: true
   - name: brcm_fw_upgrade
     repo: hamanpaul/brcm_fw_upgrade
-    version: "0.1.0"
     api_version: "1.1"
     private: true
 serialwrap:
   repo: hamanpaul/serialwrap
-  version: "0.2.1"
+  version: "0.2.1"            # PINNED — no API contract; bump deliberately
   private: false

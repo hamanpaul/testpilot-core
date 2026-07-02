@@ -137,6 +137,117 @@ _run_legacy_migration() {
     "${venv}/bin/testpilot" install-migrate || true
 }
 
+# ── Helper: shared post-install verify gate (online AND offline) ──────────────
+# The gate MUST run on both paths so a resolved-latest incompatible plugin can
+# never be installed by the default online path without a hard failure.
+_post_install_gate() {
+    local venv="$1"
+    info "Running post-install gate: testpilot --verify-install ..."
+    "${venv}/bin/testpilot" --verify-install \
+        || fail "Post-install gate FAILED. The installation may be incomplete."
+    ok "Post-install gate passed"
+}
+
+# ── Helper: SDK api_version compatibility (PluginLoader rule) ─────────────────
+# compatible iff major equal AND provided(core) minor >= requested(plugin) minor
+_api_compatible() {
+    local plugin_api="$1" core_api="$2"
+    [[ -n "$plugin_api" && -n "$core_api" ]] || return 1
+    local p_major="${plugin_api%%.*}" p_minor="${plugin_api#*.}"
+    local c_major="${core_api%%.*}" c_minor="${core_api#*.}"
+    [[ "$p_major" == "$c_major" ]] || return 1
+    [[ "$c_minor" -ge "$p_minor" ]] 2>/dev/null || return 1
+}
+
+# ── Helper: read core's SDK API_VERSION from a core wheel WITHOUT installing ──
+# Enables resolving the full plan before mutating the managed venv (transactional
+# install). Always returns 0 (empty output = unknown).
+_read_wheel_api_version() {
+    local wheel="$1"
+    python3 - "$wheel" <<'PY' 2>/dev/null || true
+import sys, zipfile, re
+try:
+    with zipfile.ZipFile(sys.argv[1]) as z:
+        for n in z.namelist():
+            if n.endswith("testpilot/api/__init__.py"):
+                m = re.search(r'API_VERSION\s*=\s*["\']([0-9]+\.[0-9]+)', z.read(n).decode("utf-8", "replace"))
+                if m:
+                    print(m.group(1))
+                    break
+except Exception:
+    pass
+PY
+}
+
+# ── Helper: install already-downloaded wheels into the managed venv + cache ────
+_install_local_wheels() {
+    local wheel_dir="$1" with_deps="$2" label="$3"
+    if [[ "$with_deps" == "true" ]]; then
+        _venv_pip "$wheel_dir"/*.whl
+    else
+        _venv_pip --no-deps "$wheel_dir"/*.whl
+    fi
+    mkdir -p "$WHEEL_CACHE"
+    cp "$wheel_dir"/*.whl "$WHEEL_CACHE"/ 2>/dev/null || true
+    ok "${label} installed from wheel"
+}
+
+# ── Helper: resolve a repo's latest release tag (sans leading v) ──────────────
+# Prints the version on success; on failure prints to stderr and returns 1 so
+# callers can react deterministically (NOT via `set -e` on a command-sub, which
+# bash does not reliably propagate for `var=$(...)` without inherit_errexit).
+_resolve_latest_version() {
+    local repo="$1" tag
+    tag="$(gh release view --repo "$repo" --json tagName --jq .tagName 2>/dev/null)" || tag=""
+    if [[ -z "$tag" ]]; then
+        echo "[FAIL]  Could not resolve latest release for ${repo} (no release / no access)." >&2
+        return 1
+    fi
+    printf '%s\n' "${tag#v}"
+}
+
+# ── Helper: read a release's published api_version metadata (empty if none) ───
+# Primary compatibility signal: an `api-version.txt` asset on the plugin release.
+# Always returns 0 — a missing asset is a normal "no metadata" outcome.
+_read_release_api_version() {
+    local repo="$1" tag="$2"
+    gh release download "$tag" --repo "$repo" --pattern 'api-version.txt' --output - 2>/dev/null \
+        | tr -d '[:space:]' || true
+}
+
+# ── Helper: resolve newest API-compatible plugin release ─────────────────────
+# Prints the chosen version (sans v) on success. On no-compatible-release it
+# prints a detailed reason to stderr and returns 1 (caller aborts). Behavior:
+#   - metadata present on candidates: pick newest compatible; else return 1.
+#   - no metadata anywhere: fall back to latest (the post-install gate verifies).
+_resolve_compatible_plugin() {
+    local repo="$1" core_api="$2"
+    local -a tags
+    mapfile -t tags < <(gh release list --repo "$repo" --json tagName --jq '.[].tagName' 2>/dev/null)
+    if [[ "${#tags[@]}" -eq 0 ]]; then
+        echo "[FAIL]  Could not list releases for ${repo} (no release / no access)." >&2
+        return 1
+    fi
+    local saw_metadata="false" tag api
+    for tag in "${tags[@]}"; do
+        api="$(_read_release_api_version "$repo" "$tag")"
+        if [[ -n "$api" ]]; then
+            saw_metadata="true"
+            if _api_compatible "$api" "$core_api"; then
+                printf '%s\n' "${tag#v}"
+                return 0
+            fi
+        fi
+    done
+    if [[ "$saw_metadata" == "true" ]]; then
+        echo "[FAIL]  No API-compatible release for ${repo} (core provides SDK API ${core_api:-unknown}); pin a compatible version with --plugins ${repo##*/}@<ver> or update core." >&2
+        return 1
+    fi
+    # No per-release metadata published yet: install latest; the post-install
+    # gate (testpilot --verify-install) is the compatibility backstop.
+    _resolve_latest_version "$repo"
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 # OFFLINE MODE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -224,11 +335,8 @@ if [[ -n "$OFFLINE_BUNDLE" ]]; then
     # 6b. Migrate legacy installs (best-effort, non-fatal)
     _run_legacy_migration "$VENV"
 
-    # 7. Post-install gate
-    info "Running post-install gate: testpilot --verify-install ..."
-    "${VENV}/bin/testpilot" --verify-install \
-        || fail "Post-install gate FAILED. The installation may be incomplete."
-    ok "Post-install gate passed"
+    # 7. Post-install gate (shared with the online path)
+    _post_install_gate "$VENV"
 
 else
 # ══════════════════════════════════════════════════════════════════════════════
@@ -382,11 +490,28 @@ PYEOF
         esac
     done <<< "$PARSED"
 
-    [[ -n "$CORE_REPO" ]]    || fail "Failed to parse core.repo from manifest"
-    [[ -n "$CORE_VERSION" ]] || fail "Failed to parse core.version from manifest"
+    [[ -n "$CORE_REPO" ]] || fail "Failed to parse core.repo from manifest"
 
+    # core version is optional in the manifest: absent => resolve latest release.
+    if [[ -z "$CORE_VERSION" ]]; then
+        info "core: no pinned version; resolving latest release of ${CORE_REPO} ..."
+        CORE_VERSION="$(_resolve_latest_version "$CORE_REPO")" \
+            || fail "Could not resolve latest core release for ${CORE_REPO}."
+    fi
     info "Core:       ${CORE_REPO} @ ${CORE_VERSION}"
-    [[ -n "$SERIALWRAP_REPO" ]] && info "Serialwrap: ${SERIALWRAP_REPO} @ ${SERIALWRAP_VERSION}"
+
+    # serialwrap stays pinned: a declared serialwrap repo MUST carry a version.
+    if [[ -n "$SERIALWRAP_REPO" ]]; then
+        [[ -n "$SERIALWRAP_VERSION" ]] \
+            || fail "serialwrap must be pinned in install-manifest.yaml (missing version)."
+        info "Serialwrap: ${SERIALWRAP_REPO} @ ${SERIALWRAP_VERSION} (pinned)"
+    fi
+
+    # Detect a pre-existing install BEFORE creating/reusing the venv, so a
+    # post-mutation failure can be rolled back to the previous set.
+    EXISTING_INSTALL="false"
+    [[ -x "${VENV}/bin/testpilot" ]] && EXISTING_INSTALL="true"
+    INSTALL_SNAPSHOT=""
 
     # 5. Create managed venv
     _create_venv
@@ -451,35 +576,137 @@ PYEOF
         ONLINE_WHEEL_TMP=""
     }
 
-    # 6. Install core first (with its deps)
-    _install_pkg_online "$CORE_REPO" "$CORE_VERSION" "core" "true"
+    # ── TRANSACTIONAL install ────────────────────────────────────────────────
+    # Resolve the FULL plan (core API + every plugin version) BEFORE mutating the
+    # managed venv, so a resolution failure leaves an existing install untouched.
+    # A post-mutation failure (install step or the verify gate) rolls back an
+    # existing install from a pip-freeze snapshot, or removes a fresh half-built
+    # venv — the install is never left in a broken/partially-updated state.
 
-    # 7. Install selected (or all) plugins with --no-deps
+    # 6a. Download the core wheel to a temp dir (for pre-install API read + the
+    #     actual install) WITHOUT touching the managed venv yet.
+    CORE_WHEEL_DIR="$(mktemp -d)"
+    ONLINE_WHEEL_TMP="$CORE_WHEEL_DIR"
+    CORE_API=""
+    if gh release download "v${CORE_VERSION}" --repo "$CORE_REPO" \
+            --pattern "*.whl" --dir "$CORE_WHEEL_DIR" 2>/dev/null; then
+        CORE_API="$(_read_wheel_api_version "$CORE_WHEEL_DIR"/*.whl)" || CORE_API=""
+    fi
+    if [[ -n "$CORE_API" ]]; then
+        info "Core SDK API: ${CORE_API}"
+    else
+        warn "Could not read core SDK API_VERSION pre-install; plugin compatibility relies on the post-install gate"
+    fi
+
+    # 6b. Resolve the plugin PLAN. Any failure here aborts BEFORE any install.
+    #     Version precedence:  --plugins name@ver  >  manifest version:  >  resolve newest compatible.
+    declare -a PLUGIN_PLAN=()
     for plugin_entry in "${PLUGIN_ENTRIES[@]:-}"; do
         [[ -z "$plugin_entry" ]] && continue
         IFS='|' read -r pname prepo pver <<< "$plugin_entry"
         [[ -z "$pname" ]] && continue
 
-        # Filter by --plugins csv if provided
+        PIN_VER=""
         if [[ -n "$SELECTED_PLUGINS" ]]; then
-            if ! echo ",$SELECTED_PLUGINS," | grep -q ",${pname},"; then
+            SELECTED="false"
+            _OLDIFS="$IFS"; IFS=','
+            for _sel in $SELECTED_PLUGINS; do
+                _sname="${_sel%@*}"
+                if [[ "$_sname" == "$pname" ]]; then
+                    SELECTED="true"
+                    [[ "$_sel" == *@* ]] && PIN_VER="${_sel#*@}"
+                    break
+                fi
+            done
+            IFS="$_OLDIFS"
+            if [[ "$SELECTED" != "true" ]]; then
                 info "Skipping plugin ${pname} (not in --plugins list)"
                 continue
             fi
         fi
-        _install_pkg_online "$prepo" "$pver" "plugin:${pname}" "false"
+
+        USE_VER="$pver"
+        [[ -n "$PIN_VER" ]] && USE_VER="$PIN_VER"
+        if [[ -z "$USE_VER" ]]; then
+            info "plugin:${pname}: resolving newest compatible release of ${prepo} ..."
+            USE_VER="$(_resolve_compatible_plugin "$prepo" "$CORE_API")" \
+                || fail "No installable API-compatible release for plugin ${pname} (${prepo}); existing install left unchanged."
+        fi
+        PLUGIN_PLAN+=("${pname}|${prepo}|${USE_VER}")
     done
 
-    # 8. Install serialwrap WITH deps (public; does not depend on testpilot-core)
+    # 6c. Plan is known-good; mutation is about to begin. For an existing install
+    #     the rollback snapshot is a HARD precondition: if we cannot capture it we
+    #     must abort BEFORE mutating, otherwise a later failure would be
+    #     non-recoverable (violating the never-brick guarantee). A fresh install
+    #     needs no snapshot (it is removed wholesale on failure).
+    if [[ "$EXISTING_INSTALL" == "true" ]]; then
+        INSTALL_SNAPSHOT="$(mktemp)"
+        "${VENV}/bin/python" -m pip freeze > "$INSTALL_SNAPSHOT" 2>/dev/null || :
+        [[ -s "$INSTALL_SNAPSHOT" ]] \
+            || fail "Could not snapshot the existing install for rollback; aborting BEFORE any change so the working install stays intact. Reinstall via 'install.sh --offline <bundle>' or retry."
+    fi
+
+    # Roll back an existing install (or remove a fresh venv), then abort.
+    _abort_after_mutation() {
+        trap - ERR   # stop re-entrancy while we roll back
+        if [[ "$EXISTING_INSTALL" == "true" && -s "${INSTALL_SNAPSHOT:-}" ]]; then
+            warn "Install failed after mutation; rolling back to the previous set (offline) ..."
+            # Use the same installer backend as the install path (uv when present).
+            _venv_pip --no-index --find-links "$WHEEL_CACHE" -r "$INSTALL_SNAPSHOT" >/dev/null 2>&1 \
+                || warn "Offline rollback incomplete; reinstall from a known-good bundle via 'install.sh --offline'."
+        elif [[ "$EXISTING_INSTALL" != "true" ]]; then
+            rm -rf "$VENV"
+        fi
+        fail "$1"
+    }
+
+    # Route EVERY post-snapshot mutation failure through rollback. Under
+    # `set -e` a failing install/download step exits immediately, so wire an ERR
+    # trap (in addition to the explicit gate handling) so core/plugin/serialwrap
+    # install failures also restore the previous set / remove a fresh venv.
+    # (Failures inside `if`/`||`/`&&` — e.g. the git+https fallback probe — are
+    # exempt from ERR, so the normal fallback logic is unaffected.)
+    # `set -E` (errtrace) makes the ERR trap fire for failures INSIDE the install
+    # helper functions too (bash does not inherit ERR traps into functions otherwise).
+    set -E
+    trap '_abort_after_mutation "Install failed after mutation; the managed venv was rolled back or cleaned."' ERR
+
+    # 7. Install core (from the pre-downloaded wheel; git+https fallback if none).
+    if compgen -G "$CORE_WHEEL_DIR/*.whl" >/dev/null 2>&1; then
+        info "Installing core ${CORE_VERSION} from ${CORE_REPO} ..."
+        _install_local_wheels "$CORE_WHEEL_DIR" "true" "core"
+    else
+        _install_pkg_online "$CORE_REPO" "$CORE_VERSION" "core" "true"
+    fi
+    rm -rf "$CORE_WHEEL_DIR"; ONLINE_WHEEL_TMP=""
+
+    # 8. Install the resolved plugins with --no-deps.
+    for _plan in "${PLUGIN_PLAN[@]:-}"; do
+        [[ -z "$_plan" ]] && continue
+        IFS='|' read -r pname prepo USE_VER <<< "$_plan"
+        _install_pkg_online "$prepo" "$USE_VER" "plugin:${pname}" "false"
+    done
+
+    # 9. Install serialwrap WITH deps (public; pinned — not flow-latest)
     if [[ -n "$SERIALWRAP_REPO" && -n "$SERIALWRAP_VERSION" ]]; then
         _install_pkg_online "$SERIALWRAP_REPO" "$SERIALWRAP_VERSION" "serialwrap" "true"
     fi
 
-    # 9. Wrapper + skill sync
+    # 10. Wrapper + skill sync
     _write_wrapper_and_skill "$VENV" "$TESTPILOT_BIN_DIR" "$TESTPILOT_SKILLS_DIR"
 
-    # 10. Migrate legacy installs (best-effort, non-fatal)
+    # 11. Migrate legacy installs (best-effort, non-fatal)
     _run_legacy_migration "$VENV"
+
+    # 12. Post-install gate (shared semantics with the offline path). On failure,
+    #     roll back an existing install / remove a fresh venv.
+    info "Running post-install gate: testpilot --verify-install ..."
+    "${VENV}/bin/testpilot" --verify-install \
+        || _abort_after_mutation "Post-install gate FAILED. The installation may be incomplete."
+    ok "Post-install gate passed"
+    trap - ERR; set +E   # install succeeded — stop routing failures to rollback
+    [[ -n "${INSTALL_SNAPSHOT:-}" ]] && rm -f "$INSTALL_SNAPSHOT"
 
 fi  # end ONLINE/OFFLINE branch
 

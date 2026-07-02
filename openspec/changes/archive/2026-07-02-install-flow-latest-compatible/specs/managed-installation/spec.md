@@ -1,29 +1,4 @@
-# managed-installation Specification
-
-## Purpose
-Define the supported managed TestPilot installation, update, and health-check behavior for QC/TEST operator deployments.
-## Requirements
-### Requirement: Verify install reports deployment health
-`testpilot --verify-install` SHALL run before normal Click dispatch and, in the wheel deployment model, report health using the live runtime metadata rather than a source checkout. It SHALL report whether: the managed virtualenv and `~/.local/bin/testpilot` wrapper exist and the wrapper resolves to the managed virtualenv's console script; the installed core distribution `testpilot-core` and its version are importable; each plugin declared by `importlib.metadata.entry_points(group="testpilot.plugins")` loads via `PluginLoader.load` (SDK `api_version` compatible with the installed core `API_VERSION`); `serialwrap` is resolvable on the operator's PATH; and the bundled `testpilot-normal-test` skill is present from packaged data. It SHALL fail when any plugin entry point is API-incompatible, and SHALL warn when a `testpilot` distribution is importable from outside the managed virtualenv.
-
-#### Scenario: Healthy wheel install passes verification
-- **WHEN** core + manifest plugins + serialwrap are installed into the managed venv and the wrapper resolves to it
-- **THEN** `testpilot --verify-install` exits 0 and prints each checked item (venv, wrapper, core version, per-plugin load + version, serialwrap, skill) as passing
-
-#### Scenario: API-incompatible plugin fails verification
-- **WHEN** an installed plugin's declared `api_version` is incompatible with the installed core `API_VERSION`
-- **THEN** `testpilot --verify-install` exits non-zero and reports the offending plugin and the version mismatch, rather than listing it as healthy
-
-#### Scenario: Stray non-managed install warns
-- **WHEN** a `testpilot`/`testpilot-core` distribution is importable from outside the managed virtualenv (e.g. a leftover `pip --user` install)
-- **THEN** `testpilot --verify-install` warns about the out-of-managed-venv import so the operator can reconcile it
-
-### Requirement: Wrapper requires no source environment activation
-The installed `~/.local/bin/testpilot` wrapper SHALL execute the managed virtualenv's TestPilot console script directly and SHALL NOT require users to source an activation script or set `PYTHONPATH`.
-
-#### Scenario: Wrapper invokes managed console script
-- **WHEN** user runs `~/.local/bin/testpilot --version`
-- **THEN** the wrapper executes the console script from `~/.local/share/testpilot/.venv` and prints TestPilot version information
+## MODIFIED Requirements
 
 ### Requirement: Managed installer installs pinned wheels into a managed venv
 The installer SHALL create or update a runtime virtualenv under `~/.local/share/testpilot/.venv`. For the core and each selected plugin it SHALL install the **newest release that is API-compatible with the installed core** `API_VERSION` under the `PluginLoader` rule — resolving and installing the core first, then resolving each plugin against the installed core — and it SHALL determine a candidate release's `api_version` **before** committing that release to the managed virtualenv (staging / release metadata probe), so a resolution never mutates the managed venv into a broken state. It SHALL install the **serialwrap version pinned in `install-manifest.yaml`** (serialwrap is not flow-latest). If no API-compatible release exists for a required component, the installer SHALL abort with a clear message naming the component, the candidate `api_version`(s), and the core `API_VERSION`, and SHALL leave any pre-existing working install intact. It SHALL expose `~/.local/bin/testpilot` as a wrapper that executes the managed virtualenv's console script with no activation, and sync the packaged `testpilot-normal-test` skill into `~/.agents/skills/testpilot-normal-test`. It SHALL NOT create or depend on a `~/.local/share/testpilot/src` source checkout. Private wheels SHALL be fetched with `gh release download` using a token provided only via the `GH_TOKEN`/`TESTPILOT_INSTALL_TOKEN` environment, never embedded in a URL or printed. `--plugins <name[,name...]>` SHALL select a subset; `--plugins <name>@<version>` SHALL pin a component to an exact version (bypassing latest-compatible resolution); the default SHALL install the manifest's full component set. The installer SHALL run `testpilot --verify-install` as a post-install gate on **both** the online and offline paths and SHALL fail the install when the gate fails.
@@ -85,18 +60,3 @@ An `install-manifest.yaml` in core SHALL be the single source of truth for the m
 #### Scenario: Explicit override pins a single component
 - **WHEN** the installer runs with `--plugins wifi_llapi@0.3.1`
 - **THEN** `wifi_llapi` is installed at `0.3.1` regardless of the newest compatible release
-
-### Requirement: Core distribution is testpilot-core and is never resolved from public PyPI
-The core distribution SHALL be named `testpilot-core` (its import package remains `testpilot`), and plugins SHALL declare their dependency on `testpilot-core`. Every install path SHALL avoid resolving the core from a public index: the online path SHALL install the core wheel first and then plugin wheels with `--no-deps`, and the offline path SHALL use `--no-index`. No install path SHALL satisfy `testpilot`/`testpilot-core` from public PyPI.
-
-#### Scenario: Online plugin install does not touch PyPI for core
-- **WHEN** the online installer installs a plugin wheel after the core wheel
-- **THEN** it uses `--no-deps` so pip does not query PyPI to satisfy `testpilot-core`, and the install succeeds without network access to any public index for the core
-
-### Requirement: Installer migrates pre-existing install shapes
-On a machine with a prior TestPilot install, the installer SHALL detect and reconcile legacy shapes — a `pip install --user testpilot`, a pipx install, and a legacy `~/.local/share/testpilot/src` checkout — by uninstalling/repointing them so the managed virtualenv wrapper is authoritative, and SHALL warn when a `testpilot` import resolves outside the managed virtualenv after migration.
-
-#### Scenario: Migrate a user-site install
-- **WHEN** the installer runs on a machine where `testpilot` was previously installed via `pip install --user`
-- **THEN** it reconciles the user-site install (uninstall/repoint), installs the managed wheel model, and `--verify-install` does not report a competing out-of-venv `testpilot`
-

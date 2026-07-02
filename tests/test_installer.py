@@ -48,6 +48,16 @@ def _build_stub_bin(tmp_path: Path, gh_log: Path, uv_log: Path) -> Path:
     bin_dir = tmp_path / "stub_bin"
     bin_dir.mkdir()
 
+    # Real (minimal) wheel builder so the installer can read core's API_VERSION
+    # from the downloaded wheel (transactional resolution reads it pre-install).
+    make_wheel_py = bin_dir / "make_fake_wheel.py"
+    make_wheel_py.write_text(
+        "import sys, zipfile\n"
+        'with zipfile.ZipFile(sys.argv[1], "w") as z:\n'
+        "    z.writestr(\"testpilot/api/__init__.py\", 'API_VERSION = \"1.1\"\\n')\n"
+    )
+    make_wheel_str = str(make_wheel_py)
+
     gh_log_str = str(gh_log)
     _write_stub(
         bin_dir / "gh",
@@ -65,11 +75,28 @@ def _build_stub_bin(tmp_path: Path, gh_log: Path, uv_log: Path) -> Path:
             prev="$arg"
         done
         case "$*" in
+          *api-version.txt*)
+            # Per-release API metadata probe. Default: none published -> fail so
+            # the installer falls back to latest. Tests set STUB_PLUGIN_API to
+            # exercise compatible-resolution / abort paths.
+            if [[ -n "$STUB_PLUGIN_API" ]]; then printf '%s' "$STUB_PLUGIN_API"; exit 0; fi
+            exit 1
+            ;;
+          *"release view"*)
+            # latest release tag resolution (sans-v stripped by the installer)
+            echo "v9.9.9"
+            exit 0
+            ;;
+          *"release list"*)
+            printf 'v9.9.9\\nv9.9.8\\n'
+            exit 0
+            ;;
           *"release download"*)
             if [[ -n "$_dir" ]]; then
                 mkdir -p "$_dir"
-                # Create a minimal fake wheel file so pip install has something
-                touch "$_dir/testpilot_core-0.3.0-py3-none-any.whl"
+                # Create a real minimal wheel (zip) carrying testpilot/api so the
+                # installer can read core's API_VERSION from it pre-install.
+                python3 "{make_wheel_str}" "$_dir/testpilot_core-0.3.0-py3-none-any.whl"
             fi
             exit 0
             ;;
@@ -96,15 +123,17 @@ def _build_stub_bin(tmp_path: Path, gh_log: Path, uv_log: Path) -> Path:
           venv)
             VENV_DIR="$2"
             mkdir -p "$VENV_DIR/bin"
-            printf '#!/usr/bin/env sh\\nexec echo "testpilot mock"\\n' > "$VENV_DIR/bin/testpilot"
+            printf '#!/usr/bin/env sh\\necho "$@" >> "%s/.testpilot_calls.log"\\nif [ "$1" = "--verify-install" ] && [ -n "$TESTPILOT_STUB_VERIFY_FAIL" ]; then echo "verify failed" >&2; exit 1; fi\\nexec echo "testpilot mock"\\n' "$VENV_DIR" > "$VENV_DIR/bin/testpilot"
             chmod +x "$VENV_DIR/bin/testpilot"
-            # Create a stub python that can handle -c (exits 0, does nothing useful)
-            printf '#!/usr/bin/env sh\\nexit 0\\n' > "$VENV_DIR/bin/python"
+            # Stub python: report a core SDK API_VERSION when asked, else no-op.
+            printf '#!/usr/bin/env sh\\ncase "$*" in\\n  *API_VERSION*) echo "1.1" ;;\\n  *freeze*) [ -n "$STUB_FREEZE_EMPTY" ] || echo "testpilot-core==0.3.0" ;;\\nesac\\nexit 0\\n' > "$VENV_DIR/bin/python"
             chmod +x "$VENV_DIR/bin/python"
             printf '#!/usr/bin/env sh\\nexit 0\\n' > "$VENV_DIR/bin/pip"
             chmod +x "$VENV_DIR/bin/pip"
             ;;
           pip)
+            # Simulate an install-step failure (exercises rollback/cleanup wiring).
+            if [ -n "$STUB_PIP_FAIL" ]; then echo "pip install failed (stub)" >&2; exit 1; fi
             : # no-op for pip install
             ;;
         esac
@@ -133,6 +162,7 @@ def _run_installer(
     fake_home: Path,
     stub_bin: Path,
     extra_env: dict[str, str] | None = None,
+    extra_args: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run install.sh with stub PATH and isolated env."""
     base_env = {k: v for k, v in os.environ.items() if k not in _ISOLATED_VARS}
@@ -153,7 +183,7 @@ def _run_installer(
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
-        ["bash", str(INSTALL_SH)],
+        ["bash", str(INSTALL_SH), *(extra_args or [])],
         env=env,
         capture_output=True,
         text=True,
@@ -613,3 +643,107 @@ class TestVenvIdempotence:
 
         wrapper = fake_home / ".local" / "bin" / "testpilot"
         assert wrapper.exists(), "Wrapper missing after second run"
+
+
+# ---------------------------------------------------------------------------
+# Scenario: shared post-install verify gate on the ONLINE path
+# ---------------------------------------------------------------------------
+
+
+def _venv_calls_log(fake_home: Path) -> Path:
+    return fake_home / ".local" / "share" / "testpilot" / ".venv" / ".testpilot_calls.log"
+
+
+class TestOnlineVerifyGate:
+    """The online path must run `testpilot --verify-install` and honor its exit."""
+
+    def test_online_runs_verify_gate(self, fake_home: Path, stubs: Path) -> None:
+        result = _run_installer(fake_home, stubs)
+        assert result.returncode == 0, result.stderr
+        calls = _venv_calls_log(fake_home).read_text()
+        assert "--verify-install" in calls
+
+    def test_online_verify_failure_fails_install(
+        self, fake_home: Path, stubs: Path
+    ) -> None:
+        result = _run_installer(
+            fake_home, stubs, {"TESTPILOT_STUB_VERIFY_FAIL": "1"}
+        )
+        assert result.returncode != 0
+        assert "Post-install gate FAILED" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Scenario: latest-compatible resolution (core/plugins unpinned; serialwrap pinned)
+# ---------------------------------------------------------------------------
+
+
+class TestLatestCompatibleResolution:
+    def test_resolves_latest_when_unpinned(
+        self, fake_home: Path, stubs: Path, gh_log: Path
+    ) -> None:
+        """With no pinned core/plugin version, the installer resolves latest."""
+        result = _run_installer(fake_home, stubs)
+        assert result.returncode == 0, result.stderr
+        log = gh_log.read_text()
+        assert "release view" in log  # core latest resolution
+
+    def test_no_compatible_release_aborts(
+        self, fake_home: Path, stubs: Path, uv_log: Path
+    ) -> None:
+        """Published api metadata incompatible with core -> loud abort BEFORE any
+        package is installed (transactional: resolution precedes mutation)."""
+        result = _run_installer(fake_home, stubs, {"STUB_PLUGIN_API": "2.0"})
+        assert result.returncode != 0
+        assert "No API-compatible release" in result.stderr
+        # Non-mutation: no `pip install` into the managed venv happened — the
+        # abort occurred during resolution, before the install phase.
+        uv_calls = uv_log.read_text() if uv_log.exists() else ""
+        assert "pip install" not in uv_calls, (
+            f"resolution abort must not install anything: {uv_calls!r}"
+        )
+
+    def test_compatible_metadata_resolves(
+        self, fake_home: Path, stubs: Path
+    ) -> None:
+        """Published api metadata compatible with core -> install succeeds."""
+        result = _run_installer(fake_home, stubs, {"STUB_PLUGIN_API": "1.0"})
+        assert result.returncode == 0, result.stderr
+
+    def test_install_step_failure_aborts_and_cleans(
+        self, fake_home: Path, stubs: Path
+    ) -> None:
+        """A post-snapshot install-step (pip) failure must abort via rollback
+        wiring — not silently continue — and remove a fresh half-built venv."""
+        result = _run_installer(fake_home, stubs, {"STUB_PIP_FAIL": "1"})
+        assert result.returncode != 0
+        venv = fake_home / ".local" / "share" / "testpilot" / ".venv"
+        assert not venv.exists(), (
+            "fresh venv must be removed when an install step fails mid-way"
+        )
+
+    def test_existing_install_snapshot_failure_aborts_before_mutation(
+        self, fake_home: Path, stubs: Path
+    ) -> None:
+        """If the rollback snapshot can't be captured for an EXISTING install,
+        abort BEFORE mutating so the working install stays intact (never brick)."""
+        r1 = _run_installer(fake_home, stubs)
+        assert r1.returncode == 0, r1.stderr
+        wrapper = fake_home / ".local" / "share" / "testpilot" / ".venv" / "bin" / "testpilot"
+        assert wrapper.exists()
+        # Re-run where `pip freeze` yields nothing -> snapshot precondition fails.
+        r2 = _run_installer(fake_home, stubs, {"STUB_FREEZE_EMPTY": "1"})
+        assert r2.returncode != 0
+        assert "Could not snapshot" in r2.stderr
+        assert wrapper.exists(), "existing install must remain intact after a pre-mutation abort"
+
+    def test_explicit_pin_bypasses_resolution(
+        self, fake_home: Path, stubs: Path, gh_log: Path
+    ) -> None:
+        """`--plugins name@ver` pins the plugin, skipping latest resolution."""
+        result = _run_installer(
+            fake_home, stubs, extra_args=["--plugins", "wifi_llapi@1.2.3"]
+        )
+        assert result.returncode == 0, result.stderr
+        log = gh_log.read_text()
+        assert "release download v1.2.3" in log
