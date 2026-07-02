@@ -635,11 +635,16 @@ PYEOF
         PLUGIN_PLAN+=("${pname}|${prepo}|${USE_VER}")
     done
 
-    # 6c. Plan is known-good; mutation begins. Snapshot an existing install for
-    #     rollback (best-effort — reinstalled offline from the wheel cache).
+    # 6c. Plan is known-good; mutation is about to begin. For an existing install
+    #     the rollback snapshot is a HARD precondition: if we cannot capture it we
+    #     must abort BEFORE mutating, otherwise a later failure would be
+    #     non-recoverable (violating the never-brick guarantee). A fresh install
+    #     needs no snapshot (it is removed wholesale on failure).
     if [[ "$EXISTING_INSTALL" == "true" ]]; then
         INSTALL_SNAPSHOT="$(mktemp)"
         "${VENV}/bin/python" -m pip freeze > "$INSTALL_SNAPSHOT" 2>/dev/null || :
+        [[ -s "$INSTALL_SNAPSHOT" ]] \
+            || fail "Could not snapshot the existing install for rollback; aborting BEFORE any change so the working install stays intact. Reinstall via 'install.sh --offline <bundle>' or retry."
     fi
 
     # Roll back an existing install (or remove a fresh venv), then abort.
@@ -647,8 +652,8 @@ PYEOF
         trap - ERR   # stop re-entrancy while we roll back
         if [[ "$EXISTING_INSTALL" == "true" && -s "${INSTALL_SNAPSHOT:-}" ]]; then
             warn "Install failed after mutation; rolling back to the previous set (offline) ..."
-            "${VENV}/bin/pip" install --no-index --find-links "$WHEEL_CACHE" \
-                -r "$INSTALL_SNAPSHOT" >/dev/null 2>&1 \
+            # Use the same installer backend as the install path (uv when present).
+            _venv_pip --no-index --find-links "$WHEEL_CACHE" -r "$INSTALL_SNAPSHOT" >/dev/null 2>&1 \
                 || warn "Offline rollback incomplete; reinstall from a known-good bundle via 'install.sh --offline'."
         elif [[ "$EXISTING_INSTALL" != "true" ]]; then
             rm -rf "$VENV"

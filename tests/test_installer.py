@@ -126,7 +126,7 @@ def _build_stub_bin(tmp_path: Path, gh_log: Path, uv_log: Path) -> Path:
             printf '#!/usr/bin/env sh\\necho "$@" >> "%s/.testpilot_calls.log"\\nif [ "$1" = "--verify-install" ] && [ -n "$TESTPILOT_STUB_VERIFY_FAIL" ]; then echo "verify failed" >&2; exit 1; fi\\nexec echo "testpilot mock"\\n' "$VENV_DIR" > "$VENV_DIR/bin/testpilot"
             chmod +x "$VENV_DIR/bin/testpilot"
             # Stub python: report a core SDK API_VERSION when asked, else no-op.
-            printf '#!/usr/bin/env sh\\ncase "$*" in\\n  *API_VERSION*) echo "1.1" ;;\\nesac\\nexit 0\\n' > "$VENV_DIR/bin/python"
+            printf '#!/usr/bin/env sh\\ncase "$*" in\\n  *API_VERSION*) echo "1.1" ;;\\n  *freeze*) [ -n "$STUB_FREEZE_EMPTY" ] || echo "testpilot-core==0.3.0" ;;\\nesac\\nexit 0\\n' > "$VENV_DIR/bin/python"
             chmod +x "$VENV_DIR/bin/python"
             printf '#!/usr/bin/env sh\\nexit 0\\n' > "$VENV_DIR/bin/pip"
             chmod +x "$VENV_DIR/bin/pip"
@@ -721,6 +721,21 @@ class TestLatestCompatibleResolution:
         assert not venv.exists(), (
             "fresh venv must be removed when an install step fails mid-way"
         )
+
+    def test_existing_install_snapshot_failure_aborts_before_mutation(
+        self, fake_home: Path, stubs: Path
+    ) -> None:
+        """If the rollback snapshot can't be captured for an EXISTING install,
+        abort BEFORE mutating so the working install stays intact (never brick)."""
+        r1 = _run_installer(fake_home, stubs)
+        assert r1.returncode == 0, r1.stderr
+        wrapper = fake_home / ".local" / "share" / "testpilot" / ".venv" / "bin" / "testpilot"
+        assert wrapper.exists()
+        # Re-run where `pip freeze` yields nothing -> snapshot precondition fails.
+        r2 = _run_installer(fake_home, stubs, {"STUB_FREEZE_EMPTY": "1"})
+        assert r2.returncode != 0
+        assert "Could not snapshot" in r2.stderr
+        assert wrapper.exists(), "existing install must remain intact after a pre-mutation abort"
 
     def test_explicit_pin_bypasses_resolution(
         self, fake_home: Path, stubs: Path, gh_log: Path
