@@ -48,6 +48,16 @@ def _build_stub_bin(tmp_path: Path, gh_log: Path, uv_log: Path) -> Path:
     bin_dir = tmp_path / "stub_bin"
     bin_dir.mkdir()
 
+    # Real (minimal) wheel builder so the installer can read core's API_VERSION
+    # from the downloaded wheel (transactional resolution reads it pre-install).
+    make_wheel_py = bin_dir / "make_fake_wheel.py"
+    make_wheel_py.write_text(
+        "import sys, zipfile\n"
+        'with zipfile.ZipFile(sys.argv[1], "w") as z:\n'
+        "    z.writestr(\"testpilot/api/__init__.py\", 'API_VERSION = \"1.1\"\\n')\n"
+    )
+    make_wheel_str = str(make_wheel_py)
+
     gh_log_str = str(gh_log)
     _write_stub(
         bin_dir / "gh",
@@ -84,8 +94,9 @@ def _build_stub_bin(tmp_path: Path, gh_log: Path, uv_log: Path) -> Path:
           *"release download"*)
             if [[ -n "$_dir" ]]; then
                 mkdir -p "$_dir"
-                # Create a minimal fake wheel file so pip install has something
-                touch "$_dir/testpilot_core-0.3.0-py3-none-any.whl"
+                # Create a real minimal wheel (zip) carrying testpilot/api so the
+                # installer can read core's API_VERSION from it pre-install.
+                python3 "{make_wheel_str}" "$_dir/testpilot_core-0.3.0-py3-none-any.whl"
             fi
             exit 0
             ;;
@@ -676,12 +687,19 @@ class TestLatestCompatibleResolution:
         assert "release view" in log  # core latest resolution
 
     def test_no_compatible_release_aborts(
-        self, fake_home: Path, stubs: Path
+        self, fake_home: Path, stubs: Path, uv_log: Path
     ) -> None:
-        """Published api metadata incompatible with core -> loud abort."""
+        """Published api metadata incompatible with core -> loud abort BEFORE any
+        package is installed (transactional: resolution precedes mutation)."""
         result = _run_installer(fake_home, stubs, {"STUB_PLUGIN_API": "2.0"})
         assert result.returncode != 0
         assert "No API-compatible release" in result.stderr
+        # Non-mutation: no `pip install` into the managed venv happened — the
+        # abort occurred during resolution, before the install phase.
+        uv_calls = uv_log.read_text() if uv_log.exists() else ""
+        assert "pip install" not in uv_calls, (
+            f"resolution abort must not install anything: {uv_calls!r}"
+        )
 
     def test_compatible_metadata_resolves(
         self, fake_home: Path, stubs: Path

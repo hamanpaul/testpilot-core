@@ -345,6 +345,40 @@ if ! "$DRY_VENV/bin/pip" install \
     fail "DRY-RUN GATE FAILED: offline install check did not succeed. Bundle NOT produced. Fix missing wheels and retry."
 fi
 ok "Dry-run gate passed"
+
+# ── BUILD-TIME API-COMPAT GATE ────────────────────────────────────────────────
+# Enforce plugin<->core SDK API compatibility on the RESOLVED wheels now, so an
+# incompatible latest plugin fails the build rather than only the air-gapped
+# target. Loads each installed plugin entry point and applies the PluginLoader
+# rule against the installed core API_VERSION.
+info "Build-time plugin API-compat gate ..."
+if ! "$DRY_VENV/bin/python" - <<'PYEOF'
+import sys
+from importlib.metadata import entry_points
+try:
+    from testpilot.api import API_VERSION
+    from testpilot.core.plugin_loader import _check_api_compat
+    from testpilot.core.plugin_base import IncompatiblePluginError
+except Exception as exc:  # core import failure is itself a bundle defect
+    print(f"cannot import core SDK: {exc}", file=sys.stderr)
+    sys.exit(1)
+bad = []
+for ep in entry_points(group="testpilot.plugins"):
+    try:
+        cls = ep.load()
+        _check_api_compat(ep.name, getattr(cls, "api_version", None), API_VERSION)
+    except IncompatiblePluginError as exc:
+        bad.append(str(exc))
+    except Exception as exc:
+        bad.append(f"{ep.name}: load error: {exc}")
+if bad:
+    print("; ".join(bad), file=sys.stderr)
+    sys.exit(1)
+PYEOF
+then
+    fail "BUILD-TIME API-COMPAT GATE FAILED: a resolved plugin is not API-compatible with the resolved core. Bundle NOT produced. Pin a compatible plugin or update core."
+fi
+ok "Build-time API-compat gate passed"
 rm -rf "$(dirname "$DRY_VENV")"
 
 # ── Produce tarball ───────────────────────────────────────────────────────────

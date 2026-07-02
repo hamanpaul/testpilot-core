@@ -8,6 +8,20 @@
   verify gate across **both** online and offline paths (online currently has none);
   (2) resolution is latest-*compatible* + transactional, never mutating the managed
   venv into a broken state; (3) **serialwrap stays pinned** (no API contract to gate on).
+- Rev 3 (2026-07-02): second Codex adversarial pass — as-built hardening:
+  - install.sh is transactional: core's `API_VERSION` is read from the **downloaded
+    core wheel** (via `zipfile`, no install), the full plugin plan is resolved
+    **before** any managed-venv mutation, and a post-mutation failure rolls an
+    existing install back from a `pip freeze` snapshot (or removes a fresh venv).
+  - build-bundle.sh gains a **build-time API-compat gate**: after the offline
+    dry-run install it loads the resolved plugin wheels against the resolved core
+    (`_check_api_compat`) and fails the build on incompatibility.
+  - Known limitation (pre-existing, tracked follow-up): offline rollback replays a
+    `pip freeze` snapshot against the local wheel cache, which holds first-party
+    release wheels but not necessarily every transitive dependency wheel; if a
+    failed update changed a dependency version the offline rollback may be
+    incomplete and surfaces a clear manual-recovery message. Not introduced by
+    this change.
 
 ## Problem
 
