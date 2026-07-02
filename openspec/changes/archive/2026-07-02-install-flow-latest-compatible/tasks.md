@@ -46,4 +46,4 @@
 
 - [x] 8.1 Suite green: `.venv/bin/python -m pytest -q` → 548 passed, 1 pre-existing failure unrelated to this change (`test_offline_creates_wrapper`: bundle name `cp311` vs system python `3.12`; fails identically on `main`)
 - [x] 8.2 `python3 -m policy_check --repo .` → pass 25 / fail 0 / warn 1 (R-22 advisory, no new dangling refs)
-- [ ] 8.3 PR checklist / CHANGELOG / branch-name compliant; open PR (zh-tw)
+- [x] 8.3 PR checklist / CHANGELOG / branch-name compliant; open PR (zh-tw)
