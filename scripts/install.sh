@@ -160,37 +160,49 @@ _api_compatible() {
 }
 
 # ── Helper: read the installed core's SDK API_VERSION from the managed venv ───
+# Always returns 0 (empty output = unknown); callers guard with `|| CORE_API=""`.
 _installed_core_api() {
     local venv="$1"
-    "${venv}/bin/python" -c 'import testpilot.api as a; print(a.API_VERSION)' 2>/dev/null | tr -d '[:space:]'
+    "${venv}/bin/python" -c 'import testpilot.api as a; print(a.API_VERSION)' 2>/dev/null \
+        | tr -d '[:space:]' || true
 }
 
 # ── Helper: resolve a repo's latest release tag (sans leading v) ──────────────
+# Prints the version on success; on failure prints to stderr and returns 1 so
+# callers can react deterministically (NOT via `set -e` on a command-sub, which
+# bash does not reliably propagate for `var=$(...)` without inherit_errexit).
 _resolve_latest_version() {
     local repo="$1" tag
-    tag="$(gh release view --repo "$repo" --json tagName --jq .tagName 2>/dev/null)" \
-        || fail "Could not resolve latest release for ${repo} (no release / no access)."
-    [[ -n "$tag" ]] || fail "Could not resolve latest release for ${repo} (empty tag)."
+    tag="$(gh release view --repo "$repo" --json tagName --jq .tagName 2>/dev/null)" || tag=""
+    if [[ -z "$tag" ]]; then
+        echo "[FAIL]  Could not resolve latest release for ${repo} (no release / no access)." >&2
+        return 1
+    fi
     printf '%s\n' "${tag#v}"
 }
 
 # ── Helper: read a release's published api_version metadata (empty if none) ───
 # Primary compatibility signal: an `api-version.txt` asset on the plugin release.
+# Always returns 0 — a missing asset is a normal "no metadata" outcome.
 _read_release_api_version() {
     local repo="$1" tag="$2"
     gh release download "$tag" --repo "$repo" --pattern 'api-version.txt' --output - 2>/dev/null \
-        | tr -d '[:space:]'
+        | tr -d '[:space:]' || true
 }
 
 # ── Helper: resolve newest API-compatible plugin release ─────────────────────
-# Echoes the chosen version (sans v). Behavior:
-#   - metadata present on candidates: pick newest compatible; abort if none.
+# Prints the chosen version (sans v) on success. On no-compatible-release it
+# prints a detailed reason to stderr and returns 1 (caller aborts). Behavior:
+#   - metadata present on candidates: pick newest compatible; else return 1.
 #   - no metadata anywhere: fall back to latest (the post-install gate verifies).
 _resolve_compatible_plugin() {
     local repo="$1" core_api="$2"
     local -a tags
     mapfile -t tags < <(gh release list --repo "$repo" --json tagName --jq '.[].tagName' 2>/dev/null)
-    [[ "${#tags[@]}" -gt 0 ]] || fail "Could not list releases for ${repo} (no release / no access)."
+    if [[ "${#tags[@]}" -eq 0 ]]; then
+        echo "[FAIL]  Could not list releases for ${repo} (no release / no access)." >&2
+        return 1
+    fi
     local saw_metadata="false" tag api
     for tag in "${tags[@]}"; do
         api="$(_read_release_api_version "$repo" "$tag")"
@@ -203,7 +215,8 @@ _resolve_compatible_plugin() {
         fi
     done
     if [[ "$saw_metadata" == "true" ]]; then
-        fail "No API-compatible release for ${repo} (core provides SDK API ${core_api}); pin a compatible version with --plugins ${repo##*/}@<ver> or update core."
+        echo "[FAIL]  No API-compatible release for ${repo} (core provides SDK API ${core_api:-unknown}); pin a compatible version with --plugins ${repo##*/}@<ver> or update core." >&2
+        return 1
     fi
     # No per-release metadata published yet: install latest; the post-install
     # gate (testpilot --verify-install) is the compatibility backstop.
@@ -457,7 +470,8 @@ PYEOF
     # core version is optional in the manifest: absent => resolve latest release.
     if [[ -z "$CORE_VERSION" ]]; then
         info "core: no pinned version; resolving latest release of ${CORE_REPO} ..."
-        CORE_VERSION="$(_resolve_latest_version "$CORE_REPO")"
+        CORE_VERSION="$(_resolve_latest_version "$CORE_REPO")" \
+            || fail "Could not resolve latest core release for ${CORE_REPO}."
     fi
     info "Core:       ${CORE_REPO} @ ${CORE_VERSION}"
 
@@ -534,7 +548,7 @@ PYEOF
     # 6. Install core first (with its deps), then read its SDK API_VERSION so
     #    plugins can be resolved to the newest release compatible with THIS core.
     _install_pkg_online "$CORE_REPO" "$CORE_VERSION" "core" "true"
-    CORE_API="$(_installed_core_api "$VENV")"
+    CORE_API="$(_installed_core_api "$VENV")" || CORE_API=""
     if [[ -n "$CORE_API" ]]; then
         info "Core SDK API: ${CORE_API}"
     else
@@ -572,7 +586,8 @@ PYEOF
         [[ -n "$PIN_VER" ]] && USE_VER="$PIN_VER"
         if [[ -z "$USE_VER" ]]; then
             info "plugin:${pname}: resolving newest compatible release of ${prepo} ..."
-            USE_VER="$(_resolve_compatible_plugin "$prepo" "$CORE_API")"
+            USE_VER="$(_resolve_compatible_plugin "$prepo" "$CORE_API")" \
+                || fail "No installable API-compatible release for plugin ${pname} (${prepo}); leaving install unchanged."
         fi
         _install_pkg_online "$prepo" "$USE_VER" "plugin:${pname}" "false"
     done

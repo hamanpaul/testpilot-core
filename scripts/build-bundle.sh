@@ -166,17 +166,22 @@ done <<< "$PARSED"
 # the bundle snapshots the current release set. serialwrap stays pinned.
 # Compatibility of the resolved set is enforced by the dry-run gate below and by
 # the post-install verify gate when the bundle is later installed offline.
+# Prints version on success; on failure prints to stderr and returns 1 (callers
+# guard with `|| fail` — `set -e` does not reliably abort on `var=$(...)`).
 _resolve_latest_version() {
     local repo="$1" tag
-    tag="$(gh release view --repo "$repo" --json tagName --jq .tagName 2>/dev/null)" \
-        || fail "Could not resolve latest release for ${repo} (no release / no access)."
-    [[ -n "$tag" ]] || fail "Could not resolve latest release for ${repo} (empty tag)."
+    tag="$(gh release view --repo "$repo" --json tagName --jq .tagName 2>/dev/null)" || tag=""
+    if [[ -z "$tag" ]]; then
+        echo "[FAIL]  Could not resolve latest release for ${repo} (no release / no access)." >&2
+        return 1
+    fi
     printf '%s\n' "${tag#v}"
 }
 
 if [[ -z "$CORE_VERSION" ]]; then
     info "core: no pinned version; resolving latest release of ${CORE_REPO} ..."
-    CORE_VERSION="$(_resolve_latest_version "$CORE_REPO")"
+    CORE_VERSION="$(_resolve_latest_version "$CORE_REPO")" \
+        || fail "Could not resolve latest core release for ${CORE_REPO}."
 fi
 info "Core: ${CORE_REPO} @ ${CORE_VERSION}"
 
@@ -229,7 +234,8 @@ for plugin_entry in "${PLUGIN_ENTRIES[@]:-}"; do
     fi
     if [[ -z "$pver" ]]; then
         info "plugin:${pname}: resolving latest release of ${prepo} ..."
-        pver="$(_resolve_latest_version "$prepo")"
+        pver="$(_resolve_latest_version "$prepo")" \
+            || fail "Could not resolve latest release for plugin ${pname} (${prepo})."
     fi
     _download_wheel "$prepo" "$pver" "plugin:${pname}"
     RESOLVED_PLUGINS+=("${pname}|${prepo}|${pver}")
