@@ -9,31 +9,6 @@ preparation.
 
 ## [Unreleased]
 
-### Changed
-
-- **Install flow now resolves latest-compatible for core/plugins** instead of
-  exact-pinning them in `install-manifest.yaml`. Online install/`--update` and
-  the offline-bundle build resolve each repo's newest release that is
-  API-compatible with the installed core; `serialwrap` stays manifest-pinned (no
-  API contract). `core` no longer needs a re-pin release when a plugin bumps.
-  - `install-manifest.yaml`: `version:` dropped for core/plugins (optional; add
-    it back or use `--plugins name@ver` to pin); `serialwrap` `version:` required.
-  - `scripts/install.sh`: **transactional** — the full plan (core API read from
-    the downloaded core wheel + every plugin version) is resolved BEFORE the
-    managed venv is mutated, so a no-compatible-release abort leaves an existing
-    install untouched. A post-mutation failure (install step or the verify gate)
-    rolls an existing install back from a pip-freeze snapshot, or removes a fresh
-    half-built venv. The post-install `testpilot --verify-install` gate now runs
-    on the **online** path too (previously offline-only).
-  - `testpilot --update`: reinstalls newest-compatible and rolls back from the
-    snapshot if the installer aborts or verify fails (never bricks a working install).
-  - `scripts/build-bundle.sh`: resolves **newest-compatible** core/plugins at
-    build time (reads core API from the downloaded wheel; serialwrap pinned),
-    adds a **build-time API-compat gate** (loads the resolved plugin wheels
-    against the resolved core and fails the build on incompatibility, not just on
-    the target), keeps the exact SHA256-verified snapshot, and records a
-    `resolved-manifest.yaml`.
-
 ## [0.3.2]
 
 ### Changed
