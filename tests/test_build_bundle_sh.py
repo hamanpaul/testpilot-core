@@ -55,3 +55,16 @@ def test_downloads_release_wheels_not_rebuild():
 
 def test_pins_requirements():
     assert "requirements.txt" in SH
+
+
+def test_third_party_deps_resolved_from_first_party_wheels():
+    # Regression guard for the click>=8.1,<8.4 breakage: third-party deps must be
+    # resolved FROM the already-downloaded first-party wheels' metadata (so core's
+    # pins are honored), NOT hand-listed as bare package names — which grabbed the
+    # latest click (8.4.x), violated core's pin, and failed the dry-run gate.
+    assert "FIRST_PARTY_WHEELS" in SH, (
+        "third-party deps must resolve against the first-party wheels' metadata"
+    )
+    assert "THIRD_PARTY_DEPS=" not in SH, (
+        "third-party deps must not be hand-enumerated as bare package names"
+    )

@@ -327,11 +327,18 @@ if [[ -n "$SERIALWRAP_REPO" && -n "$SERIALWRAP_VERSION" ]]; then
 fi
 
 # ── Download third-party deps (binary only, for current platform) ─────────────
-# The closure is resolved for the active platform and python version.
-# Known direct dependencies of testpilot-core; transitive deps resolved by pip.
-THIRD_PARTY_DEPS="pyyaml click rich openpyxl ruamel.yaml"
-info "Downloading third-party deps (binary only): ${THIRD_PARTY_DEPS}"
-pip download --only-binary=:all: --dest "$WHEELHOUSE" $THIRD_PARTY_DEPS \
+# Resolve the third-party closure FROM the already-downloaded first-party wheels
+# (core + selected plugins + serialwrap) so pip honors THEIR pinned constraints.
+# Enumerating dep names by hand instead grabbed the latest of each — e.g. click
+# 8.4.x, which violates core's `click>=8.1,<8.4` and fails the dry-run gate.
+# --find-links lets the first-party wheels satisfy each other locally (they are
+# not on any public index) while transitive third-party deps resolve normally.
+info "Downloading third-party deps (binary only), resolved against first-party wheel metadata ..."
+mapfile -t FIRST_PARTY_WHEELS < <(ls "$WHEELHOUSE"/*.whl 2>/dev/null)
+[[ "${#FIRST_PARTY_WHEELS[@]}" -gt 0 ]] || fail "No first-party wheels in wheelhouse to resolve deps against."
+pip download --only-binary=:all: --dest "$WHEELHOUSE" \
+    --find-links "$WHEELHOUSE" \
+    "${FIRST_PARTY_WHEELS[@]}" \
     || warn "Some third-party deps could not be downloaded as binary wheels (may need to build from source on target)"
 
 # ── Generate pinned requirements.txt ─────────────────────────────────────────
