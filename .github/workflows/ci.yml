@@ -74,6 +74,14 @@ jobs:
       - name: Run test suite (core)
         run: .venv/bin/python -m pytest -q tests
 
+      - name: Sample plugin real-install discovery smoke
+        run: |
+          uv pip install --no-deps --python .venv/bin/python ./examples/sample_echo
+          .venv/bin/testpilot list-plugins | grep -q sample_echo
+          .venv/bin/testpilot list-cases sample_echo | grep -q echo-hello
+          .venv/bin/testpilot run sample_echo --case echo-hello | grep -q PASS
+          .venv/bin/python -m pytest -q examples/sample_echo/tests
+
       - name: Validate release governance policy
         run: .venv/bin/python -m pytest -q tests/test_release_governance.py
 
