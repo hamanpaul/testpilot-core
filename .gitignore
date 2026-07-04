@@ -50,3 +50,9 @@ docs/wifi_llapi_cases_summary.txt
 # Audit artifacts (auto-generated)
 audit/*
 !audit/.gitkeep
+
+# Generated plugin run-artifact bundles (core writes plugins/<name>/reports/<run_id>/
+# via run_loop.py). Never track these — they carry lab logs/reports (R-21).
+# Versioned report templates are kept.
+plugins/*/reports/*
+!plugins/*/reports/templates/

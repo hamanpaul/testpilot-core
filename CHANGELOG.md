@@ -9,6 +9,9 @@ preparation.
 
 ## [Unreleased]
 
+### Added
+- 可運行的最小 sample plugin `examples/sample_echo`(獨立 dist `testpilot-sample-echo`,經 `testpilot.plugins` entry-point 被發現、僅依賴 `testpilot.api`、`create_runner`→`run_pipeline` 產出 Pass verdict,含 `register_cli` demo);CI 加真實安裝發現 smoke;dev-guide/README 指向 sample 並修死連結、清 `plugins/wifi_llapi/reports/` 並加 `.gitignore` 防 `plugins/*/reports/` run bundle 再被追蹤(保留 `templates/`;R-21)。對照 #3。
+
 ## [0.3.3] - 2026-07-04
 
 ### Added
