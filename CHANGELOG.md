@@ -9,6 +9,18 @@ preparation.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-07-04
+
+### Added
+- 安裝流程改 flow latest-compatible：core/plugins 於安裝當下解析 newest API-compatible（serialwrap 維持 manifest pin），`install.sh` 交易式 resolve-before-mutate、動土後失敗 `ERR` trap rollback、線上路徑亦跑 `--verify-install` gate；manifest core/plugins version 改 optional。
+
+### Changed
+- policy engine 升版至 `v1.0.12`：`.project-policy.yml` / 四份 agent 檔 / 兩支 workflow 的 `uses:`+`policy_engine_ref` pin `@25d31e02`、`policy_version` 對齊 1.0.12，並於 `uses:` 補 R-23 `# v1.0.12` 尾註。
+
+### Fixed
+- `build-bundle.sh` third-party 依賴改依已下載 first-party wheel 的 metadata 解析閉包，取代裸抓最新版（後者會抓到違反 core `click>=8.1,<8.4` pin 的版本使 dry-run gate 失敗）。
+- `test_topology.py` 改用 `tmp_path` fixture 寫最小 `testbed.yaml`，不再依賴 git-ignored 的 `configs/testbed.yaml`，fresh clone 直接 `pytest` 不再有 failure。
+
 ## [0.3.2]
 
 ### Changed
