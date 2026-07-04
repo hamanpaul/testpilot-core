@@ -266,6 +266,9 @@ SDK surface from `testpilot.api`; they must not reach into `testpilot.core`,
 `testpilot.runtime` internals. See `plugins/_template/README.md` for the full
 contract and optional hook table.
 
+For a complete, runnable reference (installable + discoverable via
+`testpilot.plugins`), see `examples/sample_echo/` and its README.
+
 ### Project Structure
 
 ```text

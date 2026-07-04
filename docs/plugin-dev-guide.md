@@ -261,4 +261,20 @@ runners:
 | ssh | 控制 EndpointPC/遠端設備 | `transport: ssh` |
 | network | ping/arping/iperf 網路層驗證 | `transport: network` |
 
-參考：`plugins/wifi_llapi/cases/_template.yaml`
+參考：可運行範例 `examples/sample_echo/`（`pip install -e ./examples/sample_echo` 後 `testpilot run sample_echo --case echo-hello`）。
+
+## Runnable sample
+
+`examples/sample_echo/` 是最小可運行 plugin 範例(獨立 pip dist,經 `testpilot.plugins`
+entry-point 被發現)。它示範 entry-point 宣告、`PluginBase` 子類、`api_version`、
+schema-valid case + 測試,以及 `pip install` 後被 host 發現的完整路徑:
+
+```bash
+pip install -e ./examples/sample_echo
+testpilot list-plugins            # -> sample_echo
+testpilot list-cases sample_echo  # -> echo-hello
+testpilot run sample_echo --case echo-hello   # -> PASS
+```
+
+> entry-point value 用 top-level import package 路徑(`testpilot_sample_echo.plugin:Plugin`),
+> 這對獨立安裝的 dist 才穩定;`plugins.x.plugin:Plugin` 形式需該 dist 有打包 `plugins` package。
