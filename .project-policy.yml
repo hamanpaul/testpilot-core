@@ -1,7 +1,7 @@
 version: 1
 project: testpilot
 policy_profile: flat
-policy_version: "1.0.10"
+policy_version: "1.0.12"
 tier: work
 policy:
   config_name: .project-policy.yml
@@ -24,4 +24,4 @@ policy_check:
   repository: hamanpaul/paulsha-conventions
   config: .project-policy.yml
   pin_required: true
-  workflow_ref: hamanpaul/paulsha-conventions/.github/workflows/reusable-policy-check.yml@ee87a6d5ed91209d944934a2559f4f2622fd1ac2
+  workflow_ref: hamanpaul/paulsha-conventions/.github/workflows/reusable-policy-check.yml@25d31e021e45c2991c718923ae2dd49bc3d0b542
