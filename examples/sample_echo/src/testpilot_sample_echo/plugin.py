@@ -12,7 +12,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from testpilot.api import PluginBase, StubTransport, load_cases_dir
+from testpilot.api import (
+    PluginBase,
+    StubTransport,
+    case_matches_requested_ids,
+    load_cases_dir,
+)
 
 
 class Plugin(PluginBase):
@@ -93,8 +98,10 @@ class EchoRunner:
     ) -> dict[str, Any]:
         cases = self._plugin.discover_cases()
         if case_ids:
+            # Reuse the public SDK helper so id / alias / D-number matching
+            # behaves exactly like the core CLI (rather than a bespoke filter).
             wanted = {str(c).strip() for c in case_ids if str(c).strip()}
-            cases = [c for c in cases if str(c.get("id")) in wanted]
+            cases = [c for c in cases if case_matches_requested_ids(c, wanted)]
         results: list[dict[str, Any]] = []
         for case in cases:
             outcome = self._plugin.run_pipeline(case, topology=case.get("topology"))
