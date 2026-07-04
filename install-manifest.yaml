@@ -6,7 +6,7 @@
 core:
   distribution: testpilot-core
   repo: hamanpaul/testpilot-core
-  private: true
+  private: false             # public repo
 plugins:
   - name: wifi_llapi
     repo: hamanpaul/wifi_llapi
