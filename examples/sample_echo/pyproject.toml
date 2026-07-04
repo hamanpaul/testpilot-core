@@ -1,0 +1,23 @@
+[project]
+name = "testpilot-sample-echo"
+version = "0.1.0"
+description = "Runnable minimal sample plugin for TestPilot (issue #3)"
+requires-python = ">=3.11"
+dependencies = ["testpilot-core"]
+
+[project.entry-points."testpilot.plugins"]
+sample_echo = "testpilot_sample_echo.plugin:Plugin"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/testpilot_sample_echo"]
+
+# Belt-and-suspenders: ensure the non-.py data files ship in the wheel.
+[tool.hatch.build]
+artifacts = [
+    "src/testpilot_sample_echo/testbed.yaml.example",
+    "src/testpilot_sample_echo/cases/*.yaml",
+]

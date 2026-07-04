@@ -1,0 +1,14 @@
+id: echo-hello
+name: Echo hello world
+topology:
+  devices:
+    device_a:
+      role: dut
+      transport: stub
+steps:
+  - id: say-hello
+    action: echo
+    target: hello-world
+    command: "echo hello-world"
+pass_criteria:
+  - "hello-world"

@@ -1,0 +1,9 @@
+# Staged to configs/testbed.yaml by the CLI when a sample_echo command runs.
+# The echo plugin uses a stub transport, so this only needs to be schema-shaped.
+testbed:
+  name: sample-echo-bench
+  devices:
+    device_a:
+      role: dut
+      transport: stub
+  variables: {}
