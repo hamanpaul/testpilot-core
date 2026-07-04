@@ -1,3 +1,7 @@
+import click
+from click.testing import CliRunner
+
+from testpilot.api import CliRegistrar
 from testpilot_sample_echo.plugin import EchoRunner, Plugin
 
 
@@ -26,3 +30,11 @@ def test_runner_reports_pass():
     result = runner.run(None, "sample_echo", None, None, None)
     assert result["overall"] == "PASS"
     assert result["results"][0]["case_id"] == "echo-hello"
+
+
+def test_register_cli_greet_command():
+    root = click.Group()
+    Plugin().register_cli(CliRegistrar(root))
+    result = CliRunner().invoke(root, ["sample-echo-greet", "--name", "X"])
+    assert result.exit_code == 0
+    assert "[stub] echo hello X" in result.output

@@ -59,8 +59,18 @@ class Plugin(PluginBase):
         # (which never produces a verdict) into run_pipeline.
         return EchoRunner(self)
 
-    def register_cli(self, registrar: Any) -> None:  # noqa: D401 - filled in Task 3
-        return None
+    def register_cli(self, registrar: Any) -> None:
+        import click
+
+        @click.command("sample-echo-greet")
+        @click.option("--name", default="world", help="Name to greet.")
+        def greet(name: str) -> None:
+            """Echo a greeting through the stub transport (sample CLI hook)."""
+            transport = StubTransport()
+            transport.connect()
+            click.echo(transport.execute(f"echo hello {name}")["stdout"])
+
+        registrar.add_command(greet)
 
 
 class EchoRunner:
