@@ -195,13 +195,16 @@ class CopilotSessionManager:
         if self.permission_handler is not None:
             return self.permission_handler
         sdk = self._load_sdk()
-        permission_handler_cls = getattr(sdk, "PermissionHandler", None)
-        approve_all = getattr(permission_handler_cls, "approve_all", None)
-        if approve_all is None:
+        result_type = getattr(sdk, "PermissionRequestResult", None)
+        if result_type is None:
             raise CopilotSDKUnavailableError(
-                "copilot.PermissionHandler.approve_all is unavailable"
+                "copilot.PermissionRequestResult is unavailable"
             )
-        return approve_all
+
+        def _approve_all(request: Any, context: Any) -> Any:
+            return result_type(kind="approved")
+
+        return _approve_all
 
     @staticmethod
     async def _maybe_await(value: Any) -> Any:
