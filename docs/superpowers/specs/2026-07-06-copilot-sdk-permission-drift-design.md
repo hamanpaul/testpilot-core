@@ -32,28 +32,39 @@ Callable[[PermissionRequest, dict[str, str]], PermissionRequestResult | Awaitabl
 - 若 `self.permission_handler` 已注入 → 原樣回傳（現行行為保留）。
 - 否則自組 approve-all callable：接收 `(PermissionRequest, dict[str, str])`，回傳
   approve 語意的 `PermissionRequestResult`。
-  - `PermissionRequestResult` 的實際建構簽名（欄位名 / kind 值）於實作前對
-    `github-copilot-sdk 0.1.23` 原始碼確認，**不得憑空猜欄位**。
-  - 回傳值同時容許 sync 形式（SDK 型別本身容許 Awaitable，自組 handler 用 sync 即可）。
-- 若 SDK 缺 `PermissionRequestResult`（或建構必要 surface 缺失）→ 仍 raise
-  `CopilotSDKUnavailableError`，訊息**指名缺的 symbol**（例：
+  - **wire shape（adversarial review 確認，0.1.23 `types.py`）**：
+    `PermissionRequestResult` 是 `TypedDict(total=False)`，欄位 `kind` / `rules`；
+    approve 的唯一正確形狀是 **`{"kind": "approved"}`**。TypedDict 不做 runtime
+    validation、SDK `session.py` 直接回送 handler 回傳值——錯欄位（如
+    `behavior="allow"`）不會報錯但也不會被視為 approve，**測試必須鎖 wire shape**
+    （assert 回傳 dict == `{"kind": "approved"}`），不得只驗 callable 有被呼叫。
+  - 回傳值用 sync 形式（SDK 型別容許 Awaitable，自組 handler 不需要）。
+- feature-detect 的對象**只有 `PermissionRequestResult` 的可用性**（不再偵測任何
+  `approve_all` symbol）：SDK 缺 `PermissionRequestResult` → raise
+  `CopilotSDKUnavailableError`，訊息指名缺的 symbol（例：
   `"copilot.PermissionRequestResult is unavailable"`）。
 
 ## 元件 2：loud surfacing（degraded 可見性）
 
 - run 內**第一次** session foundation 建立失敗時：`log.warning` 一次（不逐案洗版），
   內容含失敗原因與「remediation 將全程 builtin-fallback」的明確語句。
-- run-level metadata 增加 degraded 標記（如 `agent_session_degraded: true` + 原因字串），
-  落點在 core 已有的 run summary / trace metadata 結構，供 plugin 報表與人工檢視。
+- **run-level 落點（adversarial review 指出現行結構無此欄位，需新增）**：
+  `run_loop` 的回傳 payload 是 `dict[str, Any]`（`run_loop.py::run_plugin_cases`），
+  新增 key `agent_session_degraded: {"degraded": bool, "reason": str}`——由
+  orchestrator/session 管理層在第一次失敗時設置。此為**小幅 core schema 變更**，
+  屬本 change 範圍。
+- plugin reporter 是否消費此 key 屬 wifi_llapi 側 follow-up，不在本 change 範圍；
+  本 change 的可驗收面是 warning log + run payload key 存在且值正確。
 - 每案 selection trace 的 `session_handle` 記錄行為維持不變。
 
 ## 測試（TDD）
 
 mock SDK module（不依賴真 `copilot` 安裝）：
 
-1. **0.1.x surface**：`PermissionHandler` 為 typing alias、`PermissionRequestResult` 存在
-   → `_resolve_permission_handler()` 回傳 callable；以 `PermissionRequest` mock 呼叫之，
-   回傳 approve 語意結果。
+1. **0.1.x surface + wire shape lock**：`PermissionHandler` 為 typing alias、
+   `PermissionRequestResult` 存在 → `_resolve_permission_handler()` 回傳 callable；
+   以 `PermissionRequest` mock 呼叫之，**assert 回傳值精確等於 `{"kind": "approved"}`**
+   （防 false-green：只驗「被呼叫」不足）。
 2. **缺 API surface**：移除 `PermissionRequestResult` → raise `CopilotSDKUnavailableError`
    且訊息指名缺的 symbol。
 3. **注入 handler 優先**：`permission_handler` 已注入時不碰 SDK。
@@ -71,7 +82,8 @@ mock SDK module（不依賴真 `copilot` 安裝）：
 ## 約束
 
 - 不動 execution loop 的 fallback 語意（`execution_engine` 的 builtin classifier 路徑）。
-- 不引入新依賴；不 pin SDK 版本（feature-detect symbol 存在與否即可）。
+- 不引入新依賴；不 pin SDK 版本（feature-detect 僅針對 `PermissionRequestResult`
+  可用性，與「不留雙軌」原則一致——不偵測、不相容任何 `approve_all` 形式的舊 API）。
 - 真機 full-run 端到端驗證（remediation session 實際上工）屬後續批次，不在本 change 範圍。
 
 ## 非目標（YAGNI）
