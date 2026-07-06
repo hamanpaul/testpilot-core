@@ -43,3 +43,12 @@ def test_session_failure_warns_once_and_sets_degraded(caplog):
 def test_no_failure_keeps_degraded_false():
     orch = Orchestrator(project_root=Path(__file__).resolve().parents[1])
     assert orch.agent_session_degraded == {"degraded": False, "reason": ""}
+
+
+def test_reset_run_state_clears_stale_degraded():
+    # degraded 語意應綁單次 run，非實例壽命：run 入口重置，避免同一實例
+    # 被 reuse 跑第二次 run 時，前一次的 degraded=True 漏進第二次 payload。
+    orch = Orchestrator(project_root=Path(__file__).resolve().parents[1])
+    orch.agent_session_degraded = {"degraded": True, "reason": "prev-run"}
+    orch._reset_run_state()
+    assert orch.agent_session_degraded == {"degraded": False, "reason": ""}
