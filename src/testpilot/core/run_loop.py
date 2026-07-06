@@ -368,7 +368,17 @@ def run(
     build_reports = getattr(reporter, "build_reports", None)
     if not callable(build_reports):
         raise RuntimeError(f"{plugin_name} reporter does not implement build_reports()")
-    return build_reports(run_result)
+    payload = build_reports(run_result)
+    if isinstance(payload, dict):
+        payload.setdefault(
+            "agent_session_degraded",
+            getattr(
+                orchestrator,
+                "agent_session_degraded",
+                {"degraded": False, "reason": ""},
+            ),
+        )
+    return payload
 
 
 run_cases = run

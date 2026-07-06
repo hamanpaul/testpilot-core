@@ -90,6 +90,19 @@ class Orchestrator(OrchestratorRunBackendCompat):
         self.runner_selector = RunnerSelector(self.plugins_dir)
         self.execution_engine = ExecutionEngine(self.config)
         self.session_manager: CopilotSessionManager | None = self._try_init_session_manager()
+        # Loud surfacing (#16): when the SDK session foundation fails, remediation
+        # silently falls back to the builtin classifier. Track a run-level degraded
+        # status so the failure is warned once and carried in the run payload.
+        self.agent_session_degraded: dict[str, Any] = {"degraded": False, "reason": ""}
+
+    def _reset_run_state(self) -> None:
+        """Reset per-run state at the start of each run.
+
+        ``agent_session_degraded`` (#16) is run-scoped, not instance-scoped:
+        without this reset a reused Orchestrator instance would leak a prior
+        run's degraded status into the next run's payload.
+        """
+        self.agent_session_degraded = {"degraded": False, "reason": ""}
 
     @property
     def run_handle(self) -> RunHandle | None:
@@ -169,7 +182,15 @@ class Orchestrator(OrchestratorRunBackendCompat):
                 "status": "created",
             }
         except Exception as exc:
-            log.warning("SDK session creation failed: %s", exc)
+            if not self.agent_session_degraded["degraded"]:
+                log.warning(
+                    "SDK session foundation failed; remediation will run with "
+                    "builtin-fallback for the whole run: %s",
+                    exc,
+                )
+                self.agent_session_degraded = {"degraded": True, "reason": str(exc)}
+            else:
+                log.debug("SDK session creation failed (already degraded): %s", exc)
             return {"status": "failed", "error": str(exc)}
 
     def _cleanup_case_session(self, session_id: str | None) -> None:
@@ -352,6 +373,7 @@ class Orchestrator(OrchestratorRunBackendCompat):
         - core run_loop if plugin exposes a reporter with build_reports()
         - otherwise keeps skeleton behavior
         """
+        self._reset_run_state()
         plugin = self.loader.load(plugin_name)
         create_runner = getattr(plugin, "create_runner", None)
         runner = create_runner() if callable(create_runner) else None

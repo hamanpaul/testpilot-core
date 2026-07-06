@@ -118,9 +118,40 @@ def test_build_case_session_plan_for_copilot_runner():
     }
 
 
+# 0.1.x SDK surface: PermissionHandler 是 typing alias（getattr 拿到的不是 class）、
+# PermissionRequestResult 是 TypedDict(total=False)，runtime 等價 dict 工廠。
+fake_sdk = SimpleNamespace(
+    PermissionHandler=None,
+    PermissionRequestResult=dict,
+)
+
+
+def test_resolve_permission_handler_returns_approve_all_callable():
+    manager = CopilotSessionManager(sdk_module=fake_sdk)
+    handler = manager._resolve_permission_handler()
+    assert callable(handler)
+    result = handler(SimpleNamespace(kind="tool-use"), {"tool": "bash"})
+    assert result == {"kind": "approved"}  # wire shape 精確鎖定，防 false-green
+
+
+def test_resolve_permission_handler_missing_result_type_raises():
+    broken_sdk = SimpleNamespace(PermissionHandler=None)  # 無 PermissionRequestResult
+    manager = CopilotSessionManager(sdk_module=broken_sdk)
+    with pytest.raises(
+        CopilotSDKUnavailableError,
+        match="copilot.PermissionRequestResult is unavailable",
+    ):
+        manager._resolve_permission_handler()
+
+
+def test_injected_permission_handler_wins_without_sdk_touch():
+    sentinel = object()
+    manager = CopilotSessionManager(sdk_module=None, permission_handler=sentinel)
+    assert manager._resolve_permission_handler() is sentinel  # sdk_module=None 而不炸 = 沒碰 SDK
+
+
 def test_create_resume_list_delete_session_via_sdk_adapter():
     fake_client = _FakeClient()
-    fake_sdk = SimpleNamespace(PermissionHandler=SimpleNamespace(approve_all="APPROVE_ALL"))
     manager = CopilotSessionManager(
         sdk_module=fake_sdk,
         client_factory=lambda: fake_client,
@@ -173,13 +204,15 @@ def test_create_resume_list_delete_session_via_sdk_adapter():
     assert created_config["disabled_skills"] == ["legacy-skill"]
     assert created_config["streaming"] is True
     assert created_config["client_name"] == "testpilot"
-    assert created_config["on_permission_request"] == "APPROVE_ALL"
+    created_handler = created_config["on_permission_request"]
+    assert created_handler(SimpleNamespace(), {}) == {"kind": "approved"}
 
     resumed_session_id, resumed_config = fake_client.resumed_configs[0]
     assert resumed_session_id == request.session_id
     assert "session_id" not in resumed_config
     assert resumed_config["disable_resume"] is True
-    assert resumed_config["on_permission_request"] == "APPROVE_ALL"
+    resumed_handler = resumed_config["on_permission_request"]
+    assert resumed_handler(SimpleNamespace(), {}) == {"kind": "approved"}
 
     assert len(listed) == 1
     assert listed[0].session_id == "run-20260311-case-wifi-llapi-D001"
