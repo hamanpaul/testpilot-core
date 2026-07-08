@@ -73,7 +73,15 @@ def _capture_version_manifest(
     capture = getattr(plugin, "capture_dut_firmware_version", None)
     if not callable(capture):
         return {}
-    captured = capture(getattr(orchestrator, "config", None), cases)
+    try:
+        captured = capture(getattr(orchestrator, "config", None), cases)
+    except Exception:
+        log.warning(
+            "%s version manifest capture failed; continuing without manifest",
+            getattr(plugin, "name", "plugin"),
+            exc_info=True,
+        )
+        return {}
     if isinstance(captured, Mapping):
         return dict(captured)
     legacy_git = str(captured or "").strip()

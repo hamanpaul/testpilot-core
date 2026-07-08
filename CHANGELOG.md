@@ -14,7 +14,7 @@ preparation.
 
 ### Changed
 - HTML report 的 WiFi LLAPI Hybrid (tri-band) Summary 版面對齊 xlsx `Summary` sheet:section 移到 KPI/total-case 之下、per-case Summary 表之上;per-band 依 `5G`/`6G`/`2.4G` 分色(列底色 + 左側 3px 色條);每 band 尾端補粗體 **TOTAL** 小計列(取自 `bucket_totals`);隱藏空的 `WiFi.Other` catch-all 列(xlsx 無此欄、真實物件恆對到具體分類;非零時仍顯示並計入 TOTAL)。純 `html_reporter` presentation 層改動,不動 `band_category` 計數邏輯。
-- run_loop 啟動時一律擷取 plugin 的 DUT version manifest 並透過 `RunResult.version_manifest` 傳給 downstream reporters；report naming 仍維持 CLI `--dut-fw-ver` 優先、否則取 manifest `git`、再 fallback `DUT-FW-VER`；generic Markdown/HTML reporters 於報告頂部新增預設收合的 `Environment / Versions` 區塊。
+- run_loop 啟動時一律擷取 plugin 的 DUT version manifest 並透過 `RunResult.version_manifest` 傳給 downstream reporters；capture hook 若失敗則 warning 後 fail-soft 續跑、沿用空 manifest fallback。report naming 仍維持 CLI `--dut-fw-ver` 優先、否則取 manifest `git`、再 fallback `DUT-FW-VER`；generic Markdown/HTML reporters 於報告頂部新增預設收合的 `Environment / Versions` 區塊。
 
 ### Fixed
 - copilot session foundation 對齊 github-copilot-sdk 0.1.x（`PermissionHandler.approve_all` 已不存在）：自組 approve-all permission handler（wire shape `{"kind": "approved"}`）；session 建立失敗改為一次性 loud warning + run payload `agent_session_degraded` key，終結 silent builtin-fallback（#16）

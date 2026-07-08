@@ -34,8 +34,14 @@ class _FakePlugin:
     version = "0.1.0"
     name = "fake"
 
-    def __init__(self, captured_version: Any = None) -> None:
+    def __init__(
+        self,
+        captured_version: Any = None,
+        *,
+        capture_exception: Exception | None = None,
+    ) -> None:
         self.captured_version = captured_version
+        self.capture_exception = capture_exception
         self.capture_calls = 0
 
     def prepare_run(self, case_ids: Any) -> PreparedRun:
@@ -47,6 +53,8 @@ class _FakePlugin:
     def capture_dut_firmware_version(self, config: Any, cases: Any) -> Any:
         del config, cases
         self.capture_calls += 1
+        if self.capture_exception is not None:
+            raise self.capture_exception
         return self.captured_version
 
     def create_reporter(self) -> _FakeReporter:
@@ -180,3 +188,47 @@ def test_run_payload_normalizes_legacy_string_version_manifest(tmp_path: Path) -
     assert payload["fw_ver"] == "legacy-git-sha"
     assert payload["fw_ver_source"] == "dut_git_revision"
     assert payload["version_manifest"] == {"git": "legacy-git-sha"}
+
+
+def test_run_payload_fails_soft_when_manifest_capture_raises_with_cli_override(
+    tmp_path: Path,
+    caplog: Any,
+) -> None:
+    plugin = _FakePlugin(
+        capture_exception=RuntimeError("capture boom"),
+    )
+    orch = _StubOrchestrator(
+        tmp_path,
+        {"degraded": False, "reason": ""},
+        plugin=plugin,
+    )
+
+    payload = run_loop.run(orch, "fake", None, "cli-fw-123")
+
+    assert plugin.capture_calls == 1
+    assert payload["fw_ver"] == "cli-fw-123"
+    assert payload["fw_ver_source"] == "cli"
+    assert payload["version_manifest"] == {}
+    assert "version manifest capture failed" in caplog.text
+
+
+def test_run_payload_fails_soft_when_manifest_capture_raises_without_cli_override(
+    tmp_path: Path,
+    caplog: Any,
+) -> None:
+    plugin = _FakePlugin(
+        capture_exception=RuntimeError("capture boom"),
+    )
+    orch = _StubOrchestrator(
+        tmp_path,
+        {"degraded": False, "reason": ""},
+        plugin=plugin,
+    )
+
+    payload = run_loop.run(orch, "fake", None, None)
+
+    assert plugin.capture_calls == 1
+    assert payload["fw_ver"] == "DUT-FW-VER"
+    assert payload["fw_ver_source"] == "fallback_default"
+    assert payload["version_manifest"] == {}
+    assert "version manifest capture failed" in caplog.text
