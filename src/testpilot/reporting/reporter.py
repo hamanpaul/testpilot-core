@@ -6,6 +6,7 @@ Provides :class:`IReporter` protocol plus concrete
 
 from __future__ import annotations
 
+from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
 import json
 from collections import Counter
 from datetime import datetime, timezone
@@ -70,6 +71,33 @@ def _precomputed_plugin_summary(
     if isinstance(val, dict):
         return dict(val)
     return None
+
+
+def _stringify_manifest_value(value: Any) -> str:
+    # version_manifest comes from a plugin (unenforced shape); a non-JSON-
+    # serializable value/key must never crash the whole report -> fail-soft.
+    try:
+        if isinstance(value, MappingABC):
+            return json.dumps(
+                {str(key): item for key, item in value.items()},
+                ensure_ascii=False,
+                default=str,
+            )
+        if isinstance(value, SequenceABC) and not isinstance(value, (str, bytes, bytearray)):
+            return json.dumps(list(value), ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(value)
+
+
+def _version_manifest_rows(meta: Mapping[str, Any]) -> list[tuple[str, str]]:
+    manifest = meta.get("version_manifest")
+    if not isinstance(manifest, MappingABC) or not manifest:
+        return []
+    return [
+        (str(key), _stringify_manifest_value(value))
+        for key, value in manifest.items()
+    ]
 
 
 def _summary_payload(
@@ -235,6 +263,7 @@ class MarkdownReporter:
         lines: list[str] = []
         summary = _summary_payload(case_results, meta)
         self._write_header(lines, meta)
+        self._write_version_manifest(lines, meta)
         self._write_timing(lines, meta, case_results)
         self._write_suite_summary(lines, summary)
         self._write_hybrid_summary(lines, summary)
@@ -257,6 +286,19 @@ class MarkdownReporter:
             if key in meta:
                 label = key.replace("_", " ").title()
                 lines.append(f"- **{label}**: {meta[key]}")
+        lines.append("")
+
+    @staticmethod
+    def _write_version_manifest(lines: list[str], meta: Mapping[str, Any]) -> None:
+        rows = _version_manifest_rows(meta)
+        if not rows:
+            return
+        lines.append("<details><summary>Environment / Versions</summary>")
+        lines.append("")
+        for key, value in rows:
+            lines.append(f"- **{key}**: `{value}`")
+        lines.append("")
+        lines.append("</details>")
         lines.append("")
 
     @staticmethod

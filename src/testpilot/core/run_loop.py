@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 import logging
@@ -60,21 +61,46 @@ class RunResult:
     first_case_started_monotonic: float | None = None
     first_case_started_at_iso: str = ""
     artifacts: dict[str, Any] = field(default_factory=dict)
-def _resolve_firmware_version(
+    version_manifest: dict[str, Any] = field(default_factory=dict)
+
+
+def _capture_version_manifest(
     orchestrator: Any,
     *,
     plugin: Any,
     cases: list[dict[str, Any]],
+) -> dict[str, Any]:
+    capture = getattr(plugin, "capture_dut_firmware_version", None)
+    if not callable(capture):
+        return {}
+    try:
+        captured = capture(getattr(orchestrator, "config", None), cases)
+    except Exception:
+        log.warning(
+            "%s version manifest capture failed; continuing without manifest",
+            getattr(plugin, "name", "plugin"),
+            exc_info=True,
+        )
+        return {}
+    if isinstance(captured, Mapping):
+        return dict(captured)
+    legacy_git = str(captured or "").strip()
+    if legacy_git:
+        return {"git": legacy_git}
+    return {}
+
+
+def _resolve_firmware_version(
+    *,
     requested: str | None,
+    version_manifest: Mapping[str, Any],
 ) -> tuple[str, str]:
     requested_value = (requested or "").strip()
     if requested_value and requested_value != "DUT-FW-VER":
         return requested_value, "cli"
-    capture = getattr(plugin, "capture_dut_firmware_version", None)
-    if callable(capture):
-        captured = str(capture(orchestrator.config, cases) or "").strip()
-        if captured:
-            return captured, "dut_git_revision"
+    manifest_git = str(version_manifest.get("git", "") or "").strip()
+    if manifest_git:
+        return manifest_git, "dut_git_revision"
     return "DUT-FW-VER", "fallback_default"
 
 
@@ -194,7 +220,6 @@ def run(
     reports_root = Path(orchestrator.plugins_dir) / plugin_name / "reports"
     run_date = date.today()
     run_id = datetime.now().strftime("%Y%m%dT%H%M%S%f")
-
     capture_path = orchestrator._start_run_capture(run_id)
     run_handle = _seq_tracking_handle(
         orchestrator,
@@ -202,12 +227,15 @@ def run(
         capture_path=capture_path,
     )
     run_seq_start = _mark_seq_position(orchestrator, run_handle)
-
-    fw_ver, fw_ver_source = _resolve_firmware_version(
+    version_manifest = _capture_version_manifest(
         orchestrator,
         plugin=plugin,
         cases=cases,
+    )
+
+    fw_ver, fw_ver_source = _resolve_firmware_version(
         requested=dut_fw_ver,
+        version_manifest=version_manifest,
     )
     artifact_dir = reports_root / run_id
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -362,6 +390,7 @@ def run(
         first_case_started_monotonic=first_case_started_monotonic,
         first_case_started_at_iso=first_case_started_at_iso,
         artifacts=prepared_artifacts,
+        version_manifest=version_manifest,
     )
 
     reporter = plugin.create_reporter()

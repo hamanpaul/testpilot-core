@@ -224,6 +224,34 @@ class TestHtmlReporter:
         HtmlReporter().generate(_CASES, _META, out)
         assert out.exists()
 
+    def test_renders_collapsed_environment_versions_block(self, tmp_path: Path) -> None:
+        out = tmp_path / "report.html"
+        meta = {
+            **_META,
+            "version_manifest": {
+                "git": "deadbeef",
+                "build": "2026.07.08",
+                "components": {"wifi": "1.2.3"},
+            },
+        }
+
+        HtmlReporter().generate(_CASES, meta, out)
+
+        text = out.read_text(encoding="utf-8")
+        assert '<details class="environment-versions">' in text
+        assert "<summary>Environment / Versions</summary>" in text
+        assert "<strong>git</strong>" in text
+        assert "deadbeef" in text
+        assert "{&quot;wifi&quot;: &quot;1.2.3&quot;}" in text
+        assert text.index("Environment / Versions") < text.index("Total Cases")
+        assert '<details class="environment-versions" open>' not in text
+
+    def test_omits_environment_versions_block_when_manifest_missing(self, tmp_path: Path) -> None:
+        out = tmp_path / "report.html"
+        HtmlReporter().generate(_CASES, _META, out)
+        text = out.read_text(encoding="utf-8")
+        assert "Environment / Versions" not in text
+
 
 # ---------------------------------------------------------------------------
 # HTML escaping / security
