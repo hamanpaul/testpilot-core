@@ -1,7 +1,8 @@
 # dut-version-manifest-reporting Specification
 
 ## Purpose
-TBD - created by archiving change dut-version-manifest-report-alignment. Update Purpose after archive.
+Define the core run-loop DUT version manifest propagation contract and the
+generic Environment / Versions rendering used by downstream reporters.
 ## Requirements
 ### Requirement: the core run loop SHALL persist a plugin-provided DUT version manifest
 The core run loop SHALL capture the plugin-provided DUT version manifest once at run start and store it in `meta["version_manifest"]` for downstream reporting. The run loop SHALL continue to honor `--dut-fw-ver` as the preferred report-naming string, but it MUST still capture and persist the manifest even when the CLI override is present.
@@ -24,4 +25,3 @@ HTML and Markdown report generators SHALL render a collapsed Environment / Versi
 #### Scenario: manifest absent is a no-op
 - **WHEN** report generation receives metadata without `version_manifest`
 - **THEN** the reporters do not emit an Environment / Versions block and continue producing the existing report structure
-
