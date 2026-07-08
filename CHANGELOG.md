@@ -12,6 +12,9 @@ preparation.
 ### Added
 - 可運行的最小 sample plugin `examples/sample_echo`(獨立 dist `testpilot-sample-echo`,經 `testpilot.plugins` entry-point 被發現、僅依賴 `testpilot.api`、`create_runner`→`run_pipeline` 產出 Pass verdict,含 `register_cli` demo);CI 加真實安裝發現 smoke;dev-guide/README 指向 sample 並修死連結、清 `plugins/wifi_llapi/reports/` 並加 `.gitignore` 防 `plugins/*/reports/` run bundle 再被追蹤(保留 `templates/`;R-21)。對照 #3。
 
+### Changed
+- HTML report 的 WiFi LLAPI Hybrid (tri-band) Summary 版面對齊 xlsx `Summary` sheet:section 移到 KPI/total-case 之下、per-case Summary 表之上;per-band 依 `5G`/`6G`/`2.4G` 分色(列底色 + 左側 3px 色條);每 band 尾端補粗體 **TOTAL** 小計列(取自 `bucket_totals`);隱藏空的 `WiFi.Other` catch-all 列(xlsx 無此欄、真實物件恆對到具體分類;非零時仍顯示並計入 TOTAL)。純 `html_reporter` presentation 層改動,不動 `band_category` 計數邏輯。
+
 ### Fixed
 - copilot session foundation 對齊 github-copilot-sdk 0.1.x（`PermissionHandler.approve_all` 已不存在）：自組 approve-all permission handler（wire shape `{"kind": "approved"}`）；session 建立失敗改為一次性 loud warning + run payload `agent_session_degraded` key，終結 silent builtin-fallback（#16）
 

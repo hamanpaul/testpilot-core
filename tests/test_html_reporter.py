@@ -490,3 +490,89 @@ def test_html_reporter_renders_hybrid_summary(tmp_path: Path) -> None:
     assert "WiFi LLAPI Hybrid Summary" in text
     assert "WiFi.AccessPoint" in text
     assert "To be confirmed" in text
+
+
+# ---------------------------------------------------------------------------
+# Hybrid (tri-band) summary layout: placement, per-band colour, TOTAL row,
+# and hiding of the empty WiFi.Other catch-all row.
+# ---------------------------------------------------------------------------
+
+_HYBRID_SUMMARY_WITH_TOTALS: dict[str, Any] = {
+    "policy_version": "wifi_llapi_summary_v1",
+    "band_category": [
+        {
+            "band_key": "result_5g",
+            "band_label": "5G",
+            "category": "WiFi.AccessPoint",
+            "total_items": 2,
+            "tested_items": 2,
+            "pass": 2,
+            "fail": 0,
+            "to_be_tested": 0,
+            "not_supported": 0,
+            "skip": 0,
+            "pass_rate": 1.0,
+        },
+        {
+            "band_key": "result_5g",
+            "band_label": "5G",
+            "category": "WiFi.Other",
+            "total_items": 0,
+            "tested_items": 0,
+            "pass": 0,
+            "fail": 0,
+            "to_be_tested": 0,
+            "not_supported": 0,
+            "skip": 0,
+            "pass_rate": None,
+        },
+    ],
+    "bucket_totals": {
+        "result_5g": {
+            "band_key": "result_5g",
+            "total_items": 2,
+            "tested_items": 2,
+            "pass": 2,
+            "fail": 0,
+            "to_be_tested": 0,
+            "not_supported": 0,
+            "skip": 0,
+            "pass_rate": 1.0,
+        },
+    },
+    "raw_totals": {},
+    "diagnostic_status": {},
+    "per_case": [],
+}
+
+
+def _render_hybrid(tmp_path: Path) -> str:
+    meta = {**_META, "plugin_summary": _HYBRID_SUMMARY_WITH_TOTALS}
+    out = tmp_path / "report.html"
+    HtmlReporter().generate(_CASES, meta, out)
+    return out.read_text(encoding="utf-8")
+
+
+def test_hybrid_summary_positioned_below_kpi_above_summary_table(tmp_path: Path) -> None:
+    text = _render_hybrid(tmp_path)
+    # anchor on the body markup, not the '.kpi-strip' rule inside <style>
+    kpi = text.index('<div class="kpi-strip">')
+    hybrid = text.index("<h2>WiFi LLAPI Hybrid Summary</h2>")
+    summary_table = text.index("<h2>Summary</h2>")
+    assert kpi < hybrid < summary_table
+
+
+def test_hybrid_summary_rows_carry_band_class(tmp_path: Path) -> None:
+    assert 'class="band-5g"' in _render_hybrid(tmp_path)
+
+
+def test_hybrid_summary_emits_per_band_total_row(tmp_path: Path) -> None:
+    text = _render_hybrid(tmp_path)
+    assert "band-total" in text
+    assert "<strong>TOTAL</strong>" in text
+
+
+def test_hybrid_summary_hides_empty_other_row(tmp_path: Path) -> None:
+    text = _render_hybrid(tmp_path)
+    assert "WiFi.AccessPoint" in text
+    assert "WiFi.Other" not in text
