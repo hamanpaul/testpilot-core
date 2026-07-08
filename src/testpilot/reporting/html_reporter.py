@@ -173,6 +173,17 @@ tbody td {
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: #fafbfc; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* Tri-band hybrid summary: colour rows by band for grouping (5G / 6G / 2.4G) */
+tbody tr.band-5g  { background: #eef4fc; }
+tbody tr.band-6g  { background: #f3eefb; }
+tbody tr.band-24g { background: #fbf5ea; }
+tbody tr.band-5g:hover  { background: #e2edfa; }
+tbody tr.band-6g:hover  { background: #ece2f8; }
+tbody tr.band-24g:hover { background: #f7eeda; }
+tbody tr.band-5g  td:first-child { border-left: 3px solid #4a90d9; }
+tbody tr.band-6g  td:first-child { border-left: 3px solid #8a63d2; }
+tbody tr.band-24g td:first-child { border-left: 3px solid #d9a441; }
+tbody tr.band-total td { font-weight: 700; border-top: 2px solid var(--gray-100); }
 /* Collapsible case details */
 details {
   background: var(--white);
@@ -243,10 +254,12 @@ class HtmlReporter:
         parts: list[str] = []
         parts.append(self._doc_open(meta))
         parts.append(self._kpi_strip(summary))
+        # Hybrid (tri-band) summary sits directly below the KPI/total-case strip
+        # and above the per-case Summary table, mirroring the xlsx Summary sheet.
+        parts.append(self._hybrid_summary_section(summary))
         parts.append(self._summary_table(case_results))
         parts.append(self._timing_section(meta, case_results))
         parts.append(self._suite_summary_section(summary))
-        parts.append(self._hybrid_summary_section(summary))
         parts.append(self._per_case_timing(case_results))
         parts.append(self._case_details(case_results, artifact_dir))
         parts.append(self._doc_close())
@@ -466,31 +479,75 @@ class HtmlReporter:
             "<th>Not Supported</th><th>Skip</th><th>Pass Rate</th>",
             "</tr></thead><tbody>",
         ]
+        band_row_class = {
+            "result_5g": "band-5g",
+            "result_6g": "band-6g",
+            "result_24g": "band-24g",
+        }
+        bucket_totals = summary.get("bucket_totals") or {}
+
+        def _emit_row(band_label, category, data, band_cls, *, total_row=False):
+            cls_names = " ".join(
+                c for c in (band_cls, "band-total" if total_row else "") if c
+            )
+            tr_open = f'<tr class="{cls_names}">' if cls_names else "<tr>"
+            cat_cell = (
+                f"<strong>{_esc(category)}</strong>" if total_row else _esc(category)
+            )
+            lines.append(
+                tr_open
+                + f"<td>{_esc(band_label)}</td><td>{cat_cell}</td>"
+                + f"<td class='num'>{_esc(data.get('total_items', 0))}</td>"
+                + f"<td class='num'>{_esc(data.get('tested_items', 0))}</td>"
+                + f"<td class='num'>{_esc(data.get('pass', 0))}</td>"
+                + f"<td class='num'>{_esc(data.get('fail', 0))}</td>"
+                + f"<td class='num'>{_esc(data.get('to_be_tested', 0))}</td>"
+                + f"<td class='num'>{_esc(data.get('not_supported', 0))}</td>"
+                + f"<td class='num'>{_esc(data.get('skip', 0))}</td>"
+                + f"<td class='num'>{_esc(_format_percent(data.get('pass_rate')))}</td>"
+                + "</tr>"
+            )
+
+        def _emit_total(band_key):
+            total = bucket_totals.get(band_key)
+            if not total:
+                return
+            _emit_row(
+                _BAND_LABELS.get(band_key, band_key),
+                "TOTAL",
+                total,
+                band_row_class.get(band_key, ""),
+                total_row=True,
+            )
+
+        prev_key = None
         for row in band_category:
-            band = _esc(
+            band_key = str(row.get("band_key", ""))
+            # 'WiFi.Other' is the categoriser's catch-all fallback bucket; real
+            # WiFi.* objects always map to a concrete category, so hide the row
+            # when it is empty (it has no xlsx Summary counterpart). Any non-zero
+            # count still rolls into the per-band TOTAL below.
+            if str(row.get("category", "")) == "WiFi.Other" and not row.get(
+                "total_items"
+            ):
+                continue
+            if prev_key is not None and band_key != prev_key:
+                _emit_total(prev_key)
+            band_label = (
                 row.get("band_label")
                 or row.get("band")
                 or row.get("band_key")
                 or ""
             )
-            category = _esc(row.get("category", ""))
-            total = _esc(row.get("total_items", 0))
-            tested = _esc(row.get("tested_items", 0))
-            pass_ = _esc(row.get("pass", 0))
-            fail = _esc(row.get("fail", 0))
-            tbt = _esc(row.get("to_be_tested", 0))
-            ns = _esc(row.get("not_supported", 0))
-            skip = _esc(row.get("skip", 0))
-            pr = _esc(_format_percent(row.get("pass_rate")))
-            lines.append(
-                f"<tr>"
-                f"<td>{band}</td><td>{category}</td>"
-                f"<td class='num'>{total}</td><td class='num'>{tested}</td>"
-                f"<td class='num'>{pass_}</td><td class='num'>{fail}</td>"
-                f"<td class='num'>{tbt}</td><td class='num'>{ns}</td>"
-                f"<td class='num'>{skip}</td><td class='num'>{pr}</td>"
-                f"</tr>"
+            _emit_row(
+                band_label,
+                row.get("category", ""),
+                row,
+                band_row_class.get(band_key, ""),
             )
+            prev_key = band_key
+        if prev_key is not None:
+            _emit_total(prev_key)
         lines.append("</tbody></table>")
         return "\n".join(lines)
 
