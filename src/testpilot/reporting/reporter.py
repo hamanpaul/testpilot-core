@@ -74,10 +74,19 @@ def _precomputed_plugin_summary(
 
 
 def _stringify_manifest_value(value: Any) -> str:
-    if isinstance(value, MappingABC):
-        return json.dumps(dict(value), ensure_ascii=False, default=str)
-    if isinstance(value, SequenceABC) and not isinstance(value, (str, bytes, bytearray)):
-        return json.dumps(list(value), ensure_ascii=False, default=str)
+    # version_manifest comes from a plugin (unenforced shape); a non-JSON-
+    # serializable value/key must never crash the whole report -> fail-soft.
+    try:
+        if isinstance(value, MappingABC):
+            return json.dumps(
+                {str(key): item for key, item in value.items()},
+                ensure_ascii=False,
+                default=str,
+            )
+        if isinstance(value, SequenceABC) and not isinstance(value, (str, bytes, bytearray)):
+            return json.dumps(list(value), ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return str(value)
     return str(value)
 
 
