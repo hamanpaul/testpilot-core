@@ -220,12 +220,6 @@ def run(
     reports_root = Path(orchestrator.plugins_dir) / plugin_name / "reports"
     run_date = date.today()
     run_id = datetime.now().strftime("%Y%m%dT%H%M%S%f")
-    version_manifest = _capture_version_manifest(
-        orchestrator,
-        plugin=plugin,
-        cases=cases,
-    )
-
     capture_path = orchestrator._start_run_capture(run_id)
     run_handle = _seq_tracking_handle(
         orchestrator,
@@ -233,6 +227,11 @@ def run(
         capture_path=capture_path,
     )
     run_seq_start = _mark_seq_position(orchestrator, run_handle)
+    version_manifest = _capture_version_manifest(
+        orchestrator,
+        plugin=plugin,
+        cases=cases,
+    )
 
     fw_ver, fw_ver_source = _resolve_firmware_version(
         requested=dut_fw_ver,
