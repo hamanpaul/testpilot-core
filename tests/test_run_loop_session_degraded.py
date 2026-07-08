@@ -21,18 +21,33 @@ from testpilot.core.prepared_run import PreparedRun
 
 class _FakeReporter:
     def build_reports(self, run_result: Any) -> dict[str, Any]:
-        return {"status": "ok", "cases_count": run_result.cases_count}
+        return {
+            "status": "ok",
+            "cases_count": run_result.cases_count,
+            "fw_ver": run_result.fw_ver,
+            "fw_ver_source": run_result.fw_ver_source,
+            "version_manifest": dict(run_result.version_manifest),
+        }
 
 
 class _FakePlugin:
     version = "0.1.0"
     name = "fake"
 
+    def __init__(self, captured_version: Any = None) -> None:
+        self.captured_version = captured_version
+        self.capture_calls = 0
+
     def prepare_run(self, case_ids: Any) -> PreparedRun:
         return PreparedRun(cases=[], artifacts={})
 
     def execution_policy(self, case: Any) -> dict[str, Any]:
         return {}
+
+    def capture_dut_firmware_version(self, config: Any, cases: Any) -> Any:
+        del config, cases
+        self.capture_calls += 1
+        return self.captured_version
 
     def create_reporter(self) -> _FakeReporter:
         return _FakeReporter()
@@ -62,9 +77,16 @@ class _FakeRunnerSelector:
 class _StubOrchestrator:
     """Minimal orchestrator surface exercised by run_loop.run with zero cases."""
 
-    def __init__(self, plugins_dir: Path, degraded: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        plugins_dir: Path,
+        degraded: dict[str, Any],
+        *,
+        plugin: _FakePlugin | None = None,
+    ) -> None:
         self.plugins_dir = plugins_dir
-        self.loader = _FakeLoader(_FakePlugin())
+        self.config = {}
+        self.loader = _FakeLoader(plugin or _FakePlugin())
         self.run_backend = _FakeRunBackend()
         self.runner_selector = _FakeRunnerSelector()
         self.run_handle = None
@@ -96,3 +118,65 @@ def test_run_payload_degraded_true_when_sessions_fail(tmp_path: Path) -> None:
     payload = run_loop.run(orch, "fake", None, None)
     assert payload["agent_session_degraded"]["degraded"] is True
     assert "boom" in payload["agent_session_degraded"]["reason"]
+
+
+def test_run_payload_uses_manifest_git_for_naming_and_metadata(tmp_path: Path) -> None:
+    plugin = _FakePlugin({"git": "deadbeef", "image": "BGW720"})
+    orch = _StubOrchestrator(
+        tmp_path,
+        {"degraded": False, "reason": ""},
+        plugin=plugin,
+    )
+
+    payload = run_loop.run(orch, "fake", None, None)
+
+    assert plugin.capture_calls == 1
+    assert payload["fw_ver"] == "deadbeef"
+    assert payload["fw_ver_source"] == "dut_git_revision"
+    assert payload["version_manifest"] == {"git": "deadbeef", "image": "BGW720"}
+
+
+def test_run_payload_preserves_manifest_when_cli_fw_ver_wins_naming(tmp_path: Path) -> None:
+    plugin = _FakePlugin({"git": "deadbeef", "image": "BGW720"})
+    orch = _StubOrchestrator(
+        tmp_path,
+        {"degraded": False, "reason": ""},
+        plugin=plugin,
+    )
+
+    payload = run_loop.run(orch, "fake", None, "cli-fw-123")
+
+    assert plugin.capture_calls == 1
+    assert payload["fw_ver"] == "cli-fw-123"
+    assert payload["fw_ver_source"] == "cli"
+    assert payload["version_manifest"] == {"git": "deadbeef", "image": "BGW720"}
+
+
+def test_run_payload_falls_back_when_manifest_has_no_git(tmp_path: Path) -> None:
+    plugin = _FakePlugin({"build": "2026.07.08"})
+    orch = _StubOrchestrator(
+        tmp_path,
+        {"degraded": False, "reason": ""},
+        plugin=plugin,
+    )
+
+    payload = run_loop.run(orch, "fake", None, None)
+
+    assert payload["fw_ver"] == "DUT-FW-VER"
+    assert payload["fw_ver_source"] == "fallback_default"
+    assert payload["version_manifest"] == {"build": "2026.07.08"}
+
+
+def test_run_payload_normalizes_legacy_string_version_manifest(tmp_path: Path) -> None:
+    plugin = _FakePlugin("legacy-git-sha")
+    orch = _StubOrchestrator(
+        tmp_path,
+        {"degraded": False, "reason": ""},
+        plugin=plugin,
+    )
+
+    payload = run_loop.run(orch, "fake", None, None)
+
+    assert payload["fw_ver"] == "legacy-git-sha"
+    assert payload["fw_ver_source"] == "dut_git_revision"
+    assert payload["version_manifest"] == {"git": "legacy-git-sha"}

@@ -20,6 +20,7 @@ from testpilot.reporting.reporter import (
     _overall_status,
     _suite_timing_rows,
     _summary_payload,
+    _version_manifest_rows,
 )
 
 # ---------------------------------------------------------------------------
@@ -225,6 +226,12 @@ pre.code-block {
 }
 .detail-meta { font-size: 13px; color: var(--gray-600); margin-bottom: 8px; }
 .detail-meta strong { color: var(--graphite-800); }
+.environment-versions { margin-bottom: 24px; }
+.environment-versions ul {
+  margin: 0;
+  padding: 16px 16px 16px 32px;
+}
+.environment-versions li + li { margin-top: 8px; }
 /* Responsive */
 @media (max-width: 600px) {
   .kpi-strip { flex-direction: column; }
@@ -253,6 +260,7 @@ class HtmlReporter:
         artifact_dir = output_path.parent
         parts: list[str] = []
         parts.append(self._doc_open(meta))
+        parts.append(self._version_manifest_section(meta))
         parts.append(self._kpi_strip(summary))
         # Hybrid (tri-band) summary sits directly below the KPI/total-case strip
         # and above the per-case Summary table, mirroring the xlsx Summary sheet.
@@ -371,6 +379,24 @@ class HtmlReporter:
             )
         parts.append("</div>")
         return "\n".join(parts)
+
+    @staticmethod
+    def _version_manifest_section(meta: Mapping[str, Any]) -> str:
+        rows = _version_manifest_rows(meta)
+        if not rows:
+            return ""
+        lines = [
+            '<details class="environment-versions">',
+            "<summary>Environment / Versions</summary>",
+            '<div class="detail-body">',
+            "<ul>",
+        ]
+        for key, value in rows:
+            lines.append(
+                f"<li><strong>{_esc(key)}</strong>: <code>{_esc(value)}</code></li>"
+            )
+        lines.extend(["</ul>", "</div>", "</details>"])
+        return "\n".join(lines)
 
     # -- summary table ------------------------------------------------------
 

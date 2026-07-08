@@ -146,6 +146,32 @@ class TestMarkdownReporter:
         MarkdownReporter().generate(_CASES, _META, out)
         assert out.exists()
 
+    def test_renders_collapsed_environment_versions_block(self, tmp_path: Path) -> None:
+        out = tmp_path / "report.md"
+        meta = {
+            **_META,
+            "version_manifest": {
+                "git": "deadbeef",
+                "build": "2026.07.08",
+                "components": {"wifi": "1.2.3"},
+            },
+        }
+
+        MarkdownReporter().generate(_CASES, meta, out)
+
+        text = out.read_text(encoding="utf-8")
+        assert "<details><summary>Environment / Versions</summary>" in text
+        assert "- **git**: `deadbeef`" in text
+        assert '- **components**: `{"wifi": "1.2.3"}`' in text
+        assert text.index("<details><summary>Environment / Versions</summary>") < text.index("## Timing")
+        assert "<details open>" not in text
+
+    def test_omits_environment_versions_block_when_manifest_missing(self, tmp_path: Path) -> None:
+        out = tmp_path / "report.md"
+        MarkdownReporter().generate(_CASES, _META, out)
+        text = out.read_text(encoding="utf-8")
+        assert "Environment / Versions" not in text
+
 
 # ---------------------------------------------------------------------------
 # JsonReporter
