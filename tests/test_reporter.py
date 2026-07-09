@@ -300,6 +300,20 @@ _PRECOMPUTED_SUMMARY: dict[str, Any] = {
             "pass_rate": None,
             "progress": None,
         },
+        {
+            "band_key": "result_5g",
+            "band_label": "5G",
+            "category": "WiFi.Other",
+            "total_items": 0,
+            "tested_items": 0,
+            "pass": 0,
+            "fail": 0,
+            "to_be_tested": 0,
+            "not_supported": 0,
+            "skip": 0,
+            "pass_rate": None,
+            "progress": None,
+        },
     ],
     "bucket_totals": {
         "result_5g": {
@@ -361,3 +375,9 @@ def test_markdown_reporter_renders_hybrid_summary(tmp_path: Path) -> None:
     # Row for 5G/WiFi.AccessPoint with pass_rate 50.00%
     assert "50.00%" in text
     assert "WiFi.AccessPoint" in text
+    # Per-band TOTAL row from bucket_totals — must be aligned with the HTML reporter.
+    assert "**TOTAL**" in text
+    # The catch-all 'WiFi.Other' bucket is empty here → it has no xlsx counterpart
+    # and must be hidden (again, matching the HTML reporter), while still rolling
+    # into the per-band TOTAL.
+    assert "WiFi.Other" not in text
