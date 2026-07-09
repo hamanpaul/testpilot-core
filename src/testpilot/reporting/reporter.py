@@ -324,26 +324,45 @@ class MarkdownReporter:
             "|------|----------|-------|--------|------|------"
             "|--------------|---------------|------|-----------|"
         )
+        bucket_totals = summary.get("bucket_totals") or {}
+
+        def _row_md(band_label: str, category: str, data: Mapping[str, Any]) -> str:
+            return (
+                f"| {band_label} | {category} | {data.get('total_items', 0)}"
+                f" | {data.get('tested_items', 0)} | {data.get('pass', 0)}"
+                f" | {data.get('fail', 0)} | {data.get('to_be_tested', 0)}"
+                f" | {data.get('not_supported', 0)} | {data.get('skip', 0)}"
+                f" | {_format_percent(data.get('pass_rate'))} |"
+            )
+
+        def _emit_total(band_key: str) -> None:
+            total = bucket_totals.get(band_key)
+            if not total:
+                return
+            lines.append(_row_md(_BAND_LABELS.get(band_key, band_key), "**TOTAL**", total))
+
+        prev_key: str | None = None
         for row in band_category:
-            band = (
+            band_key = str(row.get("band_key", ""))
+            # 'WiFi.Other' is the categoriser's catch-all fallback; hide it when
+            # empty (no xlsx Summary counterpart). Any non-zero count still rolls
+            # into the per-band TOTAL below. Mirrors the HTML reporter.
+            if str(row.get("category", "")) == "WiFi.Other" and not row.get(
+                "total_items"
+            ):
+                continue
+            if prev_key is not None and band_key != prev_key:
+                _emit_total(prev_key)
+            band_label = (
                 row.get("band_label")
                 or row.get("band")
                 or row.get("band_key")
                 or ""
             )
-            category = row.get("category", "")
-            total = row.get("total_items", 0)
-            tested = row.get("tested_items", 0)
-            pass_ = row.get("pass", 0)
-            fail = row.get("fail", 0)
-            tbt = row.get("to_be_tested", 0)
-            ns = row.get("not_supported", 0)
-            skip = row.get("skip", 0)
-            pr = _format_percent(row.get("pass_rate"))
-            lines.append(
-                f"| {band} | {category} | {total} | {tested}"
-                f" | {pass_} | {fail} | {tbt} | {ns} | {skip} | {pr} |"
-            )
+            lines.append(_row_md(band_label, row.get("category", ""), row))
+            prev_key = band_key
+        if prev_key is not None:
+            _emit_total(prev_key)
         lines.append("")
 
     @staticmethod
