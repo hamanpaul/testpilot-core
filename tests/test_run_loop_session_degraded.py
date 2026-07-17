@@ -126,6 +126,10 @@ def test_run_payload_carries_agent_session_degraded(tmp_path: Path) -> None:
     orch = _StubOrchestrator(tmp_path, {"degraded": False, "reason": ""})
     payload = run_loop.run(orch, "fake", None, None)
     assert payload["agent_session_degraded"] == {"degraded": False, "reason": ""}
+    assert payload["tier2_remediation"] == {
+        "agent_recovered_case_ids": [],
+        "audit": [],
+    }
 
 
 def test_run_payload_degraded_true_when_sessions_fail(tmp_path: Path) -> None:

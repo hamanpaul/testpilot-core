@@ -21,6 +21,16 @@ from testpilot.runtime.run_backend import RunHandle
 
 log = logging.getLogger(__name__)
 
+_SESSION_PLAN_TRACE_FIELDS = frozenset(
+    {
+        "provider",
+        "session_id",
+        "model",
+        "reasoning_effort",
+        "status",
+    }
+)
+
 
 @dataclass
 class CaseRunRecord:
@@ -202,6 +212,17 @@ def _build_case_trace_payload(
         "diagnostic_status": retry_result.diagnostic_status,
         "remediation_history": retry_result.remediation_history or [],
         "failure_snapshot": retry_result.failure_snapshot,
+        "tier2_audit": retry_result.tier2_audit or [],
+        "agent_recovered": bool(retry_result.agent_recovered),
+    }
+
+
+def _public_session_plan(session_plan: Mapping[str, Any]) -> dict[str, Any]:
+    """Return trace-safe session metadata while retaining private SDK config."""
+    return {
+        key: session_plan[key]
+        for key in _SESSION_PLAN_TRACE_FIELDS
+        if key in session_plan
     }
 
 
@@ -243,11 +264,6 @@ def run(
     agent_config = orchestrator.runner_selector.load_agent_config(plugin_name, plugin=plugin)
     execution_policy = orchestrator.runner_selector.build_execution_policy(agent_config)
     execution_policy = _apply_plugin_execution_policy(plugin, execution_policy)
-    orchestrator._build_execution_engine(
-        plugin_name=plugin_name,
-        plugin=plugin,
-        agent_config=agent_config,
-    )
     agent_trace_dir = artifact_dir / "agent_trace"
     agent_trace_dir.mkdir(parents=True, exist_ok=True)
 
@@ -273,6 +289,16 @@ def run(
             case=case,
             agent_config=agent_config,
         )
+        orchestrator._build_execution_engine(
+            plugin_name=plugin_name,
+            plugin=plugin,
+            agent_config=agent_config,
+            run_id=run_id,
+            case_id=case_id,
+            runner=selected_runner,
+            provider_config=provider_config,
+        )
+        session_plan: dict[str, Any] | None = None
         if callable(build_case_session_plan):
             session_plan = build_case_session_plan(
                 run_id,
@@ -281,12 +307,13 @@ def run(
                 provider_config=provider_config,
             )
             if session_plan is not None:
-                selection_trace["session_plan"] = session_plan
+                selection_trace["session_plan"] = _public_session_plan(
+                    session_plan
+                )
 
         active_session_id: str | None = None
-        session_plan_dict = selection_trace.get("session_plan")
-        if session_plan_dict and isinstance(session_plan_dict, dict):
-            session_handle = orchestrator._create_case_session(session_plan_dict)
+        if session_plan is not None:
+            session_handle = orchestrator._create_case_session(session_plan)
             if session_handle:
                 selection_trace["session_handle"] = session_handle
                 if session_handle.get("status") == "created":
@@ -407,6 +434,19 @@ def run(
                 {"degraded": False, "reason": ""},
             ),
         )
+        agent_recovered_case_ids: list[str] = []
+        tier2_audit: list[dict[str, Any]] = []
+        for record in case_records:
+            if bool(record.retry.agent_recovered):
+                agent_recovered_case_ids.append(record.case_id)
+            raw_audit = record.retry.tier2_audit or []
+            tier2_audit.extend(
+                dict(item) for item in raw_audit if isinstance(item, dict)
+            )
+        payload["tier2_remediation"] = {
+            "agent_recovered_case_ids": agent_recovered_case_ids,
+            "audit": tier2_audit,
+        }
     return payload
 
 

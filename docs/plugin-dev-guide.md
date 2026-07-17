@@ -64,7 +64,9 @@ case schema helpers（`load_case`, `load_cases_dir`, `CaseValidationError`,
 transport contracts（`TransportBase`,
 `StubTransport`, `create_transport`）、reporting contracts、run-backend
 contract（`RunBackend`, `RunHandle`, `ExportRequest`, `ExportResult`）、
-case utility helpers、`CliRegistrar`、run helpers（含 ctx-free 的
+case utility helpers、tier-2 contracts（`Tier2Capability`,
+`Tier2RecoveryContext`, `Tier2RecoveryAudit`, `Tier2PlanValidationError`）、
+`CliRegistrar`、run helpers（含 ctx-free 的
 `run_one_case`，可選 `run_backend` 注入）, and `excel_adapter`。
 直接從 `testpilot.core.*` 或 `testpilot.schema.*` 匯入視為 private
 implementation detail；若有新 core/schema symbol 要成為穩定契約，必須先加入
@@ -104,6 +106,8 @@ implementation detail；若有新 core/schema symbol 要成為穩定契約，必
 | `create_reporter()` | 回傳 plugin 專屬 reporter（`IReporter`） | `None`（用 orchestrator 預設） |
 | `register_cli(registrar)` | 透過 `CliRegistrar` 註冊 installed plugin 自己的 Click 命令/群組 | no-op |
 | `verify_install()` | 回傳 plugin-owned install health 診斷訊號供 `testpilot --verify-install` 顯示 | `[]` |
+| `build_remediation_decision(case, failure_snapshot, topology, ...)` | tier-1 deterministic failure→safe-env action mapping | `None` |
+| `execute_remediation(case, decision, topology)` | 執行 tier-1 allowlist action；只可修 environment | fail-closed unsupported result |
 | `build_tier2_remediation_context(case, failure_snapshot, topology, ...)` | 提供已去敏、有限長度的 failure/log context、env capability catalog 與 deterministic `verify_env` 定義；core 負責 prompt/LLM/schema | `None`（tier-2 disabled） |
 | `execute_tier2_remediation(case, plan, topology)` | 只在 retry 間隙執行 core 驗證過的 environment repair plan；不得修改 test semantics/verdict | fail-closed unsupported result |
 
@@ -239,15 +243,30 @@ execution:
     per_step_seconds: 45
     retry_multiplier: 1.25
     max_seconds: 900
+remediation:
+  enabled: true
+  allowed_actions: [plugin_tier1_action]  # tier-1 deterministic only
+  tier2:
+    enabled: false                       # plugin must opt in explicitly
+    escalate_after_tier1_failures: 2
+    max_invocations_per_case: 1
+    max_actions: 3
+    timeout_seconds: 60
+    max_total_attempts: 4
 runners:
   - priority: 1
-    cli_agent: codex
-    model: gpt-5.3-codex
+    cli_agent: copilot
+    model: gpt-5.4
     effort: high
     enabled: true
   - priority: 2
     cli_agent: copilot
     model: sonnet-4.6
+    effort: high
+    enabled: true
+  - priority: 3
+    cli_agent: copilot
+    model: gpt-5-mini
     effort: high
     enabled: true
 ```
@@ -261,6 +280,11 @@ runners:
 5. `failure_policy=retry_then_fail_and_continue` 時，單 case 失敗不得中止整批 run。
 6. 必須記錄 per-case selection trace（含降級原因）。
 7. timeout 應隨 retry attempt 調整（建議採倍增或倍率增長並設上限）。
+8. `allowed_actions` 只約束 tier-1 deterministic action；tier-2 另由 plugin hook
+   宣告 capability catalog，不能沿用它來繞過 schema 或 execution boundary。
+9. tier-2 預設 disabled；啟用時 `max_total_attempts` 必須至少為
+   `escalate_after_tier1_failures + 2`，且所有 side effect 後仍由 core 強制
+   deterministic `verify_env`。
 
 ## 5. Transport 類型慣例
 

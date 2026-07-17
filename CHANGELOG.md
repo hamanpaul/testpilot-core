@@ -27,6 +27,12 @@ preparation.
   僅在 retry gap 升級一次 tier-2，執行 plugin-advertised plan 後由 core 強制
   `verify_env`。retry budget、invocation/action 上限、test-semantics deep-copy guard、
   bounded audit 與 `agent-recovered` 介入標記均由 core state machine 強制（#4）。
+- orchestrator 於每案 runner 選定後注入獨立的 Copilot one-shot requester，case trace
+  固定輸出 `remediation_history` / `tier2_audit` / `agent_recovered`，run payload 固定
+  輸出 `tier2_remediation` 供人工反哺 tier-1；SDK/provider/plan 失敗會一次性標記
+  degraded 並 fail-closed。另將含 Azure secret 的 runtime session plan 與公開
+  `selection_trace` 分離，provider/SDK/plugin callback 錯誤狀態只保存 stable exception
+  type，不落 raw exception text（#4）。
 
 ## [0.3.4] - 2026-07-08
 

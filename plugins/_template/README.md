@@ -64,3 +64,7 @@ core stays free of any plugin-specific names.
 > `params_schema`. Core validates the plan shape and budget, while the plugin
 > executor must enforce that the advertised transport/target can affect only
 > environment state and cannot access case definitions or verdict artifacts.
+> A plugin using these hooks must declare `api_version = "1.2"` and opt in via
+> `remediation.tier2.enabled`. Tier-1 remains a separate deterministic
+> `allowed_actions` boundary; tier-2 actions come only from the plugin's
+> capability catalog and still pass the core-owned `verify_env` gate.

@@ -562,7 +562,7 @@ TestPilot 的主目標是：
 16. **3x full run determinism 驗證完成**（2026-03-25）：420 cases × 3 runs 全部 exit=0，Run 2/3 verdict 100% 一致，Run 1 僅 2/355 rows 差異（baseline warm-up 效應）。修復 4 個 live runtime bugs：DUT kernel flood、5G ModeEnabled reversion、6G connect fatal、multi-line printf split。詳見 `plugins/wifi_llapi/reports/3x_determinism_report_20260325.md`。
 17. **serialwrap human-agent 共存**（2026-03-26）：新增 `wal.reset` / `wal.current_seq` RPC + `session.bind` 冪等化（ser-dep PR #18）。testpilot 改用 `wal.reset` 取代 daemon restart，保留 human console (minicom) 連線（PR #7）。WAL fan-out 驗證通過。
 18. **Copilot SDK 原生支援 Azure BYOK**（2026-03-27 確認）：`SessionConfig.provider` 支援 `type: "azure"`，`COPILOT_PROVIDER_*` env vars 可切換認證。詳見下方 §8。
-19. **`wifi_llapi` live remediation 已接入 hot path**（2026-03-31）：`on_failure -> structured decision -> whitelist remediation executor -> on_retry` 已落地；範圍限定於 safe environment repair（serial session recover / STA reconnect / band baseline / env reverify），不改 testcase semantics 或 final verdict authority。
+19. **tiered env-recovery core framework 已接入 hot path**（2026-07-17）：tier-1 維持 plugin-owned deterministic allowlist；連續失敗達門檻後，core 才在 `on_retry` opt-in 呼叫 tool-denied tier-2 one-shot planner，限制於 plugin-advertised env capability，執行後強制 deterministic `verify_env`。case/run artifacts 固定保留 audit 與 `agent_recovered`；core #4 已完成，實體 `wifi_llapi` capability/executor opt-in 仍由其 #112 追蹤。
 
 ### 2.2 尚未落地
 
@@ -588,7 +588,7 @@ TestPilot 的主目標是：
 ### 3.3 報告投影分離
 
 - `xlsx`：Pass / Fail only
-- `md/json`：`comment`、`diagnostic_status`、`failure_snapshot`、`remediation_history`、timing、log line references
+- `md/json`：`comment`、`diagnostic_status`、`failure_snapshot`、`remediation_history`、timing、log line references；`tier2_audit` / `agent_recovered` 的固定契約目前落在 per-case `agent_trace` 與 run payload
 - `html`：由既有 `json` opt-in 轉出的 self-contained diagnostic review artifact
 
 ### 3.4 Agent / model policy（第三次重構目標）
@@ -620,7 +620,7 @@ TestPilot 的主目標是：
 | R4-03 | custom agents roles | executor / advisor / remediation / observer + role merging | done |
 | R4-04 | skills packages | SkillRegistry + SKILL.md discovery + role-based resolution | done |
 | R4-05 | advisory agent outputs | AdvisoryOutput + AdvisoryCollector + IHook handler factory | done |
-| R4-06 | remediation planner loop | post-run planner + in-run safe remediation loop（failure snapshot / whitelist executor / retry trace） | done |
+| R4-06 | remediation planner loop | tier-1 deterministic + opt-in tier-2 one-shot（capability/schema/budget/forced verify/audit） | done（core #4；plugin opt-in 各自追蹤） |
 | R4-07 | runtime policy alignment | plugin agent-config / runner policy 改為 copilot-only order | done |
 | R4-08 | selective MCP | MCPRegistry + role-selective server management | done |
 
@@ -668,7 +668,7 @@ TestPilot 的主目標是：
 R1 / R2 / R3 kernel 邊界整理
     -> R4-01 ~ R4-04 control-plane foundation
     -> R5-04 / R5-07 / R5-08 kernel boundary hardening
-    -> R4-05 / R4-06 advisory audit + live safe remediation
+    -> R4-05 / R4-06 advisory audit + tiered env-recovery
     -> R4-08 selective MCP
 ```
 
@@ -691,7 +691,7 @@ R1 / R2 / R3 kernel 邊界整理
 
 1. **Copilot SDK 為 technical preview**：先導入 control plane，再逐步放大使用範圍。
 2. **不可把 YAML 當主要 prompt**：正式測試仍由 kernel 執行。
-3. **不可讓 advisory output 直接變更 verdict**：必須經 whitelist remediation + deterministic rerun。
+3. **不可讓 advisory / tier-2 output 直接變更 verdict**：tier-1 必須經 allowlist；tier-2 必須經 capability/schema/budget 與 plugin executor，兩者最後都要通過 deterministic `verify_env` / rerun。
 4. **不得為舊 Codex CLI policy 補 workaround**：新 policy 以 Copilot SDK 為主體。
 5. **文件與政策需一致化**：`spec.md`、`plan.md`、`todos.md`、`README.md`、`AGENTS.md` 必須同步。
 

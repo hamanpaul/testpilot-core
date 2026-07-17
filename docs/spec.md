@@ -1,7 +1,7 @@
 # TestPilot 系統規格書
 
 > 版本：v0.1.0-draft（第三次重構規劃基線）
-> 更新日期：2026-04-16
+> 更新日期：2026-07-17
 > 深度參考已收斂回本文件；詳細研究筆記改為 local-only，不再納入 repo。
 
 ---
@@ -13,14 +13,14 @@ TestPilot 是一套 plugin-based 嵌入式裝置測試自動化框架，面向 p
 1. **Deterministic verdict kernel**：負責正式測試執行、證據蒐集、pass/fail 判定與報表投影。
 2. **Copilot SDK control plane**：負責 per-case session foundation、lifecycle hooks、advisory/remediation，以及 `custom_agents`、`skills`、`selective MCP` 等 extension surfaces，並提供操作員導向的自然語言 UX。
 
-`wifi_llapi` 仍是目前最完整的落地路徑；第三次重構的重點不是把 YAML 變成 prompt，也不是把最終 verdict 交給 agent，而是把既有 deterministic hot path 保留下來，再讓 Copilot SDK 吃掉 agent orchestration 的複雜度。自 2026-03-31 起，`wifi_llapi` 已接上 hook-governed live remediation loop，但範圍只限 safe environment repair，不允許 agent 改 testcase semantics、step 指令或 pass criteria。
+`wifi_llapi` 仍是目前最完整的落地路徑；第三次重構的重點不是把 YAML 變成 prompt，也不是把最終 verdict 交給 agent，而是把既有 deterministic hot path 保留下來，再讓 Copilot SDK 吃掉 agent orchestration 的複雜度。core 現已提供 tier-1 deterministic-first、連敗後 opt-in tier-2 one-shot 的 domain-agnostic framework；tier-2 只能規劃 plugin-advertised environment capabilities，plugin 執行後仍由 core 強制 deterministic `verify_env`，且不允許 agent 改 testcase semantics、step 指令、pass criteria 或 verdict。實體 plugin 必須另行實作並啟用 execution plane。
 
 目前已落地的 control-plane 子集：
 
 - per-case runner selection 與 `selection_trace`
 - best-effort 的 per-case Copilot session foundation
 - lifecycle hooks：`pre_case` / `post_case` / `pre_step` / `post_step` / `on_failure` / `on_retry`
-- advisory collection 與 retry 間的 safe-environment remediation
+- advisory collection，以及 retry 間的 tier-1 deterministic / opt-in tier-2 environment recovery
 
 `custom_agents`、`skills`、`mcp_servers` 等欄位已存在於 request / 規格層，但目前 orchestrator 建 session 時尚未預設自動接線，因此這些部分仍屬 extension surface，而不是完整 current-state hot path。
 
@@ -45,7 +45,7 @@ graph TB
     subgraph CP["Copilot SDK Control Plane"]
         sdk["SDK Session Foundation\ncreate/delete per-case session"]
         hooks["Lifecycle Hooks\npre_case / post_case\npre_step / post_step\non_failure / on_retry"]
-        agents["Advisory / Remediation\nselection trace / safe env repair"]
+        agents["Advisory / Remediation\ntier-1 rules / tier-2 one-shot"]
         skills["Skills (extension surface)\nnot auto-wired by default"]
         mcp["Selective MCP (extension surface)\nnot hot path by default"]
     end
@@ -109,13 +109,19 @@ sequenceDiagram
     Orch->>Evidence: write selection trace + attempts + canonical result
     Orch->>CLI: xlsx Pass/Fail + trace path
 
-    opt in-run advisory / remediation path
-        Orch->>CP: on_failure snapshot / trace context
-        CP-->>Orch: structured remediation decision JSON
-        Orch->>Plugin: whitelist remediation executor
-        Plugin->>Transport: safe env repair only
-        Orch->>Plugin: retry same case
-        Orch->>Evidence: remediation history + retry trace
+    opt in-run environment recovery path
+        Orch->>Plugin: tier-1 deterministic decision/executor
+        Plugin->>Transport: tier-1 safe env repair
+        Orch->>Plugin: deterministic verify_env on retry
+        opt consecutive tier-1 failures reach threshold
+            Orch->>Plugin: bounded context + capability catalog
+            Orch->>CP: tool-denied one-shot prompt
+            CP-->>Orch: structured tier-2 plan JSON
+            Orch->>Plugin: schema-validated env plan
+            Plugin->>Transport: capability-bounded env repair
+            Orch->>Plugin: forced deterministic verify_env
+        end
+        Orch->>Evidence: remediation history + tier-2 audit + marker
     end
 ```
 
@@ -133,7 +139,8 @@ sequenceDiagram
 補充：
 
 - remediation 只允許發生在 **attempt 與 attempt 之間** 的 `on_retry` 期間。
-- whitelist executor 只允許 safe environment actions；若 agent unavailable / invalid / out-of-policy，必須 fallback 到 deterministic builtin classifier，或直接不套 remediation。
+- tier-1 使用 plugin-owned deterministic allowlist。tier-2 必須明確 opt-in，且只接受 plugin capability catalog 中通過 schema/budget 的 environment actions。
+- tier-2 的 SDK/provider/plan/execution/gate 任一失敗都保留 audit 並 fail-closed；LLM 或 executor 自稱成功不能取代 core-owned `verify_env`。
 
 ### Timeout / Retry 原則
 
@@ -184,7 +191,7 @@ sequenceDiagram
 | `pre_step` | step 前攔截與前置校驗 | 不直接代替 transport 執行正式測試 |
 | `post_step` | step 後觀測 / 附加結構化資料 | 不改正式 pass/fail 判定 |
 | `on_failure` | advisory / failure snapshot / remediation proposal | 不直接改 YAML、pass criteria、或最終 verdict |
-| `on_retry` | retry 間 safe-env remediation | 只允許 policy whitelist 內的 environment repair |
+| `on_retry` | tier-1 execution / threshold 後 tier-2 one-shot | retry-only；catalog/schema/budget + forced `verify_env`，不碰 test semantics/verdict |
 
 補充：
 
@@ -197,8 +204,8 @@ sequenceDiagram
 
 - `operator`：操作員對話與 run/case 狀態說明
 - `case-auditor`：讀 trace / evidence，輸出 root cause 與 suggestion
-- `remediation-planner`：只輸出 structured remediation plan JSON
-- `remediation-planner` / builtin fallback：只輸出 safe environment remediation decision，不直接執行任意 shell
+- `remediation-planner`：只輸出 capability-bounded structured plan JSON；one-shot session 沒有 runtime tools
+- tier-1 builtin：deterministic allowlist decision；tier-2：plugin executor 在宣告 boundary 內執行，兩者都不具 verdict authority
 - `run-summarizer`：彙整 run 級 md/json summary
 
 ### 4.5 Skills
@@ -259,18 +266,20 @@ MCP 目前仍只作為 **selective extension surface**，優先順序低於 in-p
   },
   "diagnostic_status": "FailEnv",
   "failure_snapshot": {},
-  "remediation_history": []
+  "remediation_history": [],
+  "tier2_audit": [],
+  "agent_recovered": false
 }
 ```
 
-`root_cause` / `suggestions` 類欄位目前仍較偏 advisory / summarizer layer 的衍生資訊，而不是 runtime 必備 canonical keys。
+`remediation_history`、`tier2_audit`、`agent_recovered` 是固定 runtime keys；未使用時為 `[] / [] / false`。`agent_recovered` 表示 agent 曾介入，不代表 forced gate 或 final verdict 成功。run payload 另固定帶 `tier2_remediation.agent_recovered_case_ids` 與聚合 audit。`root_cause` / `suggestions` 類欄位仍較偏 advisory / summarizer layer 的衍生資訊。
 
 ### 5.3 Report projection
 
 | 輸出 | 內容 |
 |---|---|
 | `xlsx` | `Pass` / `Fail` only |
-| `md/json` | `comment` / `diagnostic_status` / `failure_snapshot` / `remediation_history` / timing / log line references |
+| `md/json` | `comment` / `diagnostic_status` / `failure_snapshot` / `remediation_history` / timing / log line references；tier-2 固定契約目前在 per-case `agent_trace` 與 run payload |
 | `html` | 由既有 `json` opt-in 轉出的 self-contained diagnostic review artifact |
 
 ### 5.4 不可退讓的 kernel 邊界
@@ -282,7 +291,7 @@ MCP 目前仍只作為 **selective extension surface**，優先順序低於 in-p
 - transport command execution
 - pass criteria comparison
 - xlsx final verdict projection
-- 非 whitelist 的修復動作（例如修改 YAML、skip case、改 pass criteria）
+- 任何越過 tier-1 allowlist 或 tier-2 capability/execution boundary 的動作，尤其修改 YAML、skip case、改 pass criteria 或 verdict
 
 ---
 
@@ -290,7 +299,7 @@ MCP 目前仍只作為 **selective extension surface**，優先順序低於 in-p
 
 | Artifact | 目的 | 備註 |
 |---|---|---|
-| `agent-config.yaml` | runner/model order 與 execution policy | 第三次重構需與新 policy 對齊 |
+| `agent-config.yaml` | runner/model order、execution policy、tier-1/tier-2 governance budgets | 不得存放 provider secrets |
 | selection trace | 記錄模型選擇與 fallback | 必須持久化 |
 | attempt trace | 記錄 timeout / commands / outputs / comments | 每次 retry 都保留 |
 | canonical result | 報表投影與 agent summary 的共同來源 | 不可被 agent 任意覆寫 |
@@ -358,7 +367,7 @@ testpilot/
 
 - `Orchestrator` 仍是責任過重的中心點
 - `wifi_llapi/plugin.py` 仍含 wording-sensitive fallback path
-- `plugins/wifi_llapi/agent-config.yaml` 尚待與新 policy 對齊
+- core tier-2 framework 已落地，但實體 plugin 的 capability/executor opt-in 仍須各 plugin 自行完成與驗證
 - Copilot SDK 仍屬 technical preview，導入時需分階段落地
 
 ### 9.2 非目標

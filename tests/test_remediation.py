@@ -321,6 +321,12 @@ class _UnsafeLivePlugin(_LivePlugin):
         }
 
 
+class _OpaqueTier1Plugin(_LivePlugin):
+    def execute_remediation(self, case, decision, topology):
+        del case, decision, topology
+        raise RuntimeError("opaque-tier1-secret-sentinel")
+
+
 class TestRuntimeRemediationCoordinator:
     def _ctx(self, hook_name: str, *, attempt_index: int = 1) -> HookContext:
         return HookContext(
@@ -376,6 +382,45 @@ class TestRuntimeRemediationCoordinator:
         assert plugin.executed == ["sta_band_rebaseline", "case_env_reverify"]
         assert retry_data["remediation_trace_entry"]["applied"] is True
         assert retry_data["remediation_history"][0]["verify_after"] is True
+
+    def test_tier1_executor_exception_is_opaque_in_trace(self) -> None:
+        coordinator = RuntimeRemediationCoordinator(
+            plugin=_OpaqueTier1Plugin(),
+            topology=object(),
+            policy={
+                "enabled": True,
+                "allowed_actions": [
+                    "sta_band_rebaseline",
+                    "case_env_reverify",
+                ],
+            },
+        )
+        case = {
+            "id": "D001",
+            "_last_failure": {
+                "case_id": "D001",
+                "attempt_index": 1,
+                "phase": "verify_env",
+                "comment": "environment not ready",
+                "category": "environment",
+                "reason_code": "not_ready",
+            },
+        }
+        coordinator.handle_pre_case(self._ctx("pre_case"), {})
+        coordinator.handle_on_failure(
+            self._ctx("on_failure"),
+            {"case": case, "phase": "verify_env", "comment": "failed"},
+        )
+        retry_data = {"case": case, "attempt_index": 2}
+
+        coordinator.handle_on_retry(
+            self._ctx("on_retry", attempt_index=2),
+            retry_data,
+        )
+
+        serialized = json.dumps(retry_data)
+        assert "opaque-tier1-secret-sentinel" not in serialized
+        assert "RuntimeError" in retry_data["remediation_trace_entry"]["comment"]
 
     def test_non_env_failure_does_not_emit_decision(self) -> None:
         plugin = _LivePlugin()
@@ -446,6 +491,77 @@ class TestRuntimeRemediationCoordinator:
         coordinator.handle_on_failure(self._ctx("on_failure"), failure_data)
         assert "remediation_decision" not in failure_data
 
+    def test_non_env_failure_resets_tier1_miss_streak(self) -> None:
+        requester = _Tier2Requester()
+        coordinator = RuntimeRemediationCoordinator(
+            plugin=_UnsafeLivePlugin(),
+            topology=object(),
+            policy={
+                "enabled": True,
+                "allowed_actions": ["case_env_reverify"],
+                "tier2": {
+                    "enabled": True,
+                    "escalate_after_tier1_failures": 2,
+                    "max_total_attempts": 4,
+                },
+            },
+            tier2_requester=requester,
+        )
+        coordinator.handle_pre_case(self._ctx("pre_case"), {})
+
+        coordinator.handle_on_failure(
+            self._ctx("on_failure"),
+            {
+                "case": {
+                    "id": "D001",
+                    "_last_failure": {
+                        "category": "environment",
+                        "phase": "verify_env",
+                    },
+                },
+                "phase": "verify_env",
+                "comment": "environment failure one",
+            },
+        )
+        coordinator.handle_on_failure(
+            self._ctx("on_failure", attempt_index=2),
+            {
+                "case": {
+                    "id": "D001",
+                    "_last_failure": {
+                        "category": "test",
+                        "phase": "evaluate",
+                    },
+                },
+                "phase": "evaluate",
+                "comment": "non-environment failure",
+            },
+        )
+        coordinator.handle_on_failure(
+            self._ctx("on_failure", attempt_index=3),
+            {
+                "case": {
+                    "id": "D001",
+                    "_last_failure": {
+                        "category": "environment",
+                        "phase": "verify_env",
+                    },
+                },
+                "phase": "verify_env",
+                "comment": "environment failure two",
+            },
+        )
+        retry_data = {"case": {"id": "D001"}, "attempt_index": 4}
+
+        result = coordinator.handle_on_retry(
+            self._ctx("on_retry", attempt_index=4),
+            retry_data,
+        )
+
+        assert result.proceed is True
+        assert requester.calls == []
+        assert retry_data["tier2_audit"] == []
+
 
 class _Tier2Requester:
     def __init__(self) -> None:
@@ -466,6 +582,12 @@ class _InvalidTier2Requester(_Tier2Requester):
     def __call__(self, prompt: str, context: dict) -> str:
         self.calls.append((prompt, context))
         return "not-json"
+
+
+class _OpaqueTier2Requester(_Tier2Requester):
+    def __call__(self, prompt: str, context: dict) -> str:
+        self.calls.append((prompt, context))
+        raise RuntimeError("opaque-requester-secret-sentinel")
 
 
 class _Tier2FlowPlugin:
@@ -794,3 +916,31 @@ def test_invalid_tier2_plan_fails_closed_with_audit_and_single_invocation() -> N
     assert len(requester.calls) == 1
     assert plugin.tier2_execute_calls == 0
     assert plugin.evaluate_calls == 0
+
+
+def test_tier2_requester_exception_is_opaque_in_audit() -> None:
+    plugin = _Tier2FlowPlugin(
+        verify_results=[False, False],
+        tier1_results=[
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+        ],
+    )
+    requester = _OpaqueTier2Requester()
+
+    result = _tier2_engine(plugin, requester).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=_tier2_policy(),
+    )
+
+    serialized = json.dumps(
+        {
+            "tier2_audit": result.tier2_audit,
+            "remediation_history": result.remediation_history,
+        }
+    )
+    assert result.tier2_audit[0]["status"] == "failed"
+    assert "RuntimeError" in result.tier2_audit[0]["error"]
+    assert "opaque-requester-secret-sentinel" not in serialized

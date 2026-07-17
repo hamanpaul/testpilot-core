@@ -2,6 +2,9 @@
 
 > 日期：2026-07-06 ｜ 對應 issue：#16 ｜ repo：testpilot-core
 > 佐證 run：wifi_llapi full-run `20260704T112950138504`（415 案全數 `session_handle.status=failed`）
+> 2026-07-17 supersession：一般 session degraded marker 保留，但「整場
+> builtin-fallback」已由 core #4 的獨立 tool-denied tier-2 one-shot policy 取代；
+> current authority 見 `2026-07-17-tier2-env-recovery-design.md`。
 
 ## 問題背景（root cause）
 
@@ -21,8 +24,8 @@ Callable[[PermissionRequest, dict[str, str]], PermissionRequestResult | Awaitabl
 
 1. **只支援現行 0.1.x API，不留雙軌**（使用者 2026-07-06 拍板）：移除舊 API 假設，不做
    class-式/callable-式 feature-detect shim。
-2. session 建立失敗 → builtin-fallback 的既有安全策略**不變**；本設計只讓「失敗」變 loud、
-   且在 0.1.x 下不再必然失敗。
+2. session 建立失敗仍須 loud 並留下 degraded marker；後續 remediation 依 current
+   tier-1/tier-2 policy 執行，不再宣告整場 builtin-fallback。
 3. 最小必要變更：只動 `copilot_session.py`、loud-surfacing 掛點、對應測試。
 
 ## 元件 1：approve-all permission handler（主修）
@@ -47,7 +50,7 @@ Callable[[PermissionRequest, dict[str, str]], PermissionRequestResult | Awaitabl
 ## 元件 2：loud surfacing（degraded 可見性）
 
 - run 內**第一次** session foundation 建立失敗時：`log.warning` 一次（不逐案洗版），
-  內容含失敗原因與「remediation 將全程 builtin-fallback」的明確語句。
+  只含穩定 exception type，不保存 raw provider/SDK exception text。
 - **run-level 落點（adversarial review 指出現行結構無此欄位，需新增）**：
   `run_loop` 的回傳 payload 是 `dict[str, Any]`（`run_loop.py::run_plugin_cases`），
   新增 key `agent_session_degraded: {"degraded": bool, "reason": str}`——由

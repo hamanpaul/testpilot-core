@@ -15,7 +15,7 @@
 ## 3. 實作 — loud surfacing
 
 - [x] 3.1 RED test：run 內第一次 session 建立失敗 → 恰一次 `log.warning`；後續失敗不重複
-- [x] 3.2 RED test：`run_plugin_cases()` 回傳 payload 含 `agent_session_degraded`（失敗 run = `{"degraded": true, "reason": ...}`；正常 run 的 falsy 形狀以測試鎖定）
+- [x] 3.2 RED test：`run_plugin_cases()` 回傳 payload 含 `agent_session_degraded`（失敗 run 的 reason 只含 stable exception type，不保存 raw exception text；正常 run 的 falsy 形狀以測試鎖定）
 - [x] 3.3 實作 orchestrator/run_loop 的 degraded 狀態追蹤與 payload key；3.1–3.2 轉綠
 
 ## 4. 收尾

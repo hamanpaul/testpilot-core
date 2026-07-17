@@ -17,6 +17,11 @@ class _FailingSessionManager:
         raise RuntimeError("boom")
 
 
+class _SecretFailingSessionManager:
+    def create_session(self, request):
+        raise RuntimeError("opaque-provider-secret-sentinel")
+
+
 def _orchestrator_with_failing_sessions() -> Orchestrator:
     # 比照 tests/test_orchestrator_retry.py:19 的既有建構方式
     orch = Orchestrator(project_root=Path(__file__).resolve().parents[1])
@@ -34,10 +39,13 @@ def test_session_failure_warns_once_and_sets_degraded(caplog):
     warnings = [
         r
         for r in caplog.records
-        if r.levelno == logging.WARNING and "builtin-fallback" in r.getMessage()
+        if r.levelno == logging.WARNING and "session foundation failed" in r.getMessage()
     ]
     assert len(warnings) == 1  # 一次性 loud warning
-    assert orch.agent_session_degraded == {"degraded": True, "reason": "boom"}
+    assert orch.agent_session_degraded == {
+        "degraded": True,
+        "reason": "SDK session operation failed (RuntimeError)",
+    }
 
 
 def test_no_failure_keeps_degraded_false():
@@ -52,3 +60,18 @@ def test_reset_run_state_clears_stale_degraded():
     orch.agent_session_degraded = {"degraded": True, "reason": "prev-run"}
     orch._reset_run_state()
     assert orch.agent_session_degraded == {"degraded": False, "reason": ""}
+
+
+def test_session_failure_redacts_secret_from_status_return_and_log(caplog):
+    orch = Orchestrator(project_root=Path(__file__).resolve().parents[1])
+    orch.session_manager = _SecretFailingSessionManager()
+
+    with caplog.at_level(logging.WARNING):
+        result = orch._create_case_session(
+            {"session_id": "s1", "model": "m", "reasoning_effort": "high"}
+        )
+
+    assert "opaque-provider-secret-sentinel" not in caplog.text
+    assert "opaque-provider-secret-sentinel" not in result["error"]
+    assert "opaque-provider-secret-sentinel" not in orch.agent_session_degraded["reason"]
+    assert result["error"] == "SDK session operation failed (RuntimeError)"

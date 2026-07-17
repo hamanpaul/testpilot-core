@@ -43,7 +43,7 @@ their own repositories and register themselves through the
 TestPilot is a plugin-based test automation framework for prplOS / OpenWrt embedded devices. The architecture splits into two planes:
 
 - **Deterministic verdict kernel** — test execution, evidence collection, pass/fail verdicts, and report projection.
-- **Copilot SDK control plane** — per-case session foundation, lifecycle hooks, advisory audit, safe remediation, and extension surfaces such as custom agents / skills / selective MCP.
+- **Copilot SDK control plane** — per-case session foundation, lifecycle hooks, advisory audit, tiered environment recovery, and extension surfaces such as custom agents / skills / selective MCP.
 
 Core principle: **the Copilot SDK handles the control plane; it does NOT decide the final verdict.**
 
@@ -52,7 +52,16 @@ Current landed control-plane subset today:
 - per-case runner selection with `selection_trace`
 - best-effort per-case Copilot session foundation
 - lifecycle hook dispatch (`pre_case`, `post_case`, `pre_step`, `post_step`, `on_failure`, `on_retry`)
-- advisory collection plus safe-environment remediation between retry attempts
+- advisory collection plus tier-1 deterministic remediation and opt-in tier-2 one-shot planning between retry attempts
+
+Tier-2 is reached only after the configured consecutive tier-1 failures. Core
+builds a bounded, tool-denied one-shot prompt from the plugin's advertised
+environment capabilities; the plugin executes the validated plan, then core
+forces deterministic `verify_env`. The agent never receives verdict authority
+or permission to rewrite case semantics. Every intervention is marked
+`agent_recovered` and retained in bounded/redacted case and run audit artifacts;
+the marker means the agent intervened, not that the verification gate passed.
+See [Tier-2 Environment Recovery Design](docs/superpowers/specs/2026-07-17-tier2-env-recovery-design.md).
 
 Custom agents / skills / MCP remain extension surfaces in the current codebase rather than default hot-path runtime wiring.
 
@@ -323,9 +332,17 @@ inventory.
 TestPilot 是針對 prplOS / OpenWrt 嵌入式裝置的 plugin 化測試自動化框架，架構分為兩個平面：
 
 - **Deterministic verdict kernel** — 測試執行、證據蒐集、pass/fail 判定與報表投影。
-- **Copilot SDK control plane** — per-case session foundation、lifecycle hooks、advisory audit、safe remediation，以及 custom agents / skills / 選擇性 MCP 等擴充面。
+- **Copilot SDK control plane** — per-case session foundation、lifecycle hooks、advisory audit、分層環境修復，以及 custom agents / skills / 選擇性 MCP 等擴充面。
 
 核心原則：**Copilot SDK 負責 control plane；它不決定最終 verdict。**
+
+tier-1 先執行 plugin 的 deterministic allowlist 修復；只有達到設定的連續失敗門檻，
+才會在 retry 間隙 opt-in 升級 tier-2。core 以 plugin 宣告的 environment capability
+catalog 建立 bounded、tool-denied one-shot prompt，plugin 執行通過 schema/budget 的
+plan 後，core 一律強制重跑 deterministic `verify_env`。agent 不具 verdict 權限，也
+不能改 case semantics。任何介入都以 `agent_recovered` 標記並寫入已去敏、有上限的
+case/run audit；該標記只代表 agent 曾介入，不代表 verify gate 已通過。詳見
+[Tier-2 Environment Recovery Design](docs/superpowers/specs/2026-07-17-tier2-env-recovery-design.md)。
 
 ### 前置需求
 

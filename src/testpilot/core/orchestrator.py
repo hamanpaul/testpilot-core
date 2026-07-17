@@ -45,6 +45,10 @@ from testpilot.core.advisory import AdvisoryCollector
 from testpilot.core.hook_policy import HookDispatcher, build_hook_policy
 from testpilot.core.plugin_loader import PluginLoader
 from testpilot.core.remediation import RuntimeRemediationCoordinator
+from testpilot.core.tier2_recovery import (
+    Tier2RecoveryContext,
+    parse_tier2_plan,
+)
 from testpilot.core.runner_selector import (
     DEFAULT_EXECUTION_POLICY,
     RunnerSelector,
@@ -90,9 +94,9 @@ class Orchestrator(OrchestratorRunBackendCompat):
         self.runner_selector = RunnerSelector(self.plugins_dir)
         self.execution_engine = ExecutionEngine(self.config)
         self.session_manager: CopilotSessionManager | None = self._try_init_session_manager()
-        # Loud surfacing (#16): when the SDK session foundation fails, remediation
-        # silently falls back to the builtin classifier. Track a run-level degraded
-        # status so the failure is warned once and carried in the run payload.
+        # Loud surfacing (#16): track general SDK session foundation failures at
+        # run scope. Current remediation policy may still use an independent,
+        # tool-denied tier-2 one-shot session (#4).
         self.agent_session_degraded: dict[str, Any] = {"degraded": False, "reason": ""}
 
     def _reset_run_state(self) -> None:
@@ -114,6 +118,10 @@ class Orchestrator(OrchestratorRunBackendCompat):
         plugin_name: str,
         plugin: Any,
         agent_config: dict[str, Any],
+        run_id: str,
+        case_id: str,
+        runner: dict[str, Any],
+        provider_config: dict[str, Any] | None,
     ) -> ExecutionEngine:
         policy = build_hook_policy(agent_config)
         dispatcher = HookDispatcher(policy)
@@ -125,10 +133,110 @@ class Orchestrator(OrchestratorRunBackendCompat):
         remediation_policy = agent_config.get("remediation", {})
         if not isinstance(remediation_policy, dict):
             remediation_policy = {}
+        raw_tier2_policy = remediation_policy.get("tier2", {})
+        tier2_policy = (
+            dict(raw_tier2_policy)
+            if isinstance(raw_tier2_policy, dict)
+            else {}
+        )
+        tier2_requester = None
+        if bool(remediation_policy.get("enabled", False)) and bool(
+            tier2_policy.get("enabled", False)
+        ):
+            remediation_invocation = 0
+            timeout_seconds = tier2_policy.get("timeout_seconds", 60.0)
+
+            def _request_tier2_plan(
+                prompt: str,
+                context: dict[str, Any],
+            ) -> str | None:
+                nonlocal remediation_invocation
+                remediation_invocation += 1
+                if (
+                    self.session_manager is None
+                    or CopilotSessionRequest is None
+                    or build_session_id is None
+                ):
+                    exc = RuntimeError(
+                        "Copilot one-shot session manager is unavailable"
+                    )
+                    self._record_agent_session_failure(
+                        exc,
+                        warning=(
+                            "SDK tier-2 one-shot unavailable; "
+                            "environment recovery will fail closed"
+                        ),
+                    )
+                    raise exc
+                request = CopilotSessionRequest(
+                    session_id=build_session_id(
+                        run_id,
+                        case_id=case_id,
+                        remediate_attempt=remediation_invocation,
+                    ),
+                    model=str(runner.get("model", "") or ""),
+                    reasoning_effort=(
+                        str(runner.get("effort", "high") or "high")
+                    ),
+                    provider=(
+                        dict(provider_config) if provider_config else None
+                    ),
+                )
+                try:
+                    response = self.session_manager.send_one_shot(
+                        request,
+                        prompt,
+                        timeout_seconds=timeout_seconds,
+                    )
+                except Exception as exc:
+                    error_type = type(exc).__name__
+                    self._record_agent_session_failure(
+                        exc,
+                        warning=(
+                            "SDK tier-2 one-shot failed; "
+                            "environment recovery will fail closed"
+                        ),
+                    )
+                    raise RuntimeError(
+                        f"tier-2 one-shot provider failure ({error_type})"
+                    ) from None
+                try:
+                    # Preflight at the provider boundary so malformed output
+                    # also degrades the agent session. Return the raw response
+                    # regardless: the coordinator must retain it in the audit
+                    # before its authoritative parse fails closed.
+                    normalized_context = Tier2RecoveryContext.from_mapping(
+                        context
+                    )
+                    parse_tier2_plan(
+                        response,
+                        capability_schemas=(
+                            normalized_context.capability_schemas
+                        ),
+                        max_actions=max(
+                            0,
+                            _safe_int(
+                                tier2_policy.get("max_actions"),
+                                3,
+                            ),
+                        ),
+                    )
+                except Exception as exc:
+                    self._record_agent_session_failure(
+                        exc,
+                        warning=(
+                            "SDK tier-2 one-shot returned an invalid plan; "
+                            "environment recovery will fail closed"
+                        ),
+                    )
+                return response
+
+            tier2_requester = _request_tier2_plan
         remediation = RuntimeRemediationCoordinator(
             plugin=plugin,
             topology=self.config,
             policy=remediation_policy,
+            tier2_requester=tier2_requester,
         )
         for hook_name, handler in (
             ("pre_case", remediation.handle_pre_case),
@@ -182,16 +290,39 @@ class Orchestrator(OrchestratorRunBackendCompat):
                 "status": "created",
             }
         except Exception as exc:
-            if not self.agent_session_degraded["degraded"]:
-                log.warning(
-                    "SDK session foundation failed; remediation will run with "
-                    "builtin-fallback for the whole run: %s",
-                    exc,
-                )
-                self.agent_session_degraded = {"degraded": True, "reason": str(exc)}
-            else:
-                log.debug("SDK session creation failed (already degraded): %s", exc)
-            return {"status": "failed", "error": str(exc)}
+            safe_reason = self._record_agent_session_failure(
+                exc,
+                warning=(
+                    "SDK session foundation failed; agent session marked "
+                    "degraded"
+                ),
+            )
+            return {"status": "failed", "error": safe_reason}
+
+    def _record_agent_session_failure(
+        self,
+        exc: Exception,
+        *,
+        warning: str,
+    ) -> str:
+        """Surface an SDK/provider failure once without persisting its text."""
+        safe_reason = f"SDK session operation failed ({type(exc).__name__})"
+        if not self.agent_session_degraded["degraded"]:
+            log.warning(
+                "%s: error_type=%s",
+                warning,
+                type(exc).__name__,
+            )
+            self.agent_session_degraded = {
+                "degraded": True,
+                "reason": safe_reason,
+            }
+        else:
+            log.debug(
+                "SDK session operation failed (already degraded): error_type=%s",
+                type(exc).__name__,
+            )
+        return safe_reason
 
     def _cleanup_case_session(self, session_id: str | None) -> None:
         """Best-effort cleanup of a case-level SDK session."""

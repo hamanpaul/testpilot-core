@@ -6,7 +6,7 @@ wifi_llapi full-run `20260704T112950138504` 全數 415 案的 agent session foun
 
 - 重寫 `copilot_session.py::_resolve_permission_handler`：自組 approve-all permission handler callable，回傳 wire shape 正確的 `{"kind": "approved"}`（`PermissionRequestResult` 為 `TypedDict(total=False)`，無 runtime validation，測試鎖 wire shape）
 - feature-detect 對象改為 `PermissionRequestResult` 可用性；缺失時 `CopilotSDKUnavailableError` 指名缺的 symbol；**不留任何 `approve_all` 舊 API 雙軌**
-- 新增 loud surfacing：run 內第一次 session 建立失敗 → 一次性 `log.warning` + `run_loop` 回傳 payload 新增 `agent_session_degraded` key（小幅 core schema 變更）
+- 新增 loud surfacing：run 內第一次 session 建立失敗 → 一次性、不含 raw exception text 的 `log.warning` + `run_loop` 回傳 payload 新增 `agent_session_degraded` key（小幅 core schema 變更）
 - 更新 `tests/test_copilot_session.py` 對 `approve_all` 的假設；新增 wire-shape 鎖定與缺 API 測試
 - CHANGELOG `[Unreleased]` entry
 
@@ -17,7 +17,7 @@ wifi_llapi full-run `20260704T112950138504` 全數 415 案的 agent session foun
 
 ### Modified Capabilities
 
-（無——execution loop 的 builtin-fallback 行為與 selection trace 記錄不變）
+- 此 change 原本不改 remediation；後續 core #4 已以 tier-1-first / opt-in tier-2 one-shot supersede「整場 builtin-fallback」描述。`agent_session_degraded` 現為一般 per-case session 與獨立 tier-2 one-shot 共用的 run-scoped marker；per-case selection trace 仍保留。
 
 ## Impact
 

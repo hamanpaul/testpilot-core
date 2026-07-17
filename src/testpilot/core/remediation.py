@@ -516,6 +516,8 @@ class RuntimeRemediationCoordinator:
         )
         if not eligible:
             state["pending_decision"] = None
+            state["tier1_failure_streak"] = 0
+            state["last_tier1"] = None
             self._project_state(state, data)
             return HookResult(advice=snapshot.comment)
 
@@ -752,7 +754,10 @@ class RuntimeRemediationCoordinator:
             return {
                 "success": False,
                 "verify_after": None,
-                "comment": str(sanitize_tier2_value(str(exc))),
+                "comment": (
+                    "tier-1 remediation execution failed "
+                    f"({type(exc).__name__})"
+                ),
                 "actions": [],
             }
         if _public_case_semantics(plugin_case) != semantics_before:
@@ -851,7 +856,7 @@ class RuntimeRemediationCoordinator:
                 data=data,
                 state=state,
                 audit=audit,
-                error=str(exc),
+                error=f"tier-2 context hook failed ({type(exc).__name__})",
                 status="rejected",
             )
         audit.context = context.to_dict()
@@ -887,7 +892,7 @@ class RuntimeRemediationCoordinator:
                 data=data,
                 state=state,
                 audit=audit,
-                error=str(exc),
+                error=f"tier-2 request/plan failed ({type(exc).__name__})",
                 status=(
                     "rejected"
                     if isinstance(exc, Tier2PlanValidationError)
@@ -895,6 +900,11 @@ class RuntimeRemediationCoordinator:
                 ),
             )
         audit.plan = plan
+        log.info(
+            "tier-2 decision case=%s actions=%s",
+            ctx.case_id,
+            [item.get("executor_key", "") for item in plan.get("actions", [])],
+        )
 
         execute = getattr(self.plugin, "execute_tier2_remediation", None)
         if not callable(execute):
@@ -920,7 +930,7 @@ class RuntimeRemediationCoordinator:
                 data=data,
                 state=state,
                 audit=audit,
-                error=str(exc),
+                error=f"tier-2 executor failed ({type(exc).__name__})",
             )
         audit.execution = execution
         if _public_case_semantics(execution_case) != semantics_before:
@@ -949,7 +959,10 @@ class RuntimeRemediationCoordinator:
                 )
         except Exception as exc:
             gate_passed = False
-            verify_error = str(exc)
+            verify_error = (
+                "tier-2 verify_env failed "
+                f"({type(exc).__name__})"
+            )
         safe_verify_error = str(sanitize_tier2_value(verify_error))
         audit.verify_gate = {
             "passed": gate_passed,
@@ -958,7 +971,7 @@ class RuntimeRemediationCoordinator:
         }
         audit.status = "verified" if gate_passed else "failed"
         if verify_error:
-            audit.error = verify_error
+            audit.error = safe_verify_error
         state["tier2_audit"].append(audit.to_dict())
 
         raw_actions = execution.get("actions", [])
@@ -967,6 +980,12 @@ class RuntimeRemediationCoordinator:
             [dict(item) for item in safe_actions if isinstance(item, Mapping)]
             if isinstance(safe_actions, list)
             else []
+        )
+        log.info(
+            "tier-2 execution case=%s actions=%s success=%s",
+            ctx.case_id,
+            [item.get("executor_key", "") for item in executed_actions],
+            bool(execution.get("success", False)),
         )
         safe_execution_comment = str(
             sanitize_tier2_value(str(execution.get("comment", "") or ""))
@@ -1019,7 +1038,7 @@ class RuntimeRemediationCoordinator:
     ) -> HookResult:
         safe_error = str(sanitize_tier2_value(error))
         audit.status = status
-        audit.error = error
+        audit.error = safe_error
         audit.verify_gate = {
             "passed": False,
             "executed": False,

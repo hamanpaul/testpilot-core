@@ -33,12 +33,14 @@ _AUTH_HEADER_RE = re.compile(
 )
 _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|"
-    r"password|passwd|secret|authorization|credential)\b\s*[:=]\s*)"
+    r"password|passwd|secret|authorization|credential|endpoint|"
+    r"base[_-]?url)\b\s*[:=]\s*)"
     r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
 )
 _SENSITIVE_JSON_VALUE_RE = re.compile(
     r'(?i)("(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|'
-    r'password|passwd|secret|authorization|credential)"\s*:\s*)'
+    r'password|passwd|secret|authorization|credential|endpoint|'
+    r'base[_-]?url)"\s*:\s*)'
     r'("[^"\r\n]*")'
 )
 _SENSITIVE_KEY_MARKERS = (
@@ -51,6 +53,8 @@ _SENSITIVE_KEY_MARKERS = (
     "secret",
     "authorization",
     "credential",
+    "endpoint",
+    "baseurl",
 )
 _FORBIDDEN_CONTROL_FIELDS = {
     "caseyaml",

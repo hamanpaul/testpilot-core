@@ -54,8 +54,8 @@
 | P3-01 | test-runner loop | done | ExecutionEngine + runner_selector 已落地 (R2-01) |
 | P3-02 | monitor subsystem | pending | 尚未實作 |
 | P3-03 | reporter（MD/JSON） | done | IReporter + MarkdownReporter + JsonReporter 已落地 (R5-06) |
-| P3-04 | verdict merge policy | done | 與 R4-05/R4-06 合併；AdvisoryCollector + diagnostic_status / remediation_history 投影已落地 |
-| P3-05 | post-run remediation loop | done | 與 R4-06 合併；RemediationPlanner 保留 post-run 彙整，wifi_llapi 已接上 in-run safe remediation loop |
+| P3-04 | verdict merge policy | done | 與 R4-05/R4-06 合併；AdvisoryCollector + diagnostic_status / remediation_history 投影已落地；tier-2 固定欄位目前由 agent_trace/run payload 承載 |
+| P3-05 | post-run remediation loop | done | 與 R4-06 合併；RemediationPlanner 保留 post-run 彙整，core #4 已接上 tier-1-first / opt-in tier-2 framework 與 agent_trace/run payload；實體 wifi_llapi opt-in/報表消費由其 #112 追蹤 |
 
 ## Phase 4：Wifi_LLAPI Plugin
 
@@ -361,7 +361,7 @@
 | R4-03 | custom agents roles | done | 需求 | executor / advisor / remediation / observer + role merging |
 | R4-04 | skills packages | done | 需求 | SkillRegistry + SKILL.md discovery + role-based resolution |
 | R4-05 | advisory agent outputs | done | 需求 | AdvisoryOutput + AdvisoryCollector + IHook handler factory |
-| R4-06 | remediation planner loop | done | 需求 | RemediationPlanner + severity-prioritized action mapping + wifi_llapi in-run safe remediation loop |
+| R4-06 | remediation planner loop | done | 需求 | core #4：tier-1 deterministic + opt-in tier-2 one-shot，含 capability/schema/budget/forced verify/audit；plugin execution opt-in 各自追蹤 |
 | R4-07 | runtime policy alignment | done | 需求 | `plugins/wifi_llapi/agent-config.yaml` 已改為 copilot-only policy |
 | R4-08 | selective MCP integrations | done | 需求 | MCPRegistry + role-selective server management |
 
