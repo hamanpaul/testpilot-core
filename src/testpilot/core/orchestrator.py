@@ -57,6 +57,14 @@ from testpilot.core.case_planning import (
     build_case_planning_prompt,
     parse_case_planning_response,
 )
+from testpilot.core.run_analysis import (
+    RunAnalysisResult,
+    build_case_capsule,
+    build_run_analysis_prompt,
+    build_run_analysis_reducer_prompt,
+    pack_case_capsules,
+    parse_run_analysis_response,
+)
 from testpilot.core.runner_selector import (
     DEFAULT_EXECUTION_POLICY,
     RunnerSelector,
@@ -383,6 +391,49 @@ class Orchestrator(OrchestratorRunBackendCompat):
             return _planning_result_error(exc)
         except AgentProviderCallError as exc:
             return CasePlanningResult(status="failed", error_type=exc.error_type)
+
+    def _analyze_run(self, *, run_result: Any, metrics: dict[str, Any], direct_usage: Any) -> RunAnalysisResult:
+        """Analyze completed verdicts once, after execution has ended."""
+        if not run_result.cases:
+            return RunAnalysisResult(status="skipped_no_cases")
+        if self.agent_circuit_open:
+            return RunAnalysisResult(status="skipped_circuit_breaker")
+        if not self.agent_runtime.status.ready:
+            return RunAnalysisResult(status="skipped_no_agent")
+        batch_calls = 0
+        reducer_calls = 0
+        try:
+            capsules = []
+            for record in run_result.cases:
+                usage = direct_usage.case_totals(record.case_id) if hasattr(direct_usage, "case_totals") else direct_usage.get(record.case_id, {})
+                capsules.append(build_case_capsule(record, direct_usage=usage))
+            batches = pack_case_capsules(capsules)
+            summaries = []
+            for index, batch in enumerate(batches, 1):
+                batch_calls += 1
+                _, parsed = self._invoke_agent_one_shot(
+                    run_id=run_result.run_id, case_id=None,
+                    purpose="run_analysis_batch",
+                    session_id=build_session_id(run_result.run_id, purpose="analysis-batch", invocation_index=index),
+                    prompt=build_run_analysis_prompt(capsules=batch, metrics=metrics, batch_index=index, batch_count=len(batches)),
+                    timeout_seconds=60.0,
+                    validate=lambda raw, ids={x.case_id for x in batch}: parse_run_analysis_response(raw, allowed_case_ids=ids),
+                )
+                summaries.append(parsed)
+            if len(summaries) == 1:
+                return RunAnalysisResult.from_mapping(summaries[0], batch_calls=1)
+            reducer_calls = 1
+            _, reduced = self._invoke_agent_one_shot(
+                run_id=run_result.run_id, case_id=None, purpose="run_analysis_reducer",
+                session_id=build_session_id(run_result.run_id, purpose="analysis-reducer", invocation_index=1),
+                prompt=build_run_analysis_reducer_prompt(summaries=summaries, metrics=metrics),
+                timeout_seconds=60.0,
+                validate=lambda raw: parse_run_analysis_response(raw, allowed_case_ids=set()),
+            )
+            findings = [item for summary in summaries for item in summary["case_findings"]]
+            return RunAnalysisResult.from_mapping(reduced, batch_calls=len(batches), reducer_calls=1, case_findings=findings)
+        except Exception as exc:
+            return RunAnalysisResult(status="failed", batch_calls=batch_calls, reducer_calls=reducer_calls, error_type=getattr(exc, "error_type", type(exc).__name__))
 
     def _create_case_session(
         self,
