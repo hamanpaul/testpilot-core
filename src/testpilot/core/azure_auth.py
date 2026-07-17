@@ -42,6 +42,10 @@ class AzureAgentStatus:
     api_version: str = DEFAULT_API_VERSION
     reason_code: str = ""
 
+    @property
+    def ready(self) -> bool:
+        return self.state is AzureAgentState.AZURE_READY
+
 
 @dataclass
 class AzureAgentRuntime:
@@ -70,6 +74,15 @@ class AzureAgentRuntime:
             deployment=self.status.deployment,
             api_version=self.status.api_version,
             reason_code=str(reason_code),
+        )
+
+    def reset_to_initial(self) -> None:
+        """Restore the environment-derived status for a new run."""
+        self.status = AzureAgentStatus(
+            state=self._initial_state,
+            deployment=self.status.deployment,
+            api_version=self.status.api_version,
+            reason_code="" if self._initial_state is AzureAgentState.AZURE_READY else self.status.reason_code,
         )
 
 

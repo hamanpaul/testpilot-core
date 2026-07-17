@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Literal, TypeVar
 
 try:
     from testpilot.core.copilot_session import (
@@ -50,6 +50,7 @@ from testpilot.core.tier2_recovery import (
     Tier2RecoveryContext,
     parse_tier2_plan,
 )
+from testpilot.core.usage_ledger import UsageLedger, UsagePurpose
 from testpilot.core.runner_selector import (
     DEFAULT_EXECUTION_POLICY,
     RunnerSelector,
@@ -67,6 +68,30 @@ DEFAULT_CONFIG_DIR = "configs"
 
 # Re-export for backward compatibility
 __all__ = ["Orchestrator", "DEFAULT_EXECUTION_POLICY"]
+
+T = TypeVar("T")
+
+
+class AgentCallSkipped(RuntimeError):
+    def __init__(self, reason: Literal["no_agent", "circuit_breaker"]):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class AgentProviderCallError(RuntimeError):
+    """Provider/SDK/session failure that opens the run circuit."""
+
+    def __init__(self, error_type: str):
+        super().__init__(error_type)
+        self.error_type = error_type
+
+
+class AgentResponseValidationError(ValueError):
+    """Purpose-schema rejection that leaves the provider circuit closed."""
+
+    def __init__(self, error_type: str):
+        super().__init__(error_type)
+        self.error_type = error_type
 
 
 class Orchestrator(OrchestratorRunBackendCompat):
@@ -96,15 +121,15 @@ class Orchestrator(OrchestratorRunBackendCompat):
         self.runner_selector = RunnerSelector(self.plugins_dir)
         self.execution_engine = ExecutionEngine(self.config)
         self.agent_runtime = agent_runtime or resolve_azure_agent_runtime()
-        self.session_manager: CopilotSessionManager | None = (
-            self._try_init_session_manager()
-            if self.agent_runtime.status.state is AzureAgentState.AZURE_READY
-            else None
-        )
+        self.session_manager: CopilotSessionManager | None = None
         # Loud surfacing (#16): track general SDK session foundation failures at
         # run scope. Current remediation policy may still use an independent,
         # tool-denied tier-2 one-shot session (#4).
         self.agent_session_degraded: dict[str, Any] = {"degraded": False, "reason": ""}
+        self.usage_ledger = UsageLedger()
+        self.agent_circuit_open = False
+        self.agent_circuit_error_type = ""
+        self._reset_run_state()
 
     def _reset_run_state(self) -> None:
         """Reset per-run state at the start of each run.
@@ -114,6 +139,16 @@ class Orchestrator(OrchestratorRunBackendCompat):
         run's degraded status into the next run's payload.
         """
         self.agent_session_degraded = {"degraded": False, "reason": ""}
+        self.usage_ledger = UsageLedger()
+        self.agent_circuit_open = False
+        self.agent_circuit_error_type = ""
+        self.agent_runtime.reset_to_initial()
+        if self.agent_runtime.status.state is AzureAgentState.AZURE_READY and self.session_manager is None:
+            self.session_manager = self._try_init_session_manager()
+            if self.session_manager is None:
+                self.agent_circuit_open = True
+                self.agent_circuit_error_type = "CopilotSDKUnavailableError"
+                self.agent_runtime.mark_degraded(self.agent_circuit_error_type)
 
     @property
     def run_handle(self) -> RunHandle | None:
@@ -269,6 +304,75 @@ class Orchestrator(OrchestratorRunBackendCompat):
         """Try to create a CopilotSessionManager; return None if SDK unavailable."""
         if CopilotSessionManager is None:
             return None
+
+    def _invoke_agent_one_shot(
+        self,
+        *,
+        run_id: str,
+        case_id: str | None,
+        purpose: UsagePurpose,
+        session_id: str,
+        prompt: str,
+        timeout_seconds: float,
+        validate: Callable[[str], T],
+    ) -> tuple[str, T]:
+        """Execute one measured, tool-denied agent turn.
+
+        Provider/session failures are run-fatal for agent calls and open the
+        circuit. Response validation is purpose-local and keeps the provider
+        available for the next call.
+        """
+        if self.agent_circuit_open:
+            raise AgentCallSkipped("circuit_breaker")
+        if self.agent_runtime.status.state is not AzureAgentState.AZURE_READY:
+            raise AgentCallSkipped("no_agent")
+
+        binding = self.usage_ledger.start_invocation(
+            run_id=run_id,
+            session_id=session_id,
+            case_id=case_id,
+            purpose=purpose,
+            model=self.agent_runtime.status.deployment,
+        )
+        try:
+            provider = self.agent_runtime.sdk_provider_config()
+            if provider is None or CopilotSessionRequest is None:
+                raise CopilotSDKUnavailableError("Azure provider is unavailable")
+            if self.session_manager is None:
+                raise CopilotSDKUnavailableError("Copilot one-shot manager is unavailable")
+            request = CopilotSessionRequest(
+                session_id=session_id,
+                model=self.agent_runtime.status.deployment,
+                reasoning_effort="high",
+                provider=provider,
+                on_event=self.usage_ledger.event_handler(binding),
+            )
+            raw = self.session_manager.send_one_shot(
+                request,
+                prompt,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            error_type = type(exc).__name__
+            self.usage_ledger.finish_invocation(binding, status="failed", error_type=error_type)
+            self.agent_circuit_open = True
+            self.agent_circuit_error_type = error_type
+            self.agent_runtime.mark_degraded(error_type)
+            self._record_agent_session_failure(
+                exc,
+                warning="Azure SDK one-shot failed; later agent calls are disabled",
+            )
+            raise AgentProviderCallError(error_type) from None
+
+        try:
+            parsed = validate(raw)
+        except Exception as exc:
+            error_type = type(exc).__name__
+            self.usage_ledger.finish_invocation(binding, status="failed", error_type=error_type)
+            raise AgentResponseValidationError(error_type) from None
+
+        self.usage_ledger.finish_invocation(binding, status="completed")
+        return raw, parsed
         try:
             mgr = CopilotSessionManager()
             mgr._load_sdk()  # probe availability

@@ -388,7 +388,7 @@ class CopilotSessionManager:
                     if not callable(subscribe):
                         raise CopilotSDKUnavailableError(
                             "Copilot SDK session.on is unavailable; "
-                            "tier-2 requires github-copilot-sdk>=0.1.23,<0.2"
+                            "one-shot requires github-copilot-sdk>=0.1.23,<0.2"
                         )
                     unsubscribe = subscribe(request.on_event)
 
@@ -396,7 +396,7 @@ class CopilotSessionManager:
                 if not callable(send_and_wait):
                     raise CopilotSDKUnavailableError(
                         "Copilot SDK session.send_and_wait is unavailable; "
-                        "tier-2 requires github-copilot-sdk>=0.1.23,<0.2"
+                        "one-shot requires github-copilot-sdk>=0.1.23,<0.2"
                     )
                 try:
                     event = await send_and_wait(
@@ -408,7 +408,7 @@ class CopilotSessionManager:
                     if not callable(abort):
                         timeout_error.add_note(
                             "Copilot SDK session.abort is unavailable after timeout; "
-                            "tier-2 requires github-copilot-sdk>=0.1.23,<0.2"
+                            "one-shot requires github-copilot-sdk>=0.1.23,<0.2"
                         )
                         log.warning(
                             "Copilot one-shot abort unavailable after timeout"
@@ -450,7 +450,7 @@ class CopilotSessionManager:
                     cleanup_errors.append(
                         CopilotSDKUnavailableError(
                             "Copilot SDK client.delete_session is unavailable; "
-                            "tier-2 requires github-copilot-sdk>=0.1.23,<0.2"
+                                "one-shot requires github-copilot-sdk>=0.1.23,<0.2"
                         )
                     )
                 else:
