@@ -622,13 +622,21 @@ class Orchestrator(OrchestratorRunBackendCompat):
         dut_fw_ver: str | None,
         provider_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return runner.run(
+        payload = runner.run(
             self,
             plugin_name,
             case_ids,
             dut_fw_ver,
             provider_config,
         )
+        if isinstance(payload, dict):
+            payload["core_cost_report"] = {
+                "status": "unsupported_execution_path",
+                "execution_path": "custom_runner",
+                "coverage": "core_sdk_calls_only",
+                "analysis_status": "unavailable",
+            }
+        return payload
 
     def _skeleton_run(
         self,
@@ -649,6 +657,12 @@ class Orchestrator(OrchestratorRunBackendCompat):
             "cases_count": len(cases),
             "case_ids": [c.get("id", "?") for c in cases],
             "status": "skeleton — not yet implemented",
+            "core_cost_report": {
+                "status": "unsupported_execution_path",
+                "execution_path": "skeleton",
+                "coverage": "core_sdk_calls_only",
+                "analysis_status": "unavailable",
+            },
         }
 
     # -- public entry point ----------------------------------------------------

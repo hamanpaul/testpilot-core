@@ -269,6 +269,7 @@ def run(
     agent_trace_dir.mkdir(parents=True, exist_ok=True)
 
     case_records: list[CaseRunRecord] = []
+    planning_by_case: dict[str, Any] = {}
     case_trace_files: list[str] = []
     run_started_monotonic = time.monotonic()
     run_started_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -298,6 +299,7 @@ def run(
             case_count=len(cases),
             execution_policy=execution_policy,
         )
+        planning_by_case[case_id] = planning_result
         orchestrator._build_execution_engine(
             plugin_name=plugin_name,
             plugin=plugin,
@@ -427,6 +429,33 @@ def run(
         metrics=analysis_metrics,
         direct_usage=direct_usage,
     )
+    from testpilot.reporting.usage_reporter import (
+        CoreCostArtifacts,
+        build_core_cost_report,
+        write_core_cost_artifacts,
+    )
+    try:
+        frozen_usage = orchestrator.usage_ledger.freeze()
+        runtime = getattr(orchestrator, "agent_runtime", None)
+        agent_state = runtime.public_summary() if runtime is not None and hasattr(runtime, "public_summary") else {}
+        report = build_core_cost_report(
+            run_result=run_result,
+            planning_by_case=planning_by_case,
+            agent_recovery_support=getattr(orchestrator, "agent_recovery_support", {}),
+            usage=frozen_usage,
+            metrics=assistance_metrics,
+            analysis=run_analysis,
+            agent_state=agent_state,
+        )
+        core_artifacts = write_core_cost_artifacts(
+            artifact_dir=artifact_dir,
+            report=report,
+            usage=frozen_usage,
+            analysis=run_analysis,
+        )
+    except Exception as exc:
+        log.warning("core cost artifacts failed; continuing", exc_info=True)
+        core_artifacts = CoreCostArtifacts(status="failed", analysis_status=getattr(run_analysis, "status", "unavailable"), error_type=type(exc).__name__)
     # Keep this core-owned and additive; plugin reporters receive the same
     # RunResult object and are not asked to interpret or execute the analysis.
     run_result.artifacts["core_agent_analysis"] = run_analysis.to_dict()
@@ -459,6 +488,7 @@ def run(
             "audit": tier2_audit,
         }
         payload["core_agent_analysis"] = run_analysis.to_dict()
+        payload["core_cost_report"] = core_artifacts.to_payload()
     return payload
 
 
