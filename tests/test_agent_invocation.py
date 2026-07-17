@@ -9,6 +9,7 @@ from testpilot.core.orchestrator import (
     AgentResponseValidationError,
     Orchestrator,
 )
+import testpilot.core.orchestrator as orchestrator_module
 
 
 def _runtime():
@@ -77,3 +78,30 @@ def test_disabled_runtime_skips_without_starting_invocation():
         _invoke(orch, "D001")
     assert skipped.value.reason == "no_agent"
     assert orch.usage_ledger.snapshot().invocations == ()
+
+
+def test_ready_runtime_initializes_session_manager_and_keeps_one_shot_callable(
+    monkeypatch,
+):
+    class ProbeManager:
+        def __init__(self):
+            self.probed = False
+            self.calls = 0
+
+        def _load_sdk(self):
+            self.probed = True
+
+        def send_one_shot(self, request, prompt, *, timeout_seconds):
+            self.calls += 1
+            return '{"ok": true}'
+
+    monkeypatch.setattr(orchestrator_module, "CopilotSessionManager", ProbeManager)
+    orch = Orchestrator(
+        project_root=Path(__file__).resolve().parents[1], agent_runtime=_runtime()
+    )
+
+    assert isinstance(orch.session_manager, ProbeManager)
+    assert orch.session_manager.probed is True
+    _, parsed = _invoke(orch, "D001")
+    assert parsed == {"ok": True}
+    assert orch.session_manager.calls == 1

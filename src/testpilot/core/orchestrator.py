@@ -304,6 +304,13 @@ class Orchestrator(OrchestratorRunBackendCompat):
         """Try to create a CopilotSessionManager; return None if SDK unavailable."""
         if CopilotSessionManager is None:
             return None
+        try:
+            manager = CopilotSessionManager()
+            manager._load_sdk()  # probe availability
+            return manager
+        except Exception:
+            log.debug("Copilot SDK unavailable — session foundation disabled")
+            return None
 
     def _invoke_agent_one_shot(
         self,
@@ -373,13 +380,6 @@ class Orchestrator(OrchestratorRunBackendCompat):
 
         self.usage_ledger.finish_invocation(binding, status="completed")
         return raw, parsed
-        try:
-            mgr = CopilotSessionManager()
-            mgr._load_sdk()  # probe availability
-            return mgr
-        except Exception:
-            log.debug("Copilot SDK unavailable — session foundation disabled")
-            return None
 
     def _create_case_session(
         self,
