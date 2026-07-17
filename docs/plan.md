@@ -707,7 +707,20 @@ R1 / R2 / R3 kernel 邊界整理
 
 ---
 
-## 8. Azure OpenAI BYOK 整合計畫（2026-03-27）
+## 8. Azure-only core agent and cost report（2026-07-17）
+
+TestPilot core automatically constructs only an Azure provider when
+`COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_API_KEY`, and `COPILOT_MODEL`
+are complete. Missing key means deterministic/no-agent mode; partial
+configuration is non-blocking and redacted. `COPILOT_PROVIDER_TYPE` is not an
+enable switch. Per-case planning is advisory, tier-2 requires plugin opt-in,
+and deterministic remediation remains plugin-owned. Core writes usage and
+observational benefit metrics under `artifact_dir/agent_usage`; shared run-end
+analysis is not allocated to cases. Custom/skeleton paths report
+`unsupported_execution_path` without core model calls.
+
+The remainder of this section is historical research retained for traceability;
+the current implementation and OpenSpec change are authoritative.
 
 ### 8.1 背景
 
@@ -715,7 +728,7 @@ test team 沒有 GitHub Copilot 存取權限。需要讓 testpilot 建立的 age
 
 ### 8.2 核心發現
 
-**Copilot SDK v0.1.23 原生支援 Azure BYOK**：
+**Copilot SDK v0.1.23 原生支援 Azure BYOK**（歷史研究）：
 
 - `SessionConfig.provider` TypedDict 支援 `type: Literal["openai", "azure", "anthropic"]`
 - `ProviderConfig` 欄位：`type`, `base_url`, `api_key`, `bearer_token`, `wire_api`, `azure`
@@ -744,12 +757,12 @@ copilot
 
 ### 8.4 使用方式
 
-**外層（Copilot CLI 對話，如現在）+ 內層（testpilot session）可各自選擇認證**：
+**歷史 provider 配置研究（不代表目前 core 行為）**：
 
 | 層 | 認證 | 設定方式 |
 |---|---|---|
-| 外層 Copilot CLI | GitHub OAuth（預設）或 Azure BYOK | `COPILOT_PROVIDER_*` env vars |
-| 內層 testpilot session | GitHub OAuth（預設）或 Azure BYOK | agent-config.yaml `provider` 或 env vars |
+| core agent runtime | Azure-only（key 存在才啟用） | `COPILOT_PROVIDER_*` env vars |
+| plugin execution | plugin-owned deterministic path | plugin capability/executor |
 
 兩層完全獨立，互不影響。
 

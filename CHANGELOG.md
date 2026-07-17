@@ -10,6 +10,10 @@ preparation.
 ## [Unreleased]
 
 ### Added
+- Azure-only automatic readiness and core-owned cost/benefit artifacts under
+  `artifact_dir/agent_usage`; per-case planning, capability-gated recovery and
+  run-end analysis now expose direct/shared token totals, deterministic token=0
+  outcomes, and deduplicated `assistant.usage` accounting.
 - `testpilot --version` 除 core 版本與 source ref 外，新增列出所有
   `testpilot.plugins` entry-point 的 distribution version 與 `api_version`；
   單一 plugin metadata/import 失敗時以 `unknown` fail-soft 顯示，不影響其餘
@@ -40,6 +44,10 @@ preparation.
 - 可運行的最小 sample plugin `examples/sample_echo`(獨立 dist `testpilot-sample-echo`,經 `testpilot.plugins` entry-point 被發現、僅依賴 `testpilot.api`、`create_runner`→`run_pipeline` 產出 Pass verdict,含 `register_cli` demo);CI 加真實安裝發現 smoke;dev-guide/README 指向 sample 並修死連結、清 `plugins/wifi_llapi/reports/` 並加 `.gitignore` 防 `plugins/*/reports/` run bundle 再被追蹤(保留 `templates/`;R-21)。對照 #3。
 
 ### Changed
+- Azure activation is environment-driven and core-only: no interactive enable
+  flag or OAuth/provider fallback. Plugin API and `RunResult` remain unchanged;
+  custom/skeleton paths report `unsupported_execution_path`. Benefit metrics are
+  observational and do not claim USD pricing or causal uplift/regression.
 - HTML report 的 WiFi LLAPI Hybrid (tri-band) Summary 版面對齊 xlsx `Summary` sheet:section 移到 KPI/total-case 之下、per-case Summary 表之上;per-band 依 `5G`/`6G`/`2.4G` 分色(列底色 + 左側 3px 色條);每 band 尾端補粗體 **TOTAL** 小計列(取自 `bucket_totals`);隱藏空的 `WiFi.Other` catch-all 列(xlsx 無此欄、真實物件恆對到具體分類;非零時仍顯示並計入 TOTAL)。純 `html_reporter` presentation 層改動,不動 `band_category` 計數邏輯。
 - run_loop 啟動時一律擷取 plugin 的 DUT version manifest 並透過 `RunResult.version_manifest` 傳給 downstream reporters；capture hook 若失敗則 warning 後 fail-soft 續跑、沿用空 manifest fallback。report naming 仍維持 CLI `--dut-fw-ver` 優先、否則取 manifest `git`、再 fallback `DUT-FW-VER`；generic Markdown/HTML reporters 於報告頂部新增預設收合的 `Environment / Versions` 區塊。
 

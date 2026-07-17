@@ -192,8 +192,6 @@ Options:
   --version         Show version and exit.
   -v, --verbose     Enable debug logging.
   --root DIRECTORY  Project root directory.
-  --azure           Use Azure OpenAI API. Prompts for endpoint, key, and model
-                    interactively.
   --update REF      Reinstall and reconcile the managed wheel install from its
                     pinned manifest, then exit. REF is accepted but cross-
                     version update is not yet implemented; the currently-
@@ -219,8 +217,6 @@ Options:
   --version         Show version and exit.
   -v, --verbose     Enable debug logging.
   --root DIRECTORY  Project root directory.
-  --azure           Use Azure OpenAI API. Prompts for endpoint, key, and model
-                    interactively.
   --update REF      Reinstall and reconcile the managed wheel install from its
                     pinned manifest, then exit. REF is accepted but cross-
                     version update is not yet implemented; the currently-
@@ -240,20 +236,25 @@ Repository skills for agent-assisted workflows live under `skills/`.
 
 ### Azure OpenAI (BYOK)
 
-The `--azure` flag enables Bring-Your-Own-Key Azure OpenAI authentication.
-It interactively prompts for endpoint, API key, and model, then exports the
-standard `COPILOT_PROVIDER_*` environment variables for the run. API keys and
-endpoints are never committed to version control; supply secrets through
-environment variables or your shell profile.
+TestPilot core automatically uses Azure when all required values are present.
+Without an API key it runs in deterministic/no-agent mode; a key without an
+endpoint or deployment produces a non-blocking misconfiguration notice.
 
 ```bash
-testpilot --azure list-plugins
-```
-
-```bash
-# Optional (default: 2024-10-21):
+export COPILOT_PROVIDER_BASE_URL=https://your-resource.openai.azure.com
+export COPILOT_PROVIDER_API_KEY='<set in shell profile or secret store>'
+export COPILOT_MODEL=your-deployment-name
 export COPILOT_PROVIDER_AZURE_API_VERSION=2024-10-21
+testpilot run <plugin_name>
 ```
+
+`COPILOT_PROVIDER_TYPE` is ignored as an enable switch; core constructs only
+the Azure provider. Azure deployment selection is independent of plugin runner
+labels. Per-case planning is advisory, tier-2 recovery requires plugin opt-in,
+and deterministic remediation remains plugin-owned. Core-owned usage and
+observational benefit metrics are written under `artifact_dir/agent_usage`;
+shared run-analysis tokens are not allocated to cases. Custom/skeleton runners
+report `unsupported_execution_path` and make no core model calls.
 
 ### Writing a Plugin
 
@@ -443,14 +444,24 @@ testpilot run <plugin>
 
 ### Azure OpenAI（BYOK）
 
-`--azure` flag 啟用 Bring-Your-Own-Key 的 Azure OpenAI 認證，會互動式詢問
-endpoint、API key 與 model，再以標準 `COPILOT_PROVIDER_*` 環境變數提供給該次
-執行。API key 與 endpoint 不得提交版本控制；secrets 一律透過環境變數或 shell
-profile 注入。
+當 Azure endpoint、API key 與 deployment 都存在時，TestPilot core 自動啟用
+Azure；沒有 key 時使用 deterministic/no-agent mode，缺少其他欄位則只產生
+非阻斷的 misconfigured 狀態。`COPILOT_PROVIDER_TYPE` 不作為啟用開關，core
+只建立 Azure provider。
 
 ```bash
-testpilot --azure list-plugins
+export COPILOT_PROVIDER_BASE_URL=https://your-resource.openai.azure.com
+export COPILOT_PROVIDER_API_KEY='<set in shell profile or secret store>'
+export COPILOT_MODEL=your-deployment-name
+export COPILOT_PROVIDER_AZURE_API_VERSION=2024-10-21
+testpilot run <plugin_name>
 ```
+
+每案 planning 僅供 advisory；tier-2 需 plugin opt-in，deterministic
+remediation 仍由 plugin 負責。core 報表位於 `artifact_dir/agent_usage`，共享
+run-end analysis token 不分攤到個案；custom/skeleton path 回報
+`unsupported_execution_path` 且不呼叫 core model。效益指標為 observational，
+不宣稱因果 uplift/regression。
 
 ### 撰寫 Plugin
 

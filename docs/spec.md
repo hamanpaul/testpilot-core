@@ -24,6 +24,22 @@ TestPilot 是一套 plugin-based 嵌入式裝置測試自動化框架，面向 p
 
 `custom_agents`、`skills`、`mcp_servers` 等欄位已存在於 request / 規格層，但目前 orchestrator 建 session 時尚未預設自動接線，因此這些部分仍屬 extension surface，而不是完整 current-state hot path。
 
+### Azure-only core cost reporting
+
+Core resolves Azure readiness from environment variables only. A missing API key
+selects deterministic/no-agent mode; a partial key/endpoint/deployment is a
+non-blocking misconfigured state; a complete configuration enables Azure. Core
+never falls back to OAuth or another provider, and never exposes secrets through
+plugin context or artifacts. Agent calls are tool-denied and the first provider,
+SDK, or auth failure opens a run circuit; malformed output does not. Per-case
+planning is advisory, tier-2 recovery requires explicit plugin capability and
+executor support, and deterministic remediation remains plugin-owned. After all
+final verdicts, one bounded run-end analysis computes observational benefit
+metrics. Usage is authoritative from `assistant.usage`, deduplicated, and
+reported in core-owned `artifact_dir/agent_usage` artifacts; shared analysis
+tokens are not allocated to cases. Custom and skeleton runners report
+`unsupported_execution_path` with zero core calls.
+
 ### 核心設計原則
 
 - **Kernel 與 Control Plane 分層**：Copilot SDK 處理 agent/control-plane；`plugin.evaluate()` 與正式 rerun 結果仍是最終 verdict 來源。
