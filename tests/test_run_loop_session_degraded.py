@@ -199,6 +199,28 @@ def test_run_analyzes_after_all_cases_and_before_reporter(tmp_path: Path) -> Non
     assert events.index("run_analysis") < events.index("reporter")
 
 
+def test_plugin_reporter_receives_run_result_before_core_analysis_attachment(
+    tmp_path: Path,
+) -> None:
+    observed: list[bool] = []
+    plugin = _FakePlugin()
+    reporter = plugin.create_reporter()
+    original = reporter.build_reports
+
+    def build_reports(run_result: Any) -> dict[str, Any]:
+        observed.append("core_agent_analysis" in run_result.artifacts)
+        return original(run_result)
+
+    reporter.build_reports = build_reports  # type: ignore[method-assign]
+    plugin.create_reporter = lambda: reporter  # type: ignore[method-assign]
+    orch = _StubOrchestrator(tmp_path, {"degraded": False, "reason": ""}, plugin=plugin)
+
+    payload = run_loop.run(orch, "fake", None, None)
+
+    assert observed == [False]
+    assert "core_agent_analysis" in payload
+
+
 def test_run_payload_preserves_manifest_when_cli_fw_ver_wins_naming(tmp_path: Path) -> None:
     plugin = _FakePlugin({"git": "deadbeef", "image": "BGW720"})
     orch = _StubOrchestrator(

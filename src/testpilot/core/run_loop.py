@@ -456,15 +456,15 @@ def run(
     except Exception as exc:
         log.warning("core cost artifacts failed; continuing", exc_info=True)
         core_artifacts = CoreCostArtifacts(status="failed", analysis_status=getattr(run_analysis, "status", "unavailable"), error_type=type(exc).__name__)
-    # Keep this core-owned and additive; plugin reporters receive the same
-    # RunResult object and are not asked to interpret or execute the analysis.
-    run_result.artifacts["core_agent_analysis"] = run_analysis.to_dict()
-
     reporter = plugin.create_reporter()
     build_reports = getattr(reporter, "build_reports", None)
     if not callable(build_reports):
         raise RuntimeError(f"{plugin_name} reporter does not implement build_reports()")
     payload = build_reports(run_result)
+    # Keep the plugin contract unchanged: the reporter sees the RunResult
+    # exactly as produced by the core run.  Core-owned analysis and cost
+    # pointers are attached only after plugin reporting has completed.
+    run_result.artifacts["core_agent_analysis"] = run_analysis.to_dict()
     if isinstance(payload, dict):
         payload.setdefault(
             "agent_session_degraded",
