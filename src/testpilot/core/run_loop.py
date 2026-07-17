@@ -407,6 +407,30 @@ def run(
         version_manifest=version_manifest,
     )
 
+    # Analysis is deliberately a run-end operation: all case retry records
+    # above already contain their final verdicts, and this snapshot excludes
+    # the analysis calls themselves from per-case direct usage.
+    from testpilot.core.assistance_metrics import compute_assistance_metrics
+
+    direct_usage = orchestrator.usage_ledger.snapshot()
+    assistance_metrics = compute_assistance_metrics(case_records)
+    analysis_metrics = {
+        **assistance_metrics,
+        "cases": len(case_records),
+        "pass_count": sum(bool(record.retry.verdict) for record in case_records),
+        "fail_count": sum(not bool(record.retry.verdict) for record in case_records),
+        "agent_tokens": direct_usage.model_tokens(),
+        "duration_seconds": round(max(0.0, time.monotonic() - run_started_monotonic), 3),
+    }
+    run_analysis = orchestrator._analyze_run(
+        run_result=run_result,
+        metrics=analysis_metrics,
+        direct_usage=direct_usage,
+    )
+    # Keep this core-owned and additive; plugin reporters receive the same
+    # RunResult object and are not asked to interpret or execute the analysis.
+    run_result.artifacts["core_agent_analysis"] = run_analysis.to_dict()
+
     reporter = plugin.create_reporter()
     build_reports = getattr(reporter, "build_reports", None)
     if not callable(build_reports):
@@ -434,6 +458,7 @@ def run(
             "agent_recovered_case_ids": agent_recovered_case_ids,
             "audit": tier2_audit,
         }
+        payload["core_agent_analysis"] = run_analysis.to_dict()
     return payload
 
 
