@@ -127,12 +127,19 @@ def compute_assistance_metrics(records: Sequence[CaseRunRecord]) -> dict[str, di
     initial = sum(summary.initial_pass for summary in summaries)
     final = sum(summary.final_pass for summary in summaries)
     deterministic = [summary for summary in summaries if summary.deterministic_records]
-    agent = [summary for summary in summaries if summary.agent_intervened]
+    recovery_pairs = [
+        (record, summary)
+        for record, summary in zip(records, summaries, strict=True)
+        if not summary.initial_pass
+    ]
+    recovery_records = [record for record, _summary in recovery_pairs]
+    recovery_summaries = [summary for _record, summary in recovery_pairs]
+    agent = [summary for summary in recovery_summaries if summary.agent_intervened]
     accepted = sum(summary.agent_plans_accepted for summary in agent)
-    invocation_count = sum(_agent_invocation_count(record) for record in records)
-    gate_attempts = sum(summary.agent_gate_attempts for summary in summaries)
-    gate_passes = sum(summary.agent_gate_passes for summary in summaries)
-    recovery_candidates = [summary for summary in summaries if summary.agent_gate_passes]
+    invocation_count = sum(_agent_invocation_count(record) for record in recovery_records)
+    gate_attempts = sum(summary.agent_gate_attempts for summary in recovery_summaries)
+    gate_passes = sum(summary.agent_gate_passes for summary in recovery_summaries)
+    recovery_candidates = [summary for summary in recovery_summaries if summary.agent_gate_passes]
     initial_fraction = initial / count if count else 0.0
     final_fraction = final / count if count else 0.0
     return {

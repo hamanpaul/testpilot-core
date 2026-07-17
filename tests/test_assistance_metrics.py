@@ -111,6 +111,21 @@ def test_agent_recovery_requires_invocation_gate_pass_and_final_pass():
     assert metrics["post_gate_case_failure_rate"] == _metric(numerator=1, denominator=2, rate_percent=50.0)
 
 
+def test_agent_recovery_rates_exclude_initial_pass_cases():
+    metrics = compute_assistance_metrics([
+        _record("D001", attempts=[True], final=True, agent_recovered=True,
+                tier2_audit=[_audit()]),
+        _record("D002", attempts=[False, True], final=True, agent_recovered=True,
+                tier2_audit=[_audit()]),
+    ])
+    assert metrics["agent_recovery_observed_resolution_rate"] == _metric(
+        numerator=1, denominator=1, rate_percent=100.0
+    )
+    assert metrics["post_gate_case_failure_rate"] == _metric(
+        numerator=0, denominator=1, rate_percent=0.0
+    )
+
+
 def test_empty_denominator_is_unavailable_not_zero():
     metric = compute_assistance_metrics([_record("D001", attempts=[True], final=True)])[
         "agent_recovery_plan_acceptance_rate"
