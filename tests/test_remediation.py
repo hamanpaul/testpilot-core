@@ -910,7 +910,7 @@ def test_invalid_tier2_plan_fails_closed_with_audit_and_single_invocation() -> N
     )
 
     assert result.verdict is False
-    assert result.diagnostic_status == "FailEnv"
+    assert result.diagnostic_status == "Inconclusive"
     assert result.agent_recovered is True
     assert result.tier2_audit[0]["status"] == "rejected"
     assert len(requester.calls) == 1

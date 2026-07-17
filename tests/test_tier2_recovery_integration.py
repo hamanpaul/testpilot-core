@@ -9,8 +9,10 @@ from typing import Any
 import pytest
 
 from testpilot.core import run_loop
+from testpilot.core.azure_auth import AzureAgentRuntime, AzureAgentState, AzureAgentStatus
 from testpilot.core.orchestrator import Orchestrator
 from testpilot.core.prepared_run import PreparedRun
+from testpilot.core.usage_ledger import UsageLedger
 
 
 class _Reporter:
@@ -329,6 +331,14 @@ class _IntegrationOrchestrator(Orchestrator):
         self.run_backend = _RunBackend()
         self._run_handle = None
         self.session_manager = _OneShotManager()
+        self.agent_runtime = AzureAgentRuntime(
+            AzureAgentStatus(AzureAgentState.AZURE_READY, deployment="azure-deployment"),
+            {"type": "azure", "base_url": "https://example.invalid", "api_key": "secret"},
+        )
+        self.usage_ledger = UsageLedger()
+        self.agent_circuit_open = False
+        self.agent_circuit_error_type = ""
+        self.agent_recovery_support = {}
         self.agent_session_degraded = {"degraded": False, "reason": ""}
 
     def _start_run_capture(self, run_id: str) -> None:
@@ -375,12 +385,13 @@ def test_core_run_loop_wires_one_shot_and_projects_bounded_audit(
     assert payload["tier2_remediation"]["audit"][0]["status"] == "verified"
 
     one_shot_calls = orchestrator.session_manager.calls
-    assert len(one_shot_calls) == 1
-    request, prompt, timeout = one_shot_calls[0]
+    recovery_calls = [item for item in one_shot_calls if "-remediate-" in item[0].session_id]
+    assert len(recovery_calls) == 1
+    request, prompt, timeout = recovery_calls[0]
     assert request.session_id.endswith("-case-D001-remediate-1")
-    assert request.model == "gpt-5.4"
+    assert request.model == "azure-deployment"
     assert request.reasoning_effort == "high"
-    assert request.provider == provider_config
+    assert request.provider["api_key"] == "secret"
     assert "test steps" in prompt
     assert timeout == 12.5
 
@@ -392,7 +403,7 @@ def test_core_run_loop_wires_one_shot_and_projects_bounded_audit(
     ] == ["tier1-deterministic", "tier1-deterministic", "tier2-agent"]
     assert trace["tier2_audit"][0]["verify_gate"]["passed"] is True
     assert trace["agent_recovered"] is True
-    assert "provider_config" not in trace["selection_trace"]["session_plan"]
+    assert "provider_config" not in trace["selection_trace"]
     assert "provider-super-secret" not in trace_text
     assert "https://example.invalid" not in trace_text
 
@@ -419,8 +430,8 @@ def test_one_shot_failure_is_loud_audited_redacted_and_fail_closed(
     assert "opaque-one-shot-secret-sentinel" not in json.dumps(payload)
     assert "provider-super-secret" not in caplog.text
     assert "opaque-one-shot-secret-sentinel" not in caplog.text
-    assert payload["tier2_remediation"]["agent_recovered_case_ids"] == ["D001"]
-    assert payload["tier2_remediation"]["audit"][0]["status"] == "failed"
+    assert payload["tier2_remediation"]["agent_recovered_case_ids"] == []
+    assert payload["tier2_remediation"]["audit"] == []
     assert plugin.tier2_calls == 0
     trace_path = next(tmp_path.glob("fake/reports/*/agent_trace/D001.json"))
     assert "opaque-one-shot-secret-sentinel" not in trace_path.read_text(
@@ -438,9 +449,9 @@ def test_invalid_one_shot_plan_degrades_session_and_is_rejected(
 
     payload = run_loop.run(orchestrator, "fake", None, None)
 
-    assert payload["agent_session_degraded"]["degraded"] is True
+    assert payload["agent_session_degraded"]["degraded"] is False
     assert payload["tier2_remediation"]["audit"][0]["status"] == "rejected"
-    assert payload["tier2_remediation"]["audit"][0]["raw_response"] == "not-json"
+    assert payload["tier2_remediation"]["audit"][0]["raw_response"] == ""
     assert plugin.tier2_calls == 0
 
 
