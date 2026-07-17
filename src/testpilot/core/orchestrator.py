@@ -421,7 +421,7 @@ class Orchestrator(OrchestratorRunBackendCompat):
                 run_id=run_id,
                 case_id=case_id,
                 purpose="case_planning",
-                session_id=build_session_id(run_id, case_id=case_id, purpose="planning"),
+                session_id=str(session_plan["session_id"]),
                 prompt=prompt,
                 timeout_seconds=60.0,
                 validate=parse_case_planning_response,

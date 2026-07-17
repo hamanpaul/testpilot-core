@@ -62,17 +62,22 @@ def _step_summary(value: Any) -> list[dict[str, Any]]:
 
 
 def build_case_planning_prompt(*, case: Mapping[str, Any], execution_policy: Mapping[str, Any], run_metadata: Mapping[str, Any]) -> str:
-    case_payload = {"id": _text(case.get("id"), 200), "name": _text(case.get("name"), 500), "bands": _strings(case.get("bands"), limit=8), "steps": _step_summary(case.get("steps")), "pass_criteria": _strings(case.get("pass_criteria"), limit=32)}
-    policy_payload = {key: execution_policy[key] for key in ("mode", "max_concurrency", "retry", "timeout", "failure_policy") if key in execution_policy}
-    metadata = {key: run_metadata[key] for key in ("run_id", "plugin_name", "case_ordinal", "case_count") if key in run_metadata}
-    prompt = (
-        "Provide advisory planning only. You cannot change runner, commands, pass criteria, retry policy, or execute tools. "
-        "Return exactly one JSON object with keys risk_summary, attention_points, expected_observations.\n"
-        + json.dumps({"case": case_payload, "execution_policy": policy_payload, "run_metadata": metadata}, ensure_ascii=False, separators=(",", ":"))
-    )
-    if len(prompt) > 24_000:
-        raise CasePlanningValidationError("planning prompt exceeds bounded size")
-    return prompt
+    try:
+        case_payload = {"id": _text(case.get("id"), 200), "name": _text(case.get("name"), 500), "bands": _strings(case.get("bands"), limit=8), "steps": _step_summary(case.get("steps")), "pass_criteria": _strings(case.get("pass_criteria"), limit=32)}
+        policy_payload = {key: execution_policy[key] for key in ("mode", "max_concurrency", "retry", "timeout", "failure_policy") if key in execution_policy}
+        metadata = {key: run_metadata[key] for key in ("run_id", "plugin_name", "case_ordinal", "case_count") if key in run_metadata}
+        prompt = (
+            "Provide advisory planning only. You cannot change runner, commands, pass criteria, retry policy, or execute tools. "
+            "Return exactly one JSON object with keys risk_summary, attention_points, expected_observations.\n"
+            + json.dumps({"case": case_payload, "execution_policy": policy_payload, "run_metadata": metadata}, ensure_ascii=False, separators=(",", ":"))
+        )
+        if len(prompt) > 24_000:
+            raise CasePlanningValidationError("planning prompt exceeds bounded size")
+        return prompt
+    except CasePlanningValidationError:
+        raise
+    except Exception as exc:
+        raise CasePlanningValidationError("planning input cannot be serialized") from exc
 
 
 def parse_case_planning_response(raw_response: str) -> CasePlanningAdvisory:
@@ -89,4 +94,6 @@ def parse_case_planning_response(raw_response: str) -> CasePlanningAdvisory:
         raise CasePlanningValidationError("planning response values are invalid")
     if len(attention) > 16 or len(expected) > 16 or any(not isinstance(x, str) or len(x) > 1_000 for x in [*attention, *expected]):
         raise CasePlanningValidationError("planning response values are unbounded")
+    if any(_SECRET_PATTERN.search(item) for item in [risk, *attention, *expected]):
+        raise CasePlanningValidationError("planning response contains secret-like data")
     return CasePlanningAdvisory(risk, tuple(attention), tuple(expected))
