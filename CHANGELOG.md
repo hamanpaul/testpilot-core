@@ -23,6 +23,10 @@ preparation.
   等無 tool 設定、強制 deny-all permission handler、明確訂定
   `github-copilot-sdk>=0.1.23,<0.2` surface，並在 timeout 時先 abort、最後依 SDK
   實際 session ID delete，避免 tier-2 planning 留下未受控背景工作（#4）。
+- runtime remediation 改為 deterministic tier-1 first；連續兩次 tier-1 未恢復環境後，
+  僅在 retry gap 升級一次 tier-2，執行 plugin-advertised plan 後由 core 強制
+  `verify_env`。retry budget、invocation/action 上限、test-semantics deep-copy guard、
+  bounded audit 與 `agent-recovered` 介入標記均由 core state machine 強制（#4）。
 
 ## [0.3.4] - 2026-07-08
 

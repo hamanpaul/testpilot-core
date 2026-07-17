@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from testpilot.core.case_utils import safe_float, safe_int, stringify_step_command
-from testpilot.core.hook_policy import HookContext, HookDispatcher, HookResult
+from testpilot.core.hook_policy import HookContext, HookDispatcher
 from testpilot.core.runner_selector import RunnerSelector
 
 log = logging.getLogger(__name__)
@@ -29,6 +29,8 @@ class RetryResult:
     diagnostic_status: str = ""
     remediation_history: list[dict[str, Any]] | None = None
     failure_snapshot: dict[str, Any] | None = None
+    tier2_audit: list[dict[str, Any]] | None = None
+    agent_recovered: bool = False
 
 
 class ExecutionEngine:
@@ -292,11 +294,21 @@ class ExecutionEngine:
         final_comment = ""
         final_failure_snapshot: dict[str, Any] | None = None
         remediation_history: list[dict[str, Any]] = []
+        tier2_audit: list[dict[str, Any]] = []
+        agent_recovered = False
 
         # pre_case hook
+        pre_case_payload = {
+            "execution_policy": execution_policy,
+            "max_attempts": max_attempts,
+        }
         self.hooks.dispatch(
             self._hook_ctx("pre_case", case, runner),
-            {"execution_policy": execution_policy, "max_attempts": max_attempts},
+            pre_case_payload,
+        )
+        max_attempts = max(
+            1,
+            safe_int(pre_case_payload.get("max_attempts"), max_attempts),
         )
 
         for attempt_index in range(1, max_attempts + 1):
@@ -307,13 +319,41 @@ class ExecutionEngine:
                     "previous_attempts": attempts,
                     "attempt_index": attempt_index,
                 }
-                self.hooks.dispatch(
+                retry_hook_result = self.hooks.dispatch(
                     self._hook_ctx("on_retry", case, runner, attempt_index),
                     retry_payload,
                 )
-                trace_entry = retry_payload.get("remediation_trace_entry")
-                if isinstance(trace_entry, dict):
-                    remediation_history.append(dict(trace_entry))
+                raw_history = retry_payload.get("remediation_history")
+                if isinstance(raw_history, list):
+                    remediation_history = [
+                        dict(item)
+                        for item in raw_history
+                        if isinstance(item, dict)
+                    ]
+                else:
+                    trace_entry = retry_payload.get("remediation_trace_entry")
+                    if isinstance(trace_entry, dict):
+                        remediation_history.append(dict(trace_entry))
+                raw_tier2_audit = retry_payload.get("tier2_audit")
+                if isinstance(raw_tier2_audit, list):
+                    tier2_audit = [
+                        dict(item)
+                        for item in raw_tier2_audit
+                        if isinstance(item, dict)
+                    ]
+                agent_recovered = bool(
+                    retry_payload.get("agent_recovered", agent_recovered)
+                )
+                retry_failure = retry_payload.get("failure_snapshot")
+                if isinstance(retry_failure, dict):
+                    final_failure_snapshot = dict(retry_failure)
+                if not retry_hook_result.proceed:
+                    final_verdict = False
+                    final_comment = (
+                        retry_hook_result.advice
+                        or "on_retry hook halted before case execution"
+                    )
+                    break
 
             timeout = self.attempt_timeout_seconds(
                 steps_count=steps_count,
@@ -380,9 +420,16 @@ class ExecutionEngine:
             "diagnostic_status": diagnostic_status,
             "remediation_history": remediation_history,
             "failure_snapshot": final_failure_snapshot,
+            "tier2_audit": tier2_audit,
+            "agent_recovered": agent_recovered,
         }
         self.hooks.dispatch(
-            self._hook_ctx("post_case", case, runner),
+            self._hook_ctx(
+                "post_case",
+                case,
+                runner,
+                max(1, attempts_used),
+            ),
             post_case_payload,
         )
         remediation_history = [
@@ -393,6 +440,21 @@ class ExecutionEngine:
         maybe_failure_snapshot = post_case_payload.get("failure_snapshot")
         if isinstance(maybe_failure_snapshot, dict):
             final_failure_snapshot = dict(maybe_failure_snapshot)
+        raw_tier2_audit = post_case_payload.get("tier2_audit")
+        if isinstance(raw_tier2_audit, list):
+            tier2_audit = [
+                dict(item)
+                for item in raw_tier2_audit
+                if isinstance(item, dict)
+            ]
+        agent_recovered = bool(
+            post_case_payload.get("agent_recovered", agent_recovered)
+        )
+        diagnostic_status = self._classify_diagnostic_status(
+            verdict=final_verdict,
+            remediation_history=remediation_history,
+            failure_snapshot=final_failure_snapshot,
+        )
 
         return RetryResult(
             verdict=final_verdict,
@@ -405,6 +467,8 @@ class ExecutionEngine:
             diagnostic_status=diagnostic_status,
             remediation_history=remediation_history,
             failure_snapshot=final_failure_snapshot,
+            tier2_audit=tier2_audit,
+            agent_recovered=agent_recovered,
         )
 
     @staticmethod

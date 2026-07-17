@@ -8,13 +8,27 @@ as a post-run aggregation step, not during individual case execution.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field, is_dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from testpilot.core.advisory import AdvisoryCollector, AdvisoryOutput
 from testpilot.core.hook_policy import HookContext, HookResult
+from testpilot.core.tier2_recovery import (
+    Tier2PlanValidationError,
+    Tier2RecoveryAudit,
+    Tier2RecoveryContext,
+    build_tier2_prompt,
+    parse_tier2_plan,
+    sanitize_tier2_value,
+)
 
 log = logging.getLogger(__name__)
+
+
+def _sanitized_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    sanitized = sanitize_tier2_value(value)
+    return dict(sanitized) if isinstance(sanitized, Mapping) else {}
 
 
 @dataclass(slots=True)
@@ -171,7 +185,7 @@ class FailureSnapshot:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return _sanitized_mapping(asdict(self))
 
 
 @dataclass(slots=True)
@@ -187,7 +201,7 @@ class RuntimeRemediationAction:
     source: str = "builtin-fallback"
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return _sanitized_mapping(asdict(self))
 
 
 @dataclass(slots=True)
@@ -203,7 +217,7 @@ class RemediationDecision:
     failure: FailureSnapshot | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        return _sanitized_mapping({
             "case_id": self.case_id,
             "attempt_index": self.attempt_index,
             "summary": self.summary,
@@ -211,7 +225,7 @@ class RemediationDecision:
             "approved": self.approved,
             "failure": self.failure.to_dict() if self.failure else None,
             "actions": [action.to_dict() for action in self.actions],
-        }
+        })
 
 
 @dataclass(slots=True)
@@ -226,10 +240,11 @@ class RemediationTraceEntry:
     executed_actions: list[dict[str, Any]] = field(default_factory=list)
     applied: bool = False
     verify_after: bool | None = None
+    core_verify_after: bool | None = None
     comment: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return _sanitized_mapping(asdict(self))
 
 
 def _as_mapping(value: Any) -> dict[str, Any]:
@@ -238,6 +253,17 @@ def _as_mapping(value: Any) -> dict[str, Any]:
     if is_dataclass(value):
         return asdict(value)
     return {}
+
+
+def _public_case_semantics(case: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the plugin-visible case definition without runtime scratch fields."""
+    return deepcopy(
+        {
+            str(key): value
+            for key, value in case.items()
+            if not str(key).startswith("_")
+        }
+    )
 
 
 def _coerce_failure_snapshot(
@@ -251,13 +277,16 @@ def _coerce_failure_snapshot(
 ) -> FailureSnapshot:
     data = _as_mapping(raw)
     metadata = data.get("metadata")
+    default_category = (
+        "environment" if phase in {"setup_env", "verify_env"} else "inconclusive"
+    )
     return FailureSnapshot(
         case_id=str(data.get("case_id", case_id)),
         attempt_index=int(data.get("attempt_index", attempt_index)),
         phase=str(data.get("phase", phase)),
         comment=str(data.get("comment", comment)),
         step_id=str(data.get("step_id", step_id) or ""),
-        category=str(data.get("category", "inconclusive") or "inconclusive"),
+        category=str(data.get("category", default_category) or default_category),
         reason_code=str(data.get("reason_code", "") or ""),
         device=str(data.get("device", "") or ""),
         band=str(data.get("band", "") or ""),
@@ -315,7 +344,7 @@ def _coerce_decision(
 
 
 class RuntimeRemediationCoordinator:
-    """Hook-driven coordinator for safe in-run remediation."""
+    """Tier-1-first, retry-only coordinator for bounded environment recovery."""
 
     def __init__(
         self,
@@ -323,66 +352,220 @@ class RuntimeRemediationCoordinator:
         plugin: Any,
         topology: Any,
         policy: Mapping[str, Any] | None = None,
+        tier2_requester: Callable[[str, dict[str, Any]], str | None] | None = None,
     ) -> None:
         self.plugin = plugin
         self.topology = topology
         self.policy = dict(policy or {})
+        self.tier2_requester = tier2_requester
         allowed = self.policy.get("allowed_actions")
         if isinstance(allowed, Sequence) and not isinstance(allowed, (str, bytes)):
-            self.allowed_actions = {str(item).strip() for item in allowed if str(item).strip()}
+            self.allowed_actions = {
+                str(item).strip() for item in allowed if str(item).strip()
+            }
         else:
             self.allowed_actions = set()
-        self.max_actions_per_attempt = max(1, int(self.policy.get("max_actions_per_attempt", 3)))
+        self.max_actions_per_attempt = max(
+            1,
+            self._policy_int(self.policy.get("max_actions_per_attempt"), 3),
+        )
         self.enabled = bool(self.policy.get("enabled", False))
+
+        raw_tier2 = self.policy.get("tier2")
+        self.tier2_policy = dict(raw_tier2) if isinstance(raw_tier2, Mapping) else {}
+        self.tier2_enabled = self.enabled and bool(
+            self.tier2_policy.get("enabled", False)
+        )
+        self.tier2_trigger_failures = max(
+            1,
+            self._policy_int(
+                self.tier2_policy.get("escalate_after_tier1_failures"),
+                2,
+            ),
+        )
+        self.tier2_max_invocations = max(
+            0,
+            self._policy_int(
+                self.tier2_policy.get("max_invocations_per_case"),
+                1,
+            ),
+        )
+        self.tier2_max_actions = max(
+            0,
+            self._policy_int(self.tier2_policy.get("max_actions"), 3),
+        )
+        self.tier2_max_total_attempts = max(
+            1,
+            self._policy_int(
+                self.tier2_policy.get("max_total_attempts"),
+                self.tier2_trigger_failures + 2,
+            ),
+        )
+        minimum_total_attempts = self.tier2_trigger_failures + 2
+        if (
+            self.tier2_enabled
+            and self.tier2_max_total_attempts < minimum_total_attempts
+        ):
+            raise ValueError(
+                "tier2.max_total_attempts must be at least "
+                f"{minimum_total_attempts} when escalation requires "
+                f"{self.tier2_trigger_failures} tier-1 failures"
+            )
         self._state: dict[str, dict[str, Any]] = {}
 
+    @staticmethod
+    def _policy_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _new_case_state() -> dict[str, Any]:
+        return {
+            "pending_decision": None,
+            "failure_snapshot": None,
+            "remediation_history": [],
+            "tier1_failure_streak": 0,
+            "last_tier1": None,
+            "tier2_invocations": 0,
+            "tier2_audit": [],
+            "agent_recovered": False,
+        }
+
     def _case_state(self, case_id: str) -> dict[str, Any]:
-        return self._state.setdefault(
-            case_id,
-            {
-                "pending_decision": None,
-                "failure_snapshot": None,
-                "remediation_history": [],
-            },
-        )
+        return self._state.setdefault(case_id, self._new_case_state())
+
+    @staticmethod
+    def _project_state(state: dict[str, Any], data: dict[str, Any]) -> None:
+        data["remediation_history"] = [
+            dict(item) for item in state["remediation_history"]
+        ]
+        data["failure_snapshot"] = state.get("failure_snapshot")
+        data["tier2_audit"] = [dict(item) for item in state["tier2_audit"]]
+        data["agent_recovered"] = bool(state["agent_recovered"])
 
     def handle_pre_case(self, ctx: HookContext, data: dict[str, Any]) -> HookResult:
         state = self._case_state(ctx.case_id)
-        state["pending_decision"] = None
-        state["failure_snapshot"] = None
-        state["remediation_history"] = []
-        data["remediation_history"] = []
+        state.clear()
+        state.update(self._new_case_state())
+        if self.tier2_enabled:
+            data["max_attempts"] = self.tier2_max_total_attempts
+        self._project_state(state, data)
         return HookResult()
+
+    def _consume_last_tier1(
+        self,
+        state: dict[str, Any],
+        *,
+        attempt_index: int,
+        env_gate_passed: bool,
+    ) -> None:
+        last = state.get("last_tier1")
+        if not isinstance(last, Mapping):
+            return
+        if int(last.get("attempt_index", -1)) != attempt_index:
+            return
+        history_index = self._policy_int(last.get("history_index"), -1)
+        if 0 <= history_index < len(state["remediation_history"]):
+            state["remediation_history"][history_index][
+                "core_verify_after"
+            ] = env_gate_passed
+        if env_gate_passed:
+            state["tier1_failure_streak"] = 0
+        elif not bool(last.get("counted", False)):
+            self._record_tier1_failure(state, reason="core verify_env failed")
+        state["last_tier1"] = None
+
+    def _record_tier1_failure(
+        self,
+        state: dict[str, Any],
+        *,
+        reason: str,
+    ) -> None:
+        state["tier1_failure_streak"] += 1
+        log.info(
+            "tier-1 deterministic failure %d/%d: %s",
+            state["tier1_failure_streak"],
+            self.tier2_trigger_failures,
+            reason,
+        )
 
     def handle_on_failure(self, ctx: HookContext, data: dict[str, Any]) -> HookResult:
         if not self.enabled:
             return HookResult()
 
         case = _as_mapping(data.get("case"))
-        plugin_failure = case.get("_last_failure")
         snapshot = _coerce_failure_snapshot(
-            plugin_failure,
+            case.get("_last_failure"),
             case_id=ctx.case_id,
             attempt_index=ctx.attempt_index,
             phase=str(data.get("phase", "failure")),
             comment=str(data.get("comment", "") or ""),
             step_id=ctx.step_id or "",
         )
-        data["failure_snapshot"] = snapshot.to_dict()
         state = self._case_state(ctx.case_id)
         state["failure_snapshot"] = snapshot.to_dict()
+        data["failure_snapshot"] = snapshot.to_dict()
+        eligible = snapshot.category in {"environment", "session"}
 
-        if snapshot.category not in {"environment", "session"}:
+        self._consume_last_tier1(
+            state,
+            attempt_index=ctx.attempt_index,
+            env_gate_passed=not eligible,
+        )
+        if not eligible:
             state["pending_decision"] = None
+            self._project_state(state, data)
             return HookResult(advice=snapshot.comment)
 
-        decision = self._request_decision(case=case, snapshot=snapshot, runner=ctx.runner)
+        log.info(
+            "env-recovery eligible case=%s category=%s reason=%s",
+            ctx.case_id,
+            snapshot.category,
+            sanitize_tier2_value(snapshot.reason_code),
+        )
+        if (
+            self.tier2_enabled
+            and state["tier1_failure_streak"] >= self.tier2_trigger_failures
+        ):
+            state["pending_decision"] = None
+            self._project_state(state, data)
+            return HookResult(advice="tier-2 escalation ready")
+
+        decision = self._request_tier1_decision(
+            case=case,
+            snapshot=snapshot,
+            runner=ctx.runner,
+        )
         if decision is None or not decision.approved:
             state["pending_decision"] = None
+            if self.tier2_enabled:
+                miss = RemediationTraceEntry(
+                    case_id=ctx.case_id,
+                    attempt_index=ctx.attempt_index,
+                    decision_source="tier1-deterministic",
+                    summary="no valid deterministic tier-1 decision",
+                    failure_snapshot=snapshot.to_dict(),
+                    applied=False,
+                    comment="tier-1 decision unavailable or rejected",
+                )
+                state["remediation_history"].append(miss.to_dict())
+                self._record_tier1_failure(
+                    state,
+                    reason="no valid deterministic decision",
+                )
+            self._project_state(state, data)
             return HookResult(advice=snapshot.comment)
 
         state["pending_decision"] = decision
         data["remediation_decision"] = decision.to_dict()
+        self._project_state(state, data)
+        log.info(
+            "tier-1 decision case=%s actions=%s",
+            ctx.case_id,
+            [action.executor_key for action in decision.actions],
+        )
         return HookResult(advice=decision.summary or snapshot.comment)
 
     def handle_on_retry(self, ctx: HookContext, data: dict[str, Any]) -> HookResult:
@@ -390,88 +573,131 @@ class RuntimeRemediationCoordinator:
             return HookResult()
 
         state = self._case_state(ctx.case_id)
+        case = _as_mapping(data.get("case"))
         pending = state.get("pending_decision")
         decision = pending if isinstance(pending, RemediationDecision) else None
-        if decision is None:
-            data["remediation_history"] = list(state["remediation_history"])
-            return HookResult()
+        if decision is not None:
+            execution = self._execute_decision(case=case, decision=decision)
+            trace_entry = RemediationTraceEntry(
+                case_id=ctx.case_id,
+                attempt_index=ctx.attempt_index,
+                decision_source="tier1-deterministic",
+                summary=decision.summary,
+                failure_snapshot=(
+                    decision.failure.to_dict() if decision.failure else None
+                ),
+                executed_actions=[
+                    dict(item) for item in execution.get("actions", [])
+                ],
+                applied=bool(execution.get("success", False)),
+                verify_after=execution.get("verify_after"),
+                comment=str(execution.get("comment", "") or ""),
+            )
+            state["remediation_history"].append(trace_entry.to_dict())
+            history_index = len(state["remediation_history"]) - 1
+            explicit_failure = (
+                not bool(execution.get("success", False))
+                or execution.get("verify_after") is False
+            )
+            if explicit_failure:
+                self._record_tier1_failure(
+                    state,
+                    reason="tier-1 executor reported failure",
+                )
+            state["last_tier1"] = {
+                "attempt_index": ctx.attempt_index,
+                "history_index": history_index,
+                "counted": explicit_failure,
+            }
+            state["pending_decision"] = None
+            data["remediation_trace_entry"] = trace_entry.to_dict()
 
-        case = _as_mapping(data.get("case"))
-        execution = self._execute_decision(case=case, decision=decision)
-        trace_entry = RemediationTraceEntry(
-            case_id=ctx.case_id,
-            attempt_index=ctx.attempt_index,
-            decision_source=decision.source,
-            summary=decision.summary,
-            failure_snapshot=decision.failure.to_dict() if decision.failure else None,
-            executed_actions=[dict(item) for item in execution.get("actions", [])],
-            applied=bool(execution.get("success", False)),
-            verify_after=execution.get("verify_after"),
-            comment=str(execution.get("comment", "") or ""),
+        if (
+            self.tier2_enabled
+            and state["tier1_failure_streak"] >= self.tier2_trigger_failures
+        ):
+            if state["tier2_invocations"] >= self.tier2_max_invocations:
+                snapshot = self._tier2_failure_snapshot(
+                    ctx,
+                    "tier-2 invocation budget exhausted",
+                    agent_intervened=bool(state["agent_recovered"]),
+                )
+                state["failure_snapshot"] = snapshot.to_dict()
+                self._project_state(state, data)
+                return HookResult(
+                    proceed=False,
+                    advice=snapshot.comment,
+                )
+            return self._run_tier2(ctx=ctx, data=data, case=case, state=state)
+
+        self._project_state(state, data)
+        return HookResult(
+            advice=(
+                str(data["remediation_trace_entry"].get("comment", ""))
+                if isinstance(data.get("remediation_trace_entry"), Mapping)
+                else ""
+            )
         )
-        state["remediation_history"].append(trace_entry.to_dict())
-        state["pending_decision"] = None
-        data["remediation_trace_entry"] = trace_entry.to_dict()
-        data["remediation_history"] = list(state["remediation_history"])
-        return HookResult(advice=trace_entry.comment or decision.summary)
 
     def handle_post_case(self, ctx: HookContext, data: dict[str, Any]) -> HookResult:
         state = self._case_state(ctx.case_id)
-        data["remediation_history"] = list(state["remediation_history"])
-        data["failure_snapshot"] = state.get("failure_snapshot")
+        if bool(data.get("verdict", False)):
+            self._consume_last_tier1(
+                state,
+                attempt_index=ctx.attempt_index,
+                env_gate_passed=True,
+            )
+        self._project_state(state, data)
         return HookResult()
 
-    def _request_decision(
+    def _request_tier1_decision(
         self,
         *,
         case: Mapping[str, Any],
         snapshot: FailureSnapshot,
         runner: Mapping[str, Any],
     ) -> RemediationDecision | None:
-        request_agent = getattr(self.plugin, "request_remediation_decision", None)
-        if callable(request_agent):
-            try:
-                raw_agent_decision = request_agent(
-                    dict(case),
-                    snapshot,
-                    self.topology,
-                    runner=dict(runner),
-                    remediation_policy=dict(self.policy),
-                )
-            except Exception:
-                log.exception("agent remediation decision failed for %s", snapshot.case_id)
-            else:
-                decision = _coerce_decision(
-                    raw_agent_decision,
-                    default_source="agent",
-                    failure=snapshot,
-                )
-                validated = self._validate_decision(decision)
-                if validated is not None:
-                    return validated
-
         builtin = getattr(self.plugin, "build_remediation_decision", None)
         if not callable(builtin):
             return None
+        plugin_case = deepcopy(dict(case))
+        semantics_before = _public_case_semantics(plugin_case)
         try:
-            raw_builtin_decision = builtin(
-                dict(case),
+            raw_decision = builtin(
+                plugin_case,
                 snapshot,
                 self.topology,
                 runner=dict(runner),
                 remediation_policy=dict(self.policy),
             )
         except Exception:
-            log.exception("builtin remediation decision failed for %s", snapshot.case_id)
+            log.warning(
+                "tier-1 deterministic decision failed for %s",
+                snapshot.case_id,
+            )
+            return None
+        if _public_case_semantics(plugin_case) != semantics_before:
+            log.warning(
+                "reject tier-1 decision that mutated case semantics: %s",
+                snapshot.case_id,
+            )
             return None
         decision = _coerce_decision(
-            raw_builtin_decision,
-            default_source="builtin-fallback",
+            raw_decision,
+            default_source="tier1-deterministic",
             failure=snapshot,
         )
-        return self._validate_decision(decision)
+        validated = self._validate_decision(decision)
+        if validated is not None:
+            validated.source = "tier1-deterministic"
+            for action in validated.actions:
+                action.source = "tier1-deterministic"
+        return validated
 
-    def _validate_decision(self, decision: RemediationDecision | None) -> RemediationDecision | None:
+    def _validate_decision(
+        self,
+        decision: RemediationDecision | None,
+    ) -> RemediationDecision | None:
         if decision is None or not decision.actions:
             return None
 
@@ -481,7 +707,10 @@ class RuntimeRemediationCoordinator:
                 log.warning("reject unsafe remediation action: %s", action.executor_key)
                 continue
             if self.allowed_actions and action.executor_key not in self.allowed_actions:
-                log.warning("reject remediation action outside whitelist: %s", action.executor_key)
+                log.warning(
+                    "reject remediation action outside whitelist: %s",
+                    action.executor_key,
+                )
                 continue
             approved_actions.append(action)
             if len(approved_actions) >= self.max_actions_per_attempt:
@@ -506,24 +735,41 @@ class RuntimeRemediationCoordinator:
                 "comment": "plugin does not support live remediation execution",
                 "actions": [],
             }
+        plugin_case = deepcopy(dict(case))
+        semantics_before = _public_case_semantics(plugin_case)
         try:
             result = execute(
-                dict(case),
-                decision,
+                plugin_case,
+                deepcopy(decision),
                 self.topology,
             )
         except Exception as exc:
-            log.exception("remediation execution failed for %s", decision.case_id)
+            log.warning(
+                "remediation execution failed for %s error_type=%s",
+                decision.case_id,
+                type(exc).__name__,
+            )
             return {
                 "success": False,
                 "verify_after": None,
-                "comment": str(exc),
+                "comment": str(sanitize_tier2_value(str(exc))),
+                "actions": [],
+            }
+        if _public_case_semantics(plugin_case) != semantics_before:
+            return {
+                "success": False,
+                "verify_after": False,
+                "comment": "tier-1 executor attempted to mutate test semantics",
                 "actions": [],
             }
         result_map = _as_mapping(result)
+        raw_verify_after = result_map.get("verify_after")
+        verify_after = (
+            raw_verify_after if isinstance(raw_verify_after, bool) else None
+        )
         return {
             "success": bool(result_map.get("success", False)),
-            "verify_after": result_map.get("verify_after"),
+            "verify_after": verify_after,
             "comment": str(result_map.get("comment", "") or ""),
             "actions": [
                 dict(item)
@@ -531,3 +777,290 @@ class RuntimeRemediationCoordinator:
                 if isinstance(item, Mapping)
             ],
         }
+
+    def _run_tier2(
+        self,
+        *,
+        ctx: HookContext,
+        data: dict[str, Any],
+        case: Mapping[str, Any],
+        state: dict[str, Any],
+    ) -> HookResult:
+        state["tier2_invocations"] += 1
+        raw_snapshot = state.get("failure_snapshot")
+        snapshot = _coerce_failure_snapshot(
+            raw_snapshot,
+            case_id=ctx.case_id,
+            attempt_index=ctx.attempt_index,
+            phase="tier2_env_recovery",
+            comment="tier-2 escalation",
+        )
+        audit = Tier2RecoveryAudit(
+            case_id=ctx.case_id,
+            attempt_index=ctx.attempt_index,
+            tier1_failures=state["tier1_failure_streak"],
+            trigger_threshold=self.tier2_trigger_failures,
+            context={},
+            prompt="",
+        )
+        log.info(
+            "tier-2 escalation case=%s invocation=%d/%d",
+            ctx.case_id,
+            state["tier2_invocations"],
+            self.tier2_max_invocations,
+        )
+
+        build_context = getattr(
+            self.plugin,
+            "build_tier2_remediation_context",
+            None,
+        )
+        if not callable(build_context):
+            return self._fail_tier2(
+                ctx=ctx,
+                data=data,
+                state=state,
+                audit=audit,
+                error="plugin does not support tier-2 remediation context",
+            )
+        context_case = deepcopy(dict(case))
+        context_semantics = _public_case_semantics(context_case)
+        try:
+            raw_context = build_context(
+                context_case,
+                snapshot,
+                self.topology,
+                runner=dict(ctx.runner),
+                remediation_policy=dict(self.policy),
+            )
+            if _public_case_semantics(context_case) != context_semantics:
+                raise ValueError(
+                    "tier-2 context hook attempted to mutate test semantics"
+                )
+            context = Tier2RecoveryContext.from_mapping(
+                _as_mapping(raw_context)
+            )
+            prompt = build_tier2_prompt(
+                context=context,
+                failure=snapshot.to_dict(),
+                tier1_failures=state["tier1_failure_streak"],
+            )
+        except Exception as exc:
+            return self._fail_tier2(
+                ctx=ctx,
+                data=data,
+                state=state,
+                audit=audit,
+                error=str(exc),
+                status="rejected",
+            )
+        audit.context = context.to_dict()
+        audit.prompt = prompt
+
+        if self.tier2_requester is None:
+            return self._fail_tier2(
+                ctx=ctx,
+                data=data,
+                state=state,
+                audit=audit,
+                error="tier-2 requester is unavailable",
+            )
+        state["agent_recovered"] = True
+        try:
+            raw_response = self.tier2_requester(prompt, context.to_dict())
+            if not isinstance(raw_response, str) or not raw_response.strip():
+                raise ValueError("tier-2 requester returned no plan")
+            audit.raw_response = raw_response
+            plan = parse_tier2_plan(
+                raw_response,
+                capability_schemas=context.capability_schemas,
+                max_actions=self.tier2_max_actions,
+            )
+        except Exception as exc:
+            log.warning(
+                "tier-2 request/plan failed case=%s error_type=%s",
+                ctx.case_id,
+                type(exc).__name__,
+            )
+            return self._fail_tier2(
+                ctx=ctx,
+                data=data,
+                state=state,
+                audit=audit,
+                error=str(exc),
+                status=(
+                    "rejected"
+                    if isinstance(exc, Tier2PlanValidationError)
+                    else "failed"
+                ),
+            )
+        audit.plan = plan
+
+        execute = getattr(self.plugin, "execute_tier2_remediation", None)
+        if not callable(execute):
+            return self._fail_tier2(
+                ctx=ctx,
+                data=data,
+                state=state,
+                audit=audit,
+                error="plugin does not support tier-2 remediation execution",
+            )
+        execution_case = deepcopy(dict(case))
+        semantics_before = _public_case_semantics(execution_case)
+        try:
+            raw_execution = execute(
+                execution_case,
+                deepcopy(plan),
+                self.topology,
+            )
+            execution = _as_mapping(raw_execution)
+        except Exception as exc:
+            return self._fail_tier2(
+                ctx=ctx,
+                data=data,
+                state=state,
+                audit=audit,
+                error=str(exc),
+            )
+        audit.execution = execution
+        if _public_case_semantics(execution_case) != semantics_before:
+            return self._fail_tier2(
+                ctx=ctx,
+                data=data,
+                state=state,
+                audit=audit,
+                error="tier-2 executor attempted to mutate test semantics",
+                status="rejected",
+            )
+
+        verify_case = deepcopy(dict(case))
+        verify_case["_attempt_index"] = ctx.attempt_index
+        verify_case["_agent_runner"] = dict(ctx.runner)
+        verify_semantics = _public_case_semantics(verify_case)
+        verify_error = ""
+        try:
+            gate_passed = bool(
+                self.plugin.verify_env(verify_case, topology=self.topology)
+            )
+            if _public_case_semantics(verify_case) != verify_semantics:
+                gate_passed = False
+                verify_error = (
+                    "tier-2 verify_env attempted to mutate test semantics"
+                )
+        except Exception as exc:
+            gate_passed = False
+            verify_error = str(exc)
+        safe_verify_error = str(sanitize_tier2_value(verify_error))
+        audit.verify_gate = {
+            "passed": gate_passed,
+            "definition": context.verify_env_definition,
+            "error": safe_verify_error,
+        }
+        audit.status = "verified" if gate_passed else "failed"
+        if verify_error:
+            audit.error = verify_error
+        state["tier2_audit"].append(audit.to_dict())
+
+        raw_actions = execution.get("actions", [])
+        safe_actions = sanitize_tier2_value(raw_actions)
+        executed_actions = (
+            [dict(item) for item in safe_actions if isinstance(item, Mapping)]
+            if isinstance(safe_actions, list)
+            else []
+        )
+        safe_execution_comment = str(
+            sanitize_tier2_value(str(execution.get("comment", "") or ""))
+        )
+        trace = RemediationTraceEntry(
+            case_id=ctx.case_id,
+            attempt_index=ctx.attempt_index,
+            decision_source="tier2-agent",
+            summary=str(plan.get("summary", "tier-2 environment recovery")),
+            failure_snapshot=snapshot.to_dict(),
+            executed_actions=executed_actions,
+            applied=bool(execution.get("success", False)),
+            verify_after=gate_passed,
+            core_verify_after=gate_passed,
+            comment=(
+                safe_execution_comment
+                if gate_passed
+                else safe_verify_error
+                or "tier-2 deterministic verify_env gate failed"
+            ),
+        )
+        state["remediation_history"].append(trace.to_dict())
+        data["remediation_trace_entry"] = trace.to_dict()
+        if gate_passed:
+            state["tier1_failure_streak"] = 0
+            state["last_tier1"] = None
+            self._project_state(state, data)
+            log.info("tier-2 verify_env gate passed case=%s", ctx.case_id)
+            return HookResult(advice="tier-2 verify_env gate passed")
+
+        failure = self._tier2_failure_snapshot(
+            ctx,
+            safe_verify_error or "tier-2 deterministic verify_env gate failed",
+            agent_intervened=bool(state["agent_recovered"]),
+        )
+        state["failure_snapshot"] = failure.to_dict()
+        self._project_state(state, data)
+        log.info("tier-2 verify_env gate failed case=%s", ctx.case_id)
+        return HookResult(proceed=False, advice=failure.comment)
+
+    def _fail_tier2(
+        self,
+        *,
+        ctx: HookContext,
+        data: dict[str, Any],
+        state: dict[str, Any],
+        audit: Tier2RecoveryAudit,
+        error: str,
+        status: str = "failed",
+    ) -> HookResult:
+        safe_error = str(sanitize_tier2_value(error))
+        audit.status = status
+        audit.error = error
+        audit.verify_gate = {
+            "passed": False,
+            "executed": False,
+            "error": "tier-2 flow halted before deterministic verify_env",
+        }
+        state["tier2_audit"].append(audit.to_dict())
+        failure = self._tier2_failure_snapshot(
+            ctx,
+            safe_error,
+            agent_intervened=bool(state["agent_recovered"]),
+        )
+        state["failure_snapshot"] = failure.to_dict()
+        trace = RemediationTraceEntry(
+            case_id=ctx.case_id,
+            attempt_index=ctx.attempt_index,
+            decision_source="tier2-agent",
+            summary="tier-2 environment recovery failed closed",
+            failure_snapshot=failure.to_dict(),
+            applied=False,
+            verify_after=False,
+            core_verify_after=False,
+            comment=safe_error,
+        )
+        state["remediation_history"].append(trace.to_dict())
+        data["remediation_trace_entry"] = trace.to_dict()
+        self._project_state(state, data)
+        return HookResult(proceed=False, advice=failure.comment)
+
+    @staticmethod
+    def _tier2_failure_snapshot(
+        ctx: HookContext,
+        comment: str,
+        *,
+        agent_intervened: bool,
+    ) -> FailureSnapshot:
+        return FailureSnapshot(
+            case_id=ctx.case_id,
+            attempt_index=ctx.attempt_index,
+            phase="tier2_verify_env",
+            comment=str(sanitize_tier2_value(comment)),
+            category="environment",
+            reason_code="tier2_env_recovery_failed",
+            metadata={"agent_intervened": agent_intervened},
+        )
