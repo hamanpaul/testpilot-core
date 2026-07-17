@@ -17,6 +17,13 @@ to drive them.
 ## Version
 
 The canonical project version is `VERSION`; release tags use `vX.Y.Z`.
+`testpilot --version` also inventories every installed `testpilot.plugins`
+entry point so operators can see the effective core/plugin/API combination:
+
+```text
+TestPilot <core-version> (<source-ref>)
+  plugin wifi_llapi <plugin-version> (api <api-version>)
+```
 
 ---
 
@@ -294,7 +301,10 @@ The canonical project version lives in `VERSION`; `pyproject.toml` and
 `src/testpilot/__init__.py` mirror it and must stay identical. Release tags use
 Semantic Versioning `vX.Y.Z`. User-facing pull requests should update
 `CHANGELOG.md` under `Unreleased`, or explicitly record why no changelog entry
-is needed.
+is needed. `testpilot --version` prints this core version followed by every
+installed plugin distribution version and declared SDK API version; a broken
+plugin metadata record is shown as `unknown` without hiding the remaining
+inventory.
 
 ---
 
@@ -455,4 +465,6 @@ hook）。Plugin 從 `testpilot.api` 匯入公開 SDK 介面，不得直接 reac
 canonical 版本位於 `VERSION`；`pyproject.toml` 與
 `src/testpilot/__init__.py` 為鏡像，必須一致。release tag 採 Semantic
 Versioning `vX.Y.Z`。對外 PR 應更新 `CHANGELOG.md` 的 `Unreleased`，或明確記錄
-為何不需 changelog entry。
+為何不需 changelog entry。`testpilot --version` 會在 core 版本後列出所有已安裝
+plugin 的 distribution version 與宣告的 SDK API version；單一 plugin metadata
+損壞時以 `unknown` 顯示，不會阻斷其餘 inventory。

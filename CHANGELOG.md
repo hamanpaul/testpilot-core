@@ -9,6 +9,12 @@ preparation.
 
 ## [Unreleased]
 
+### Added
+- `testpilot --version` 除 core 版本與 source ref 外，新增列出所有
+  `testpilot.plugins` entry-point 的 distribution version 與 `api_version`；
+  單一 plugin metadata/import 失敗時以 `unknown` fail-soft 顯示，不影響其餘
+  inventory 或 core 版本輸出（#18）。
+
 ## [0.3.4] - 2026-07-08
 
 ### Added

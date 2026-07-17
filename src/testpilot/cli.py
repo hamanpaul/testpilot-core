@@ -100,6 +100,39 @@ def _version_string() -> str:
     return f"TestPilot {__version__} ({_source_ref_label()})"
 
 
+def _plugin_version_lines() -> list[str]:
+    """Return fail-soft version lines for installed entry-point plugins."""
+    try:
+        entry_points = list(
+            importlib.metadata.entry_points(group=PluginLoader.ENTRY_POINT_GROUP)
+        )
+    except Exception:
+        return []
+
+    lines: list[str] = []
+    for entry_point in sorted(entry_points, key=lambda item: str(item.name)):
+        name = str(entry_point.name)
+        try:
+            dist = getattr(entry_point, "dist", None)
+            dist_name = str(getattr(dist, "name", "") or name)
+            plugin_version = importlib.metadata.version(dist_name)
+        except Exception:
+            plugin_version = "unknown"
+
+        try:
+            plugin_class = entry_point.load()
+            api_version = str(
+                getattr(plugin_class, "api_version", "") or "unknown"
+            )
+        except Exception:
+            api_version = "unknown"
+
+        lines.append(
+            f"  plugin {name} {plugin_version} (api {api_version})"
+        )
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # Pre-dispatch helpers: --update and --verify-install
 # ---------------------------------------------------------------------------
@@ -1122,6 +1155,8 @@ def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> 
     if not value or ctx.resilient_parsing:
         return
     click.echo(_version_string())
+    for line in _plugin_version_lines():
+        click.echo(line)
     ctx.exit()
 
 
