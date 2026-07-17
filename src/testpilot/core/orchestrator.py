@@ -40,7 +40,7 @@ from testpilot.core.case_utils import (
     safe_int as _safe_int,
     sanitize_case_id as _sanitize_case_id,
 )
-from testpilot.core.azure_auth import AzureAgentState
+from testpilot.core.azure_auth import AzureAgentRuntime, AzureAgentState, resolve_azure_agent_runtime
 from testpilot.core.execution_engine import ExecutionEngine
 from testpilot.core.advisory import AdvisoryCollector
 from testpilot.core.hook_policy import HookDispatcher, build_hook_policy
@@ -81,6 +81,7 @@ class Orchestrator(OrchestratorRunBackendCompat):
         project_root: Path | str | None = None,
         plugins_dir: Path | str | None = None,
         config_path: Path | str | None = None,
+        agent_runtime: AzureAgentRuntime | None = None,
     ) -> None:
         self.root = Path(project_root) if project_root else Path(__file__).resolve().parents[3]
         self.plugins_dir = Path(plugins_dir) if plugins_dir else self.root / DEFAULT_PLUGINS_DIR
@@ -94,7 +95,12 @@ class Orchestrator(OrchestratorRunBackendCompat):
         self.loader = PluginLoader(self.plugins_dir)
         self.runner_selector = RunnerSelector(self.plugins_dir)
         self.execution_engine = ExecutionEngine(self.config)
-        self.session_manager: CopilotSessionManager | None = self._try_init_session_manager()
+        self.agent_runtime = agent_runtime or resolve_azure_agent_runtime()
+        self.session_manager: CopilotSessionManager | None = (
+            self._try_init_session_manager()
+            if self.agent_runtime.status.state is AzureAgentState.AZURE_READY
+            else None
+        )
         # Loud surfacing (#16): track general SDK session foundation failures at
         # run scope. Current remediation policy may still use an independent,
         # tool-denied tier-2 one-shot session (#4).

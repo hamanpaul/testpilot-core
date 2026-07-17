@@ -1235,7 +1235,6 @@ def main(
         return
 
     runtime = resolve_azure_agent_runtime()
-    ctx.obj["agent_runtime"] = runtime
     ctx.obj["agent_state"] = runtime.public_summary()
     ctx.obj["provider_config"] = None
 
