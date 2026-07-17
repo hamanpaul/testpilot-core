@@ -54,6 +54,13 @@ core stays free of any plugin-specific names.
 | `execution_policy(case)` | Declare execution constraints (concurrency/mode/runner) | `{}` (no constraint) |
 | `create_reporter()` | Return a plugin-specific reporter (`IReporter`) | `None` (use orchestrator default) |
 | `register_cli(registrar)` | Register the plugin's Click commands/groups through `CliRegistrar` | no-op |
+| `build_tier2_remediation_context(case, failure_snapshot, topology, ...)` | Return redacted failure context, an environment capability catalog, and the deterministic `verify_env` definition; core owns the prompt and LLM call | `None` (tier-2 disabled) |
+| `execute_tier2_remediation(case, plan, topology)` | Execute a core-validated environment-only plan between retries; never change test semantics or verdicts | fail-closed unsupported result |
 
 > Plugins can import `CliRegistrar` and shared CLI helpers from `testpilot.api`;
 > do not import `testpilot.cli` from plugin code.
+>
+> Every tier-2 capability must declare its `execution_boundary` and a bounded
+> `params_schema`. Core validates the plan shape and budget, while the plugin
+> executor must enforce that the advertised transport/target can affect only
+> environment state and cannot access case definitions or verdict artifacts.

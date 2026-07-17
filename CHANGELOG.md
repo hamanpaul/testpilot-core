@@ -14,6 +14,11 @@ preparation.
   `testpilot.plugins` entry-point 的 distribution version 與 `api_version`；
   單一 plugin metadata/import 失敗時以 `unknown` fail-soft 顯示，不影響其餘
   inventory 或 core 版本輸出（#18）。
+- plugin SDK 契約由 `1.1` additive 提升為 `1.2`，新增 tier-2 env-recovery
+  context/capability/audit 公開型別與兩個選配 `PluginBase` hooks；core prompt/parser
+  對 log/context/audit 做長度上限與 secret redaction，並只接受 capability catalog 內、
+  通過參數 schema 且不含 test semantics/verdict 欄位的 bounded JSON repair plan；
+  capability 亦須明示 plugin 負責強制的 environment execution boundary（#4）。
 
 ## [0.3.4] - 2026-07-08
 

@@ -52,10 +52,16 @@ from testpilot.runtime.run_backend import (
     RunBackend,
     RunHandle,
 )
+from testpilot.core.tier2_recovery import (
+    Tier2Capability,
+    Tier2PlanValidationError,
+    Tier2RecoveryAudit,
+    Tier2RecoveryContext,
+)
 
 from testpilot.api import excel_adapter  # noqa: F401  (公開子模組)
 
-API_VERSION = "1.1"
+API_VERSION = "1.2"
 
 __all__ = [
     "API_VERSION",
@@ -97,5 +103,9 @@ __all__ = [
     "RunHandle",
     "ExportRequest",
     "ExportResult",
+    "Tier2Capability",
+    "Tier2PlanValidationError",
+    "Tier2RecoveryAudit",
+    "Tier2RecoveryContext",
     "excel_adapter",
 ]

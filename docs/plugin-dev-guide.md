@@ -104,10 +104,20 @@ implementation detail；若有新 core/schema symbol 要成為穩定契約，必
 | `create_reporter()` | 回傳 plugin 專屬 reporter（`IReporter`） | `None`（用 orchestrator 預設） |
 | `register_cli(registrar)` | 透過 `CliRegistrar` 註冊 installed plugin 自己的 Click 命令/群組 | no-op |
 | `verify_install()` | 回傳 plugin-owned install health 診斷訊號供 `testpilot --verify-install` 顯示 | `[]` |
+| `build_tier2_remediation_context(case, failure_snapshot, topology, ...)` | 提供已去敏、有限長度的 failure/log context、env capability catalog 與 deterministic `verify_env` 定義；core 負責 prompt/LLM/schema | `None`（tier-2 disabled） |
+| `execute_tier2_remediation(case, plan, topology)` | 只在 retry 間隙執行 core 驗證過的 environment repair plan；不得修改 test semantics/verdict | fail-closed unsupported result |
 
 目前狀態：報表（`create_reporter`）、驗證（`validate_case`）、執行約束
 （`execution_policy`）與 CLI 註冊（`register_cli`）hook 已落地；
 plugin 可透過 `testpilot.api.CliRegistrar` 掛載自己的 CLI surface。
+SDK API `1.2` 新增的 tier-2 hooks 為選配；既有宣告 `api_version = "1.1"`
+的 plugin 仍相容，但只有覆寫兩個 hooks 的 plugin 才能啟用 tier-2。
+每個 tier-2 capability 必須宣告 `executor_key`、`description`、
+`execution_boundary` 與 `params_schema`。core 會驗證 executor allowlist、參數名稱/
+型別/enum/長度與 action budget；`schema_validated` 只表示結構通過，不表示 core
+理解任意 command 的 domain 語意。plugin executor 仍必須把 side effect 限制在已宣告的
+environment transport/target，且不可讓該 transport 存取 case YAML、pass criteria 或
+verdict artifact；core coordinator 另會在 hook 前後檢查 in-memory test semantics 未被改寫。
 
 `register_cli()` 是 install-time registration：`testpilot.cli` import 時會掃描
 installed checkout 的 `plugins/` 並掛上 plugin commands。`--root <path>` 只改變
