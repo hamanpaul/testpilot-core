@@ -41,6 +41,8 @@ def build_session_id(
     *,
     case_id: str | None = None,
     remediate_attempt: int | None = None,
+    purpose: str | None = None,
+    invocation_index: int | None = None,
 ) -> str:
     """Build stable session IDs that match the third-refactor policy."""
     session_id = f"run-{_sanitize_session_component(run_id)}"
@@ -48,6 +50,10 @@ def build_session_id(
         session_id += f"-case-{_sanitize_session_component(case_id)}"
     if remediate_attempt is not None:
         session_id += f"-remediate-{int(remediate_attempt)}"
+    elif purpose:
+        session_id += f"-{_sanitize_session_component(purpose)}"
+        if invocation_index is not None:
+            session_id += f"-{int(invocation_index)}"
     return session_id
 
 

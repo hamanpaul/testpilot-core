@@ -51,6 +51,12 @@ from testpilot.core.tier2_recovery import (
     parse_tier2_plan,
 )
 from testpilot.core.usage_ledger import UsageLedger, UsagePurpose
+from testpilot.core.case_planning import (
+    CasePlanningResult,
+    CasePlanningValidationError,
+    build_case_planning_prompt,
+    parse_case_planning_response,
+)
 from testpilot.core.runner_selector import (
     DEFAULT_EXECUTION_POLICY,
     RunnerSelector,
@@ -92,6 +98,10 @@ class AgentResponseValidationError(ValueError):
     def __init__(self, error_type: str):
         super().__init__(error_type)
         self.error_type = error_type
+
+
+def _planning_result_error(exc: Exception) -> CasePlanningResult:
+    return CasePlanningResult(status="failed", error_type=type(exc).__name__)
 
 
 class Orchestrator(OrchestratorRunBackendCompat):
@@ -380,6 +390,49 @@ class Orchestrator(OrchestratorRunBackendCompat):
 
         self.usage_ledger.finish_invocation(binding, status="completed")
         return raw, parsed
+
+    def _plan_case(
+        self,
+        *,
+        run_id: str,
+        plugin_name: str,
+        case: dict[str, Any],
+        case_ordinal: int,
+        case_count: int,
+        execution_policy: dict[str, Any],
+    ) -> CasePlanningResult:
+        if self.agent_circuit_open:
+            return CasePlanningResult(status="skipped_circuit_breaker")
+        if self.agent_runtime.status.state is not AzureAgentState.AZURE_READY:
+            return CasePlanningResult(status="skipped_no_agent")
+        case_id = str(case.get("id", "?"))
+        session_plan = build_case_session_plan(
+            run_id, case_id, {}, agent_runtime=self.agent_runtime
+        )
+        if session_plan is None:
+            return CasePlanningResult(status="skipped_no_agent")
+        try:
+            prompt = build_case_planning_prompt(
+                case=case,
+                execution_policy=execution_policy,
+                run_metadata={"run_id": run_id, "plugin_name": plugin_name, "case_ordinal": case_ordinal, "case_count": case_count},
+            )
+            _, advisory = self._invoke_agent_one_shot(
+                run_id=run_id,
+                case_id=case_id,
+                purpose="case_planning",
+                session_id=build_session_id(run_id, case_id=case_id, purpose="planning"),
+                prompt=prompt,
+                timeout_seconds=60.0,
+                validate=parse_case_planning_response,
+            )
+            return CasePlanningResult(status="completed", advisory=advisory)
+        except AgentCallSkipped as exc:
+            return CasePlanningResult(status="skipped_circuit_breaker" if exc.reason == "circuit_breaker" else "skipped_no_agent")
+        except (CasePlanningValidationError, AgentResponseValidationError) as exc:
+            return _planning_result_error(exc)
+        except AgentProviderCallError as exc:
+            return CasePlanningResult(status="failed", error_type=exc.error_type)
 
     def _create_case_session(
         self,

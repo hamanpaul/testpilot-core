@@ -16,7 +16,6 @@ from testpilot.api import (
     sanitize_case_id as _sanitize_case_id,
 )
 from testpilot.core.execution_engine import ExecutionEngine
-from testpilot.core.orchestrator import build_case_session_plan
 from testpilot.runtime.run_backend import RunHandle
 
 log = logging.getLogger(__name__)
@@ -181,6 +180,7 @@ def _build_case_trace_payload(
     source_row: int,
     execution_policy: dict[str, Any],
     selection_trace: dict[str, Any],
+    planning_result: Any,
     retry_result: Any,
 ) -> dict[str, Any]:
     verdict = retry_result.verdict
@@ -201,6 +201,7 @@ def _build_case_trace_payload(
         "source_row": source_row,
         "execution": execution_policy,
         "selection_trace": selection_trace,
+        "case_planning": planning_result.to_trace_dict(),
         "attempts": attempts_trace,
         "final": {
             "status": status,
@@ -276,7 +277,7 @@ def run(
 
     case_seq_ranges: dict[str, dict[str, int | None]] = {}
 
-    for case in cases:
+    for case_ordinal, case in enumerate(cases, start=1):
         case_id = str(case.get("id", "?"))
         source = case.get("source", {}) if isinstance(case.get("source"), dict) else {}
         try:
@@ -289,6 +290,14 @@ def run(
             case=case,
             agent_config=agent_config,
         )
+        planning_result = orchestrator._plan_case(
+            run_id=run_id,
+            plugin_name=plugin_name,
+            case=case,
+            case_ordinal=case_ordinal,
+            case_count=len(cases),
+            execution_policy=execution_policy,
+        )
         orchestrator._build_execution_engine(
             plugin_name=plugin_name,
             plugin=plugin,
@@ -296,23 +305,8 @@ def run(
             run_id=run_id,
             case_id=case_id,
             runner=selected_runner,
-            provider_config=provider_config,
+            provider_config=None,
         )
-        session_plan: dict[str, Any] | None = None
-        if callable(build_case_session_plan):
-            session_plan = build_case_session_plan(
-                run_id,
-                case_id,
-                selected_runner,
-                provider_config=provider_config,
-                agent_runtime=getattr(orchestrator, "agent_runtime", None),
-            )
-            if session_plan is not None:
-                selection_trace["session_plan"] = _public_session_plan(
-                    session_plan
-                )
-
-        active_session_id: str | None = None
 
         seq_before = _mark_seq_position(orchestrator, run_handle)
         case_started_monotonic = time.monotonic()
@@ -320,15 +314,12 @@ def run(
         if first_case_started_monotonic is None:
             first_case_started_monotonic = case_started_monotonic
             first_case_started_at_iso = case_started_at_iso
-        try:
-            retry_result = orchestrator.execution_engine.execute_with_retry(
-                plugin=plugin,
-                case=case,
-                runner=selected_runner,
-                execution_policy=execution_policy,
-            )
-        finally:
-            orchestrator._cleanup_case_session(active_session_id)
+        retry_result = orchestrator.execution_engine.execute_with_retry(
+            plugin=plugin,
+            case=case,
+            runner=selected_runner,
+            execution_policy=execution_policy,
+        )
         case_finished_monotonic = time.monotonic()
         case_finished_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
         seq_after = _mark_seq_position(orchestrator, run_handle)
@@ -348,6 +339,7 @@ def run(
                 source_row=source_row,
                 execution_policy=execution_policy,
                 selection_trace=selection_trace,
+                planning_result=planning_result,
                 retry_result=retry_result,
             ),
         )
