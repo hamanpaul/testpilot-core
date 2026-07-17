@@ -22,8 +22,31 @@ from testpilot.core.tier2_recovery import (
     parse_tier2_plan,
     sanitize_tier2_value,
 )
+from testpilot.core.plugin_base import PluginBase
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class Tier2Support:
+    supported: bool
+    reason: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"supported": self.supported, "reason": self.reason}
+
+
+def tier2_support(plugin: Any, remediation_policy: Mapping[str, Any]) -> Tier2Support:
+    if not bool(remediation_policy.get("enabled", False)):
+        return Tier2Support(False, "remediation_policy_disabled")
+    tier2 = remediation_policy.get("tier2", {})
+    if not isinstance(tier2, Mapping) or not bool(tier2.get("enabled", False)):
+        return Tier2Support(False, "tier2_policy_disabled")
+    if getattr(type(plugin), "build_tier2_remediation_context", PluginBase.build_tier2_remediation_context) is PluginBase.build_tier2_remediation_context:
+        return Tier2Support(False, "plugin_capability_unavailable")
+    if getattr(type(plugin), "execute_tier2_remediation", PluginBase.execute_tier2_remediation) is PluginBase.execute_tier2_remediation:
+        return Tier2Support(False, "plugin_executor_unavailable")
+    return Tier2Support(True)
 
 
 def _sanitized_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -373,8 +396,10 @@ class RuntimeRemediationCoordinator:
 
         raw_tier2 = self.policy.get("tier2")
         self.tier2_policy = dict(raw_tier2) if isinstance(raw_tier2, Mapping) else {}
-        self.tier2_enabled = self.enabled and bool(
-            self.tier2_policy.get("enabled", False)
+        self.tier2_enabled = (
+            self.enabled
+            and bool(self.tier2_policy.get("enabled", False))
+            and self.tier2_requester is not None
         )
         self.tier2_trigger_failures = max(
             1,
@@ -431,6 +456,7 @@ class RuntimeRemediationCoordinator:
             "tier2_invocations": 0,
             "tier2_audit": [],
             "agent_recovered": False,
+            "tier2_disabled_for_case": False,
         }
 
     def _case_state(self, case_id: str) -> dict[str, Any]:
@@ -529,6 +555,7 @@ class RuntimeRemediationCoordinator:
         )
         if (
             self.tier2_enabled
+            and not state["tier2_disabled_for_case"]
             and state["tier1_failure_streak"] >= self.tier2_trigger_failures
         ):
             state["pending_decision"] = None
@@ -821,7 +848,7 @@ class RuntimeRemediationCoordinator:
             None,
         )
         if not callable(build_context):
-            return self._fail_tier2(
+            return self._skip_tier2_before_execution(
                 ctx=ctx,
                 data=data,
                 state=state,
@@ -851,7 +878,7 @@ class RuntimeRemediationCoordinator:
                 tier1_failures=state["tier1_failure_streak"],
             )
         except Exception as exc:
-            return self._fail_tier2(
+            return self._skip_tier2_before_execution(
                 ctx=ctx,
                 data=data,
                 state=state,
@@ -863,7 +890,7 @@ class RuntimeRemediationCoordinator:
         audit.prompt = prompt
 
         if self.tier2_requester is None:
-            return self._fail_tier2(
+            return self._skip_tier2_before_execution(
                 ctx=ctx,
                 data=data,
                 state=state,
@@ -887,7 +914,7 @@ class RuntimeRemediationCoordinator:
                 ctx.case_id,
                 type(exc).__name__,
             )
-            return self._fail_tier2(
+            return self._skip_tier2_before_execution(
                 ctx=ctx,
                 data=data,
                 state=state,
@@ -896,6 +923,7 @@ class RuntimeRemediationCoordinator:
                 status=(
                     "rejected"
                     if isinstance(exc, Tier2PlanValidationError)
+                    or type(exc).__name__ == "AgentResponseValidationError"
                     else "failed"
                 ),
             )
@@ -1025,6 +1053,32 @@ class RuntimeRemediationCoordinator:
         self._project_state(state, data)
         log.info("tier-2 verify_env gate failed case=%s", ctx.case_id)
         return HookResult(proceed=False, advice=failure.comment)
+
+    def _skip_tier2_before_execution(
+        self,
+        *,
+        ctx: HookContext,
+        data: dict[str, Any],
+        state: dict[str, Any],
+        audit: Tier2RecoveryAudit,
+        error: str,
+        status: str = "failed",
+    ) -> HookResult:
+        audit.status = status
+        audit.error = str(sanitize_tier2_value(error))
+        audit.verify_gate = {
+            "passed": False,
+            "executed": False,
+            "error": "tier-2 flow halted before plugin executor",
+        }
+        state["tier2_audit"].append(audit.to_dict())
+        state["tier2_disabled_for_case"] = True
+        state["tier1_failure_streak"] = 0
+        self._project_state(state, data)
+        return HookResult(
+            proceed=True,
+            advice="tier-2 unavailable; continuing deterministic retry",
+        )
 
     def _fail_tier2(
         self,

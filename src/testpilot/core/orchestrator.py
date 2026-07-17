@@ -45,7 +45,7 @@ from testpilot.core.execution_engine import ExecutionEngine
 from testpilot.core.advisory import AdvisoryCollector
 from testpilot.core.hook_policy import HookDispatcher, build_hook_policy
 from testpilot.core.plugin_loader import PluginLoader
-from testpilot.core.remediation import RuntimeRemediationCoordinator
+from testpilot.core.remediation import RuntimeRemediationCoordinator, tier2_support
 from testpilot.core.tier2_recovery import (
     Tier2RecoveryContext,
     parse_tier2_plan,
@@ -139,6 +139,7 @@ class Orchestrator(OrchestratorRunBackendCompat):
         self.usage_ledger = UsageLedger()
         self.agent_circuit_open = False
         self.agent_circuit_error_type = ""
+        self.agent_recovery_support: dict[str, Any] = {}
         self._reset_run_state()
 
     def _reset_run_state(self) -> None:
@@ -152,6 +153,7 @@ class Orchestrator(OrchestratorRunBackendCompat):
         self.usage_ledger = UsageLedger()
         self.agent_circuit_open = False
         self.agent_circuit_error_type = ""
+        self.agent_recovery_support = {}
         self.agent_runtime.reset_to_initial()
         if self.agent_runtime.status.state is AzureAgentState.AZURE_READY and self.session_manager is None:
             self.session_manager = self._try_init_session_manager()
@@ -191,12 +193,15 @@ class Orchestrator(OrchestratorRunBackendCompat):
             if isinstance(raw_tier2_policy, dict)
             else {}
         )
+        support = tier2_support(plugin, remediation_policy)
+        support_map = getattr(self, "agent_recovery_support", None)
+        if support_map is None:
+            support_map = self.agent_recovery_support = {}
+        support_map[case_id] = support
         tier2_requester = None
         runtime = getattr(self, "agent_runtime", None)
-        runtime_ready = runtime is None or runtime.status.state is AzureAgentState.AZURE_READY
-        if runtime_ready and bool(remediation_policy.get("enabled", False)) and bool(
-            tier2_policy.get("enabled", False)
-        ):
+        runtime_ready = runtime is not None and runtime.status.state is AzureAgentState.AZURE_READY
+        if support.supported and runtime_ready and not self.agent_circuit_open:
             remediation_invocation = 0
             timeout_seconds = tier2_policy.get("timeout_seconds", 60.0)
 
@@ -206,84 +211,29 @@ class Orchestrator(OrchestratorRunBackendCompat):
             ) -> str | None:
                 nonlocal remediation_invocation
                 remediation_invocation += 1
-                if (
-                    self.session_manager is None
-                    or CopilotSessionRequest is None
-                    or build_session_id is None
-                ):
-                    exc = RuntimeError(
-                        "Copilot one-shot session manager is unavailable"
-                    )
-                    self._record_agent_session_failure(
-                        exc,
-                        warning=(
-                            "SDK tier-2 one-shot unavailable; "
-                            "environment recovery will fail closed"
+                session_id = build_session_id(
+                    run_id,
+                    case_id=case_id,
+                    remediate_attempt=remediation_invocation,
+                )
+                raw, _ = self._invoke_agent_one_shot(
+                    run_id=run_id,
+                    case_id=case_id,
+                    purpose="agent_recovery",
+                    session_id=session_id,
+                    prompt=prompt,
+                    timeout_seconds=timeout_seconds,
+                    validate=lambda raw: parse_tier2_plan(
+                        raw,
+                        capability_schemas=Tier2RecoveryContext.from_mapping(
+                            context
+                        ).capability_schemas,
+                        max_actions=max(
+                            0, _safe_int(tier2_policy.get("max_actions"), 3)
                         ),
-                    )
-                    raise exc
-                request = CopilotSessionRequest(
-                    session_id=build_session_id(
-                        run_id,
-                        case_id=case_id,
-                        remediate_attempt=remediation_invocation,
-                    ),
-                    model=str(runner.get("model", "") or ""),
-                    reasoning_effort=(
-                        str(runner.get("effort", "high") or "high")
-                    ),
-                    provider=(
-                        dict(provider_config) if provider_config else None
                     ),
                 )
-                try:
-                    response = self.session_manager.send_one_shot(
-                        request,
-                        prompt,
-                        timeout_seconds=timeout_seconds,
-                    )
-                except Exception as exc:
-                    error_type = type(exc).__name__
-                    self._record_agent_session_failure(
-                        exc,
-                        warning=(
-                            "SDK tier-2 one-shot failed; "
-                            "environment recovery will fail closed"
-                        ),
-                    )
-                    raise RuntimeError(
-                        f"tier-2 one-shot provider failure ({error_type})"
-                    ) from None
-                try:
-                    # Preflight at the provider boundary so malformed output
-                    # also degrades the agent session. Return the raw response
-                    # regardless: the coordinator must retain it in the audit
-                    # before its authoritative parse fails closed.
-                    normalized_context = Tier2RecoveryContext.from_mapping(
-                        context
-                    )
-                    parse_tier2_plan(
-                        response,
-                        capability_schemas=(
-                            normalized_context.capability_schemas
-                        ),
-                        max_actions=max(
-                            0,
-                            _safe_int(
-                                tier2_policy.get("max_actions"),
-                                3,
-                            ),
-                        ),
-                    )
-                except Exception as exc:
-                    self._record_agent_session_failure(
-                        exc,
-                        warning=(
-                            "SDK tier-2 one-shot returned an invalid plan; "
-                            "environment recovery will fail closed"
-                        ),
-                    )
-                return response
+                return raw
 
             tier2_requester = _request_tier2_plan
         remediation = RuntimeRemediationCoordinator(
@@ -339,9 +289,9 @@ class Orchestrator(OrchestratorRunBackendCompat):
         circuit. Response validation is purpose-local and keeps the provider
         available for the next call.
         """
-        if self.agent_circuit_open:
+        if getattr(self, "agent_circuit_open", False):
             raise AgentCallSkipped("circuit_breaker")
-        if self.agent_runtime.status.state is not AzureAgentState.AZURE_READY:
+        if getattr(self, "agent_runtime", None) is None or self.agent_runtime.status.state is not AzureAgentState.AZURE_READY:
             raise AgentCallSkipped("no_agent")
 
         binding = self.usage_ledger.start_invocation(
@@ -401,9 +351,9 @@ class Orchestrator(OrchestratorRunBackendCompat):
         case_count: int,
         execution_policy: dict[str, Any],
     ) -> CasePlanningResult:
-        if self.agent_circuit_open:
+        if getattr(self, "agent_circuit_open", False):
             return CasePlanningResult(status="skipped_circuit_breaker")
-        if self.agent_runtime.status.state is not AzureAgentState.AZURE_READY:
+        if getattr(self, "agent_runtime", None) is None or self.agent_runtime.status.state is not AzureAgentState.AZURE_READY:
             return CasePlanningResult(status="skipped_no_agent")
         case_id = str(case.get("id", "?"))
         session_plan = build_case_session_plan(
