@@ -5,14 +5,12 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import importlib.resources
-import json
 import logging
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import tomllib
 from pathlib import Path
 
@@ -29,8 +27,7 @@ from testpilot.cli_support import (
     run_plugin_cases,
 )
 from testpilot.core.azure_auth import (
-    resolve_provider_config,
-    setup_azure_auth,
+    resolve_azure_agent_runtime,
 )
 from testpilot.core.plugin_loader import PluginLoader
 
@@ -1177,12 +1174,6 @@ def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> 
     help="Project root directory.",
 )
 @click.option(
-    "--azure",
-    is_flag=True,
-    default=False,
-    help="Use Azure OpenAI API. Prompts for endpoint, key, and model interactively.",
-)
-@click.option(
     "--update",
     "update_ref",
     default=None,
@@ -1211,7 +1202,6 @@ def main(
     ctx: click.Context,
     verbose: bool,
     root: str | None,
-    azure: bool,
     update_ref: str | None,
     verify_install: bool,
 ) -> None:
@@ -1244,25 +1234,10 @@ def main(
         ctx.exit(0)
         return
 
-    # --- Authentication: Azure BYOK → GitHub OAuth fallback ---
-    provider_config: dict | None = None
-    if azure:
-        provider_config = setup_azure_auth()
-        if provider_config is None:
-            console.print(
-                "[bold red]Azure authentication failed.[/bold red] "
-                "Cannot proceed. Please check your credentials and network.",
-            )
-            raise SystemExit(1)
-        ctx.obj["provider_notice"] = "azure_interactive"
-    else:
-        # Check if COPILOT_PROVIDER_* env vars are already set
-        provider_config = resolve_provider_config()
-        if provider_config:
-            ctx.obj["provider_notice"] = "azure_env"
-        # else: fall through to GitHub OAuth (handled by Copilot SDK)
-
-    ctx.obj["provider_config"] = provider_config
+    runtime = resolve_azure_agent_runtime()
+    ctx.obj["agent_runtime"] = runtime
+    ctx.obj["agent_state"] = runtime.public_summary()
+    ctx.obj["provider_config"] = None
 
 
 @main.command("list-plugins")

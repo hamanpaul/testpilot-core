@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass, field
+from enum import Enum
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,6 +26,76 @@ AZURE_ENV_VARS = {
 }
 
 DEFAULT_API_VERSION = "2024-10-21"
+
+
+class AzureAgentState(str, Enum):
+    DISABLED_NO_KEY = "disabled_no_key"
+    MISCONFIGURED = "misconfigured"
+    AZURE_READY = "azure_ready"
+    DEGRADED = "degraded"
+
+
+@dataclass(frozen=True)
+class AzureAgentStatus:
+    state: AzureAgentState
+    deployment: str = ""
+    api_version: str = DEFAULT_API_VERSION
+    reason_code: str = ""
+
+
+@dataclass
+class AzureAgentRuntime:
+    status: AzureAgentStatus
+    _provider_config: dict[str, Any] | None = field(default=None, repr=False)
+    _initial_state: AzureAgentState = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._initial_state = self.status.state
+
+    def sdk_provider_config(self) -> dict[str, Any] | None:
+        return dict(self._provider_config) if self._provider_config else None
+
+    def public_summary(self) -> dict[str, str]:
+        return {
+            "initial_agent_state": self._initial_state.value,
+            "final_agent_state": self.status.state.value,
+            "deployment": self.status.deployment,
+            "api_version": self.status.api_version,
+            "reason_code": self.status.reason_code,
+        }
+
+    def mark_degraded(self, reason_code: str) -> None:
+        self.status = AzureAgentStatus(
+            state=AzureAgentState.DEGRADED,
+            deployment=self.status.deployment,
+            api_version=self.status.api_version,
+            reason_code=str(reason_code),
+        )
+
+
+def resolve_azure_agent_runtime() -> AzureAgentRuntime:
+    key = os.environ.get(AZURE_ENV_VARS["api_key"], "").strip()
+    endpoint = normalize_azure_base_url(os.environ.get(AZURE_ENV_VARS["base_url"], ""))
+    deployment = os.environ.get(AZURE_ENV_VARS["model"], "").strip()
+    api_version = os.environ.get(AZURE_ENV_VARS["api_version"], "").strip() or DEFAULT_API_VERSION
+    if not key:
+        return AzureAgentRuntime(AzureAgentStatus(AzureAgentState.DISABLED_NO_KEY))
+    if not endpoint and not deployment:
+        reason = "missing_endpoint_and_deployment"
+    elif not endpoint:
+        reason = "missing_endpoint"
+    elif not deployment:
+        reason = "missing_deployment"
+    else:
+        config = {
+            "type": "azure", "base_url": endpoint, "api_key": key,
+            "wire_api": "completions", "azure": {"api_version": api_version},
+        }
+        return AzureAgentRuntime(
+            AzureAgentStatus(AzureAgentState.AZURE_READY, deployment, api_version),
+            config,
+        )
+    return AzureAgentRuntime(AzureAgentStatus(AzureAgentState.MISCONFIGURED, reason_code=reason))
 
 
 class AzureAuthError(RuntimeError):
@@ -47,27 +119,20 @@ def resolve_provider_config() -> dict[str, Any] | None:
 
     Returns None if no Azure provider env vars are set.
     """
-    provider_type = os.environ.get(AZURE_ENV_VARS["type"], "").strip().lower()
-    if provider_type != "azure":
+    runtime = resolve_azure_agent_runtime()
+    if runtime.status.state is AzureAgentState.AZURE_READY:
+        return runtime.sdk_provider_config()
+    # Legacy source-compatible helper: callers that only need transport
+    # configuration may omit COPILOT_MODEL; runtime readiness remains strict.
+    if os.environ.get(AZURE_ENV_VARS["type"], "").strip().lower() not in ("", "azure"):
         return None
-
-    base_url = normalize_azure_base_url(os.environ.get(AZURE_ENV_VARS["base_url"], ""))
-    api_key = os.environ.get(AZURE_ENV_VARS["api_key"], "").strip()
-    if not base_url or not api_key:
+    key = os.environ.get(AZURE_ENV_VARS["api_key"], "").strip()
+    endpoint = normalize_azure_base_url(os.environ.get(AZURE_ENV_VARS["base_url"], ""))
+    if not key or not endpoint:
         return None
-
-    api_version = (
-        os.environ.get(AZURE_ENV_VARS["api_version"], "").strip()
-        or DEFAULT_API_VERSION
-    )
-
-    return {
-        "type": "azure",
-        "base_url": base_url,
-        "api_key": api_key,
-        "wire_api": "completions",
-        "azure": {"api_version": api_version},
-    }
+    version = os.environ.get(AZURE_ENV_VARS["api_version"], "").strip() or DEFAULT_API_VERSION
+    return {"type": "azure", "base_url": endpoint, "api_key": key,
+            "wire_api": "completions", "azure": {"api_version": version}}
 
 
 def prompt_azure_credentials() -> dict[str, str]:

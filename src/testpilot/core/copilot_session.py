@@ -158,8 +158,18 @@ def build_case_session_plan(
     case_id: str,
     runner: Mapping[str, Any],
     provider_config: Mapping[str, Any] | None = None,
+    *,
+    agent_runtime: Any | None = None,
 ) -> dict[str, Any] | None:
     """Build planned Copilot session metadata without creating the session yet."""
+    if agent_runtime is not None:
+        from testpilot.core.azure_auth import AzureAgentState
+        if getattr(agent_runtime.status, "state", None) is not AzureAgentState.AZURE_READY:
+            return None
+        provider_config = agent_runtime.sdk_provider_config()
+        runner = dict(runner)
+        runner["cli_agent"] = "copilot"
+        runner["model"] = agent_runtime.status.deployment
     if str(runner.get("cli_agent", "")).strip().lower() != "copilot":
         return None
     plan: dict[str, Any] = {

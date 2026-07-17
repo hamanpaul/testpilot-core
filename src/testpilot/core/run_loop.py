@@ -305,6 +305,7 @@ def run(
                 case_id,
                 selected_runner,
                 provider_config=provider_config,
+                agent_runtime=getattr(orchestrator, "agent_runtime", None),
             )
             if session_plan is not None:
                 selection_trace["session_plan"] = _public_session_plan(
@@ -312,12 +313,6 @@ def run(
                 )
 
         active_session_id: str | None = None
-        if session_plan is not None:
-            session_handle = orchestrator._create_case_session(session_plan)
-            if session_handle:
-                selection_trace["session_handle"] = session_handle
-                if session_handle.get("status") == "created":
-                    active_session_id = session_handle.get("session_id")
 
         seq_before = _mark_seq_position(orchestrator, run_handle)
         case_started_monotonic = time.monotonic()

@@ -40,6 +40,7 @@ from testpilot.core.case_utils import (
     safe_int as _safe_int,
     sanitize_case_id as _sanitize_case_id,
 )
+from testpilot.core.azure_auth import AzureAgentState
 from testpilot.core.execution_engine import ExecutionEngine
 from testpilot.core.advisory import AdvisoryCollector
 from testpilot.core.hook_policy import HookDispatcher, build_hook_policy
@@ -140,7 +141,9 @@ class Orchestrator(OrchestratorRunBackendCompat):
             else {}
         )
         tier2_requester = None
-        if bool(remediation_policy.get("enabled", False)) and bool(
+        runtime = getattr(self, "agent_runtime", None)
+        runtime_ready = runtime is None or runtime.status.state is AzureAgentState.AZURE_READY
+        if runtime_ready and bool(remediation_policy.get("enabled", False)) and bool(
             tier2_policy.get("enabled", False)
         ):
             remediation_invocation = 0
