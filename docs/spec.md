@@ -169,6 +169,10 @@ sequenceDiagram
   - `run-{run_id}-case-{case_id}-remediate-{attempt}`
 - 目前已落地的 default 行為是 **per-case create → case 結束後 best-effort delete**。
 - `resume_session()` / `list_sessions()` 已有 session adapter API，但尚未成為 orchestrator 預設流程。
+- tier-2 planning 使用獨立 `send_one_shot()`：目前 adapter 明確鎖定
+  `github-copilot-sdk>=0.1.23,<0.2` 的 `send_and_wait()` surface，只傳入
+  model/provider 等無 tool 設定並強制 deny-all permission handler；prompt 最多 64,000
+  字元、timeout 最多 600 秒，timeout 先 abort，再依 SDK 回傳的實際 session ID delete。
 - session state 儲存 conversational context；canonical result 仍由 kernel artifacts 承擔。
 
 ### 4.3 目前已落地的 runtime hooks

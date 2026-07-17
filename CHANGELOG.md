@@ -19,6 +19,10 @@ preparation.
   對 log/context/audit 做長度上限與 secret redaction，並只接受 capability catalog 內、
   通過參數 schema 且不含 test semantics/verdict 欄位的 bounded JSON repair plan；
   capability 亦須明示 plugin 負責強制的 environment execution boundary（#4）。
+- Copilot adapter 新增 bounded `send_one_shot()` planner session：只保留 provider/model
+  等無 tool 設定、強制 deny-all permission handler、明確訂定
+  `github-copilot-sdk>=0.1.23,<0.2` surface，並在 timeout 時先 abort、最後依 SDK
+  實際 session ID delete，避免 tier-2 planning 留下未受控背景工作（#4）。
 
 ## [0.3.4] - 2026-07-08
 

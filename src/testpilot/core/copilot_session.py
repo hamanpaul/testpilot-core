@@ -6,11 +6,25 @@ import asyncio
 from dataclasses import dataclass, field
 import importlib
 import inspect
-from typing import Any, Callable, Mapping, Sequence
+import logging
+import math
+from typing import Any, Callable, Mapping
 import re
 
 
 _SESSION_COMPONENT_PATTERN = re.compile(r"[^A-Za-z0-9._-]+")
+_ONE_SHOT_CONFIG_FIELDS = {
+    "client_name",
+    "model",
+    "on_permission_request",
+    "provider",
+    "reasoning_effort",
+    "session_id",
+}
+_MAX_ONE_SHOT_PROMPT_CHARS = 64_000
+_MAX_ONE_SHOT_TIMEOUT_SECONDS = 600.0
+
+log = logging.getLogger(__name__)
 
 
 class CopilotSDKUnavailableError(RuntimeError):
@@ -207,6 +221,12 @@ class CopilotSessionManager:
         return _approve_all
 
     @staticmethod
+    def _deny_all_permission_handler(request: Any, context: Any) -> dict[str, Any]:
+        """Deny every SDK tool request for plan-only one-shot sessions."""
+        del request, context
+        return {"kind": "denied-by-rules", "rules": []}
+
+    @staticmethod
     async def _maybe_await(value: Any) -> Any:
         if inspect.isawaitable(value):
             return await value
@@ -227,12 +247,29 @@ class CopilotSessionManager:
         stop = getattr(client, "stop", None)
         if callable(start):
             await self._maybe_await(start())
+        primary_error: BaseException | None = None
         try:
             result = fn(client)
             return await self._maybe_await(result)
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
             if callable(stop):
-                await self._maybe_await(stop())
+                try:
+                    await self._maybe_await(stop())
+                except Exception as cleanup_error:
+                    if primary_error is None:
+                        raise
+                    primary_error.add_note(
+                        "Copilot client stop cleanup also failed: "
+                        f"{type(cleanup_error).__name__}"
+                    )
+                    log.warning(
+                        "Copilot client stop failed after primary error; "
+                        "cleanup_error_type=%s",
+                        type(cleanup_error).__name__,
+                    )
 
     @staticmethod
     def _session_handle(session: Any, fallback_session_id: str) -> CopilotSessionHandle:
@@ -282,6 +319,160 @@ class CopilotSessionManager:
 
         return self._run(self._with_client(_op))
 
+    def send_one_shot(
+        self,
+        request: CopilotSessionRequest,
+        prompt: str,
+        *,
+        timeout_seconds: float = 60.0,
+    ) -> str:
+        """Run one tool-denied SDK 0.1.x turn and destroy its session.
+
+        The adapter targets ``github-copilot-sdk>=0.1.23,<0.2``. It fails
+        loudly when that ``send_and_wait`` surface is unavailable instead of
+        treating an incompatible SDK response as a valid recovery plan.
+        """
+        prompt_text = str(prompt)
+        if not prompt_text.strip():
+            raise ValueError("Copilot one-shot prompt must not be empty")
+        if len(prompt_text) > _MAX_ONE_SHOT_PROMPT_CHARS:
+            raise ValueError(
+                "Copilot one-shot prompt size limit exceeded "
+                f"({_MAX_ONE_SHOT_PROMPT_CHARS} chars)"
+            )
+        try:
+            normalized_timeout = float(timeout_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "Copilot one-shot timeout_seconds must be positive and bounded"
+            ) from exc
+        if (
+            not math.isfinite(normalized_timeout)
+            or normalized_timeout <= 0
+            or normalized_timeout > _MAX_ONE_SHOT_TIMEOUT_SECONDS
+        ):
+            raise ValueError("Copilot one-shot timeout_seconds must be positive")
+
+        async def _op(client: Any) -> str:
+            requested_config = request.to_create_config(
+                self._deny_all_permission_handler
+            )
+            # Plan-only sessions expose no agent/tool/MCP/hook surface. Empty
+            # available_tools is omitted by SDK 0.1.x, so permission denial and
+            # this explicit allowlist are both required.
+            config = {
+                key: value
+                for key, value in requested_config.items()
+                if key in _ONE_SHOT_CONFIG_FIELDS
+            }
+            session = await client.create_session(config)
+            actual_session_id = str(
+                getattr(session, "session_id", request.session_id)
+                or request.session_id
+            )
+            unsubscribe: Callable[[], Any] | None = None
+            primary_error: BaseException | None = None
+            try:
+                if request.on_event is not None:
+                    subscribe = getattr(session, "on", None)
+                    if not callable(subscribe):
+                        raise CopilotSDKUnavailableError(
+                            "Copilot SDK session.on is unavailable; "
+                            "tier-2 requires github-copilot-sdk>=0.1.23,<0.2"
+                        )
+                    unsubscribe = subscribe(request.on_event)
+
+                send_and_wait = getattr(session, "send_and_wait", None)
+                if not callable(send_and_wait):
+                    raise CopilotSDKUnavailableError(
+                        "Copilot SDK session.send_and_wait is unavailable; "
+                        "tier-2 requires github-copilot-sdk>=0.1.23,<0.2"
+                    )
+                try:
+                    event = await send_and_wait(
+                        {"prompt": prompt_text},
+                        timeout=normalized_timeout,
+                    )
+                except asyncio.TimeoutError as timeout_error:
+                    abort = getattr(session, "abort", None)
+                    if not callable(abort):
+                        timeout_error.add_note(
+                            "Copilot SDK session.abort is unavailable after timeout; "
+                            "tier-2 requires github-copilot-sdk>=0.1.23,<0.2"
+                        )
+                        log.warning(
+                            "Copilot one-shot abort unavailable after timeout"
+                        )
+                    else:
+                        try:
+                            await self._maybe_await(abort())
+                        except Exception as abort_error:
+                            timeout_error.add_note(
+                                "Copilot one-shot abort cleanup also failed: "
+                                f"{type(abort_error).__name__}"
+                            )
+                            log.warning(
+                                "Copilot one-shot abort failed after timeout; "
+                                "cleanup_error_type=%s",
+                                type(abort_error).__name__,
+                            )
+                    raise
+
+                content = getattr(getattr(event, "data", None), "content", None)
+                if not isinstance(content, str) or not content.strip():
+                    raise CopilotSDKUnavailableError(
+                        "Copilot one-shot returned no assistant content"
+                    )
+                return content.strip()
+            except BaseException as exc:
+                primary_error = exc
+                raise
+            finally:
+                cleanup_errors: list[Exception] = []
+                try:
+                    if callable(unsubscribe):
+                        await self._maybe_await(unsubscribe())
+                except Exception as cleanup_error:
+                    cleanup_errors.append(cleanup_error)
+
+                delete_session = getattr(client, "delete_session", None)
+                if not callable(delete_session):
+                    cleanup_errors.append(
+                        CopilotSDKUnavailableError(
+                            "Copilot SDK client.delete_session is unavailable; "
+                            "tier-2 requires github-copilot-sdk>=0.1.23,<0.2"
+                        )
+                    )
+                else:
+                    try:
+                        await self._maybe_await(
+                            delete_session(actual_session_id)
+                        )
+                    except Exception as cleanup_error:
+                        cleanup_errors.append(cleanup_error)
+
+                if cleanup_errors:
+                    cleanup_types = ",".join(
+                        type(item).__name__ for item in cleanup_errors
+                    )
+                    if primary_error is not None:
+                        primary_error.add_note(
+                            "Copilot one-shot cleanup also failed: "
+                            f"{cleanup_types}"
+                        )
+                        log.warning(
+                            "Copilot one-shot cleanup failed after primary error; "
+                            "cleanup_error_types=%s",
+                            cleanup_types,
+                        )
+                    else:
+                        raise CopilotSDKUnavailableError(
+                            "Copilot one-shot cleanup failed; "
+                            f"cleanup_error_types={cleanup_types}"
+                        ) from cleanup_errors[0]
+
+        return self._run(self._with_client(_op))
+
     def list_sessions(self) -> list[CopilotSessionInfo]:
         async def _op(client: Any) -> list[CopilotSessionInfo]:
             sessions = await client.list_sessions()
@@ -294,4 +485,3 @@ class CopilotSessionManager:
             await client.delete_session(session_id)
 
         self._run(self._with_client(_op))
-
