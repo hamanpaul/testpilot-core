@@ -9,34 +9,27 @@ preparation.
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-07-20
+
 ### Added
-- Azure-only automatic readiness and core-owned cost/benefit artifacts under
-  `artifact_dir/agent_usage`; per-case planning, capability-gated recovery and
-  run-end analysis now expose direct/shared token totals, deterministic token=0
-  outcomes, and deduplicated `assistant.usage` accounting.
-- `testpilot --version` 除 core 版本與 source ref 外，新增列出所有
-  `testpilot.plugins` entry-point 的 distribution version 與 `api_version`；
-  單一 plugin metadata/import 失敗時以 `unknown` fail-soft 顯示，不影響其餘
-  inventory 或 core 版本輸出（#18）。
-- plugin SDK 契約由 `1.1` additive 提升為 `1.2`，新增 tier-2 env-recovery
-  context/capability/audit 公開型別與兩個選配 `PluginBase` hooks；core prompt/parser
-  對 log/context/audit 做長度上限與 secret redaction，並只接受 capability catalog 內、
-  通過參數 schema 且不含 test semantics/verdict 欄位的 bounded JSON repair plan；
-  capability 亦須明示 plugin 負責強制的 environment execution boundary（#4）。
-- Copilot adapter 新增 bounded `send_one_shot()` planner session：只保留 provider/model
-  等無 tool 設定、強制 deny-all permission handler、明確訂定
-  `github-copilot-sdk>=0.1.23,<0.2` surface，並在 timeout 時先 abort、最後依 SDK
-  實際 session ID delete，避免 tier-2 planning 留下未受控背景工作（#4）。
-- runtime remediation 改為 deterministic tier-1 first；連續兩次 tier-1 未恢復環境後，
-  僅在 retry gap 升級一次 tier-2，執行 plugin-advertised plan 後由 core 強制
-  `verify_env`。retry budget、invocation/action 上限、test-semantics deep-copy guard、
-  bounded audit 與 `agent-recovered` 介入標記均由 core state machine 強制（#4）。
-- orchestrator 於每案 runner 選定後注入獨立的 Copilot one-shot requester，case trace
-  固定輸出 `remediation_history` / `tier2_audit` / `agent_recovered`，run payload 固定
-  輸出 `tier2_remediation` 供人工反哺 tier-1；SDK/provider/plan 失敗會一次性標記
-  degraded 並 fail-closed。另將含 Azure secret 的 runtime session plan 與公開
-  `selection_trace` 分離，provider/SDK/plugin callback 錯誤狀態只保存 stable exception
-  type，不落 raw exception text（#4）。
+- 新增可運行的最小 sample plugin `examples/sample_echo`(獨立 dist `testpilot-sample-echo`,經 `testpilot.plugins` entry-point 被發現、只依賴 `testpilot.api`、走 `create_runner`→`run_pipeline` 產出 Pass verdict,含 `register_cli` demo 與 API 邊界測試);CI 補真實安裝發現 smoke;修 `docs/plugin-dev-guide.md` 死連結並加 Runnable sample 章節、清 `plugins/wifi_llapi/reports/` 殘骸並加 `.gitignore` 規則(ignore `plugins/*/reports/` run bundle、保留 `templates/`,防 run_loop 產生的 lab 產物再被追蹤 / R-21)。對照 issue #3。
+- `run_loop` 無條件呼叫 plugin 的 DUT 版本 capture（fail-soft：擷取失敗記 warning 並以 `{}` 續行、不中止 run），naming 仍以 `--dut-fw-ver` 優先、fallback 取 `manifest["git"]`，整份 manifest 存進 `meta["version_manifest"]`。html/md reporter 於報表頂部渲染收折的 Environment/Versions 區塊（缺資料 no-op、不具名 plugin）。
+- 新增 Azure-only core agent runtime 與成本報表契約：CLI 依環境自動判定 disabled/misconfigured/ready/degraded，misconfigured 會輸出去敏 notice；core run-loop 於每案 advisory planning、opt-in tier-2 recovery 與 run-end analysis 後寫出 `artifact_dir/agent_usage` JSON/Markdown artifacts，並以 additive pointer 回傳 `core_cost_report`/`core_agent_analysis`。
+- HTML report 的 WiFi LLAPI Hybrid (tri-band) Summary 版面對齊 xlsx Summary sheet：section 位置移到 KPI/total-case 之下、per-case Summary 表之上；每 band 依 `5G`/`6G`/`2.4G` 分色（列底色 + 左側色條）以利區分；每 band 尾端新增粗體 **TOTAL** 小計列（取自 `bucket_totals`）；隱藏空的 `WiFi.Other` catch-all 列（真實 wifi_llapi 物件恆對到具體分類、Other 恆 0 且 xlsx 無此欄；Other 非零時仍顯示並計入 TOTAL）。
+- `testpilot --version` 除 core 版本與 source ref 外，新增穩定排序的 installed plugin inventory，顯示各 `testpilot.plugins` entry point 的 distribution version 與 `api_version`；單一 plugin metadata 或 import 失敗時以 `unknown` fail-soft 顯示，不影響其餘 inventory 或 core 版本輸出。（#18）
+- 新增 domain-agnostic tier-2 environment recovery：deterministic tier-1 連續失敗達門檻後，core 才於 retry gap 使用 tool-denied one-shot planner 選擇 plugin-advertised、schema/budget 驗證過的 environment action；plugin 執行後仍強制 deterministic `verify_env`，並輸出 bounded/redacted case/run audit 與 `agent_recovered` marker。provider、SDK 與 plugin callback 例外只保存 phase 及 exception type，不保存 raw exception text。（#4）
+- 安裝流程改 flow latest-compatible：core/plugins 安裝當下解析 newest API-compatible（serialwrap 維持 manifest pin）。install.sh 交易式 resolve-before-mutate（先讀 core wheel API 再解析完整 plan 才動 venv）、任何動土後失敗以 ERR trap rollback、線上路徑也跑 `--verify-install` gate；`--update` installer/verify 失敗皆 rollback 不 brick；build-bundle build 期解析 newest-compatible + build-time API-compat gate + 寫 resolved-manifest.yaml。manifest core/plugins version 改 optional（serialwrap 必填），`--plugins name@ver` 保留釘版逃生口。
+
+### Changed
+- policy engine 升版 v1.0.5 → v1.0.10：`.project-policy.yml` / 四份 agent 檔 / 兩支 workflow 的 `uses:` 改 tag pin `@v1.0.10`、`policy_version` 對齊 1.0.10；採用 changelog.d fragment 模型（#24）。
+- policy engine 升版 v1.0.10 → v1.0.12：`.project-policy.yml` / 四份 agent 檔 / 兩支 workflow 的 `uses:` 與 `policy_engine_ref` 改 pin `@25d31e02`（v1.0.12 release commit）、`policy_version` 對齊 1.0.12，並於 `uses:` 補 R-23 `# v1.0.12` 尾註。
+
+### Fixed
+- build-bundle.sh 的 third-party 依賴改為依已下載的 first-party wheel（core + 選定 plugins + serialwrap）metadata 解析閉包，取代原本手列套件名裸抓最新版——後者會抓到違反 core `click>=8.1,<8.4` pin 的 click 8.4.x，使 dry-run gate 以 ResolutionImpossible 失敗、產不出 bundle。新增 regression 測試鎖定此契約。
+- copilot session foundation 對齊 `github-copilot-sdk` 0.1.x：實裝的 0.1.23 `PermissionHandler` 是 typing alias（非帶 `approve_all` 的 class），使每次 session 建立必然 raise → remediation silent 降級 builtin-fallback。改為 feature-detect `PermissionRequestResult` 自組 approve-all handler（wire shape `{"kind": "approved"}`，測試鎖形狀防 false-green），移除舊 `approve_all` 雙軌；session 建立失敗改一次性 loud warning + `run_loop` payload `agent_session_degraded` key（run-scoped，`run()` 入口重置）。(#16)
+- install-manifest.yaml 的 `core.private` 由 `true` 更正為 `false`，對齊 `hamanpaul/testpilot-core` 實際為 public repo（serialwrap 亦 public 且標記正確；wifi_llapi/brcm_fw_upgrade 維持 private）。此欄位為 registry 標記、install.sh/build-bundle.sh 皆未讀取，故無行為變更，僅修正誤導的 metadata。
+- Markdown 報表的 WiFi LLAPI Hybrid summary 表對齊 HTML 報表：空的 `WiFi.Other` catch-all 列（無 xlsx Summary 對應）改以該 band 的 **TOTAL 匯總列**呈現（取自 `bucket_totals`，統計該 band 全 category 總數），非只顯示 WiFi.Other 的 0。先前只修了 `html_reporter`（見 `feat-html-report-hybrid-summary-layout`），`reporter`(md) 未同步，本次補齊使兩者逐列一致。
+- test_topology.py 改用 pytest fixture 於 tmp_path 寫入最小 testbed.yaml，不再依賴 git-ignored 的 configs/testbed.yaml（原本僅 CI bootstrap step 會產生），fresh clone 直接 pytest 不再有 2 個 failure。四項斷言不變（name=lab-bench-1、DUT 裝置、SSID_5G→testpilot5G、未知變數原樣保留）；inline testbed 僅含 name/DUT/SSID 不含任何 KEY 憑證，維持 R-21 機密掃描潔淨。
 
 ## [0.3.4] - 2026-07-08
 
