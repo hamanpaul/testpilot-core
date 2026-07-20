@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import re
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -13,6 +15,26 @@ from testpilot.cli import main
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class _VersionEntryPoint:
+    def __init__(
+        self,
+        name: str,
+        dist_name: str,
+        *,
+        api_version: str = "1.1",
+        load_error: Exception | None = None,
+    ) -> None:
+        self.name = name
+        self.dist = SimpleNamespace(name=dist_name)
+        self._api_version = api_version
+        self._load_error = load_error
+
+    def load(self) -> type:
+        if self._load_error is not None:
+            raise self._load_error
+        return type("Plugin", (), {"api_version": self._api_version})
 
 
 def _pyproject_version() -> str:
@@ -204,3 +226,61 @@ def test_version_output_when_git_absent() -> None:
 
     assert result.exit_code == 0
     assert re.search(r"TestPilot 0\.3\.4 \(commit@unknown\)", result.output)
+
+
+def test_version_lists_discovered_plugins(monkeypatch) -> None:
+    """--version should show every plugin distribution and SDK API version."""
+    entry_points = [
+        _VersionEntryPoint("wifi_llapi", "wifi-llapi", api_version="1.1"),
+        _VersionEntryPoint(
+            "brcm_fw_upgrade",
+            "brcm-fw-upgrade",
+            api_version="1.0",
+        ),
+    ]
+    monkeypatch.setattr(
+        "testpilot.cli.importlib.metadata.entry_points",
+        lambda *, group: entry_points,
+    )
+    monkeypatch.setattr(
+        "testpilot.cli.importlib.metadata.version",
+        lambda name: {
+            "wifi-llapi": "0.3.4",
+            "brcm-fw-upgrade": "0.1.1",
+        }[name],
+    )
+
+    result = CliRunner().invoke(main, ["--version"])
+
+    assert result.exit_code == 0
+    assert "plugin brcm_fw_upgrade 0.1.1 (api 1.0)" in result.output
+    assert "plugin wifi_llapi 0.3.4 (api 1.1)" in result.output
+    assert result.output.index("brcm_fw_upgrade") < result.output.index("wifi_llapi")
+
+
+def test_version_plugin_failures_are_isolated(monkeypatch) -> None:
+    """Broken metadata or class loading must not break the core version output."""
+    monkeypatch.setattr(
+        "testpilot.cli.importlib.metadata.entry_points",
+        lambda *, group: [
+            _VersionEntryPoint(
+                "broken",
+                "broken-dist",
+                load_error=RuntimeError("boom"),
+            )
+        ],
+    )
+
+    def _missing_version(name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(
+        "testpilot.cli.importlib.metadata.version",
+        _missing_version,
+    )
+
+    result = CliRunner().invoke(main, ["--version"])
+
+    assert result.exit_code == 0
+    assert result.output.startswith("TestPilot 0.3.4 (")
+    assert "plugin broken unknown (api unknown)" in result.output

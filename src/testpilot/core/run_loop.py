@@ -16,7 +16,7 @@ from testpilot.api import (
     sanitize_case_id as _sanitize_case_id,
 )
 from testpilot.core.execution_engine import ExecutionEngine
-from testpilot.core.orchestrator import build_case_session_plan
+from testpilot.core.run_analysis import RunAnalysisResult
 from testpilot.runtime.run_backend import RunHandle
 
 log = logging.getLogger(__name__)
@@ -171,6 +171,7 @@ def _build_case_trace_payload(
     source_row: int,
     execution_policy: dict[str, Any],
     selection_trace: dict[str, Any],
+    planning_result: Any,
     retry_result: Any,
 ) -> dict[str, Any]:
     verdict = retry_result.verdict
@@ -191,6 +192,7 @@ def _build_case_trace_payload(
         "source_row": source_row,
         "execution": execution_policy,
         "selection_trace": selection_trace,
+        "case_planning": planning_result.to_trace_dict(),
         "attempts": attempts_trace,
         "final": {
             "status": status,
@@ -202,9 +204,9 @@ def _build_case_trace_payload(
         "diagnostic_status": retry_result.diagnostic_status,
         "remediation_history": retry_result.remediation_history or [],
         "failure_snapshot": retry_result.failure_snapshot,
+        "tier2_audit": retry_result.tier2_audit or [],
+        "agent_recovered": bool(retry_result.agent_recovered),
     }
-
-
 def run(
     orchestrator: Any,
     plugin_name: str,
@@ -243,15 +245,11 @@ def run(
     agent_config = orchestrator.runner_selector.load_agent_config(plugin_name, plugin=plugin)
     execution_policy = orchestrator.runner_selector.build_execution_policy(agent_config)
     execution_policy = _apply_plugin_execution_policy(plugin, execution_policy)
-    orchestrator._build_execution_engine(
-        plugin_name=plugin_name,
-        plugin=plugin,
-        agent_config=agent_config,
-    )
     agent_trace_dir = artifact_dir / "agent_trace"
     agent_trace_dir.mkdir(parents=True, exist_ok=True)
 
     case_records: list[CaseRunRecord] = []
+    planning_by_case: dict[str, Any] = {}
     case_trace_files: list[str] = []
     run_started_monotonic = time.monotonic()
     run_started_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -259,96 +257,97 @@ def run(
     first_case_started_at_iso = ""
 
     case_seq_ranges: dict[str, dict[str, int | None]] = {}
+    loop_error: Exception | None = None
+    try:
+        for case_ordinal, case in enumerate(cases, start=1):
+            case_id = str(case.get("id", "?"))
+            source = case.get("source", {}) if isinstance(case.get("source"), dict) else {}
+            try:
+                source_row = int(source.get("row", 0))
+            except (TypeError, ValueError):
+                source_row = 0
 
-    for case in cases:
-        case_id = str(case.get("id", "?"))
-        source = case.get("source", {}) if isinstance(case.get("source"), dict) else {}
-        try:
-            source_row = int(source.get("row", 0))
-        except (TypeError, ValueError):
-            source_row = 0
-
-        selected_runner, selection_trace = orchestrator.runner_selector.select_case_runner(
-            plugin_name=plugin_name,
-            case=case,
-            agent_config=agent_config,
-        )
-        if callable(build_case_session_plan):
-            session_plan = build_case_session_plan(
-                run_id,
-                case_id,
-                selected_runner,
-                provider_config=provider_config,
+            selected_runner, selection_trace = orchestrator.runner_selector.select_case_runner(
+                plugin_name=plugin_name,
+                case=case,
+                agent_config=agent_config,
             )
-            if session_plan is not None:
-                selection_trace["session_plan"] = session_plan
+            planning_result = orchestrator._plan_case(
+                run_id=run_id,
+                plugin_name=plugin_name,
+                case=case,
+                case_ordinal=case_ordinal,
+                case_count=len(cases),
+                execution_policy=execution_policy,
+            )
+            planning_by_case[case_id] = planning_result
+            orchestrator._build_execution_engine(
+                plugin_name=plugin_name,
+                plugin=plugin,
+                agent_config=agent_config,
+                run_id=run_id,
+                case_id=case_id,
+                runner=selected_runner,
+                provider_config=None,
+            )
 
-        active_session_id: str | None = None
-        session_plan_dict = selection_trace.get("session_plan")
-        if session_plan_dict and isinstance(session_plan_dict, dict):
-            session_handle = orchestrator._create_case_session(session_plan_dict)
-            if session_handle:
-                selection_trace["session_handle"] = session_handle
-                if session_handle.get("status") == "created":
-                    active_session_id = session_handle.get("session_id")
-
-        seq_before = _mark_seq_position(orchestrator, run_handle)
-        case_started_monotonic = time.monotonic()
-        case_started_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
-        if first_case_started_monotonic is None:
-            first_case_started_monotonic = case_started_monotonic
-            first_case_started_at_iso = case_started_at_iso
-        try:
+            seq_before = _mark_seq_position(orchestrator, run_handle)
+            case_started_monotonic = time.monotonic()
+            case_started_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+            if first_case_started_monotonic is None:
+                first_case_started_monotonic = case_started_monotonic
+                first_case_started_at_iso = case_started_at_iso
             retry_result = orchestrator.execution_engine.execute_with_retry(
                 plugin=plugin,
                 case=case,
                 runner=selected_runner,
                 execution_policy=execution_policy,
             )
-        finally:
-            orchestrator._cleanup_case_session(active_session_id)
-        case_finished_monotonic = time.monotonic()
-        case_finished_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
-        seq_after = _mark_seq_position(orchestrator, run_handle)
-        case_seq_ranges[case_id] = {
-            "seq_start": seq_before,
-            "seq_end": seq_after,
-        }
+            case_finished_monotonic = time.monotonic()
+            case_finished_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+            seq_after = _mark_seq_position(orchestrator, run_handle)
+            case_seq_ranges[case_id] = {
+                "seq_start": seq_before,
+                "seq_end": seq_after,
+            }
 
-        case_trace_path = agent_trace_dir / f"{_sanitize_case_id(case_id)}.json"
-        ExecutionEngine.write_case_trace(
-            case_trace_path,
-            _build_case_trace_payload(
-                run_id=run_id,
-                plugin_name=plugin_name,
-                case=case,
-                case_id=case_id,
-                source_row=source_row,
-                execution_policy=execution_policy,
-                selection_trace=selection_trace,
-                retry_result=retry_result,
-            ),
-        )
-        case_trace_files.append(str(case_trace_path))
-
-        case_records.append(
-            CaseRunRecord(
-                case=case,
-                retry=retry_result,
-                source_row=source_row,
-                trace_path=str(case_trace_path),
-                seq_start=seq_before,
-                seq_end=seq_after,
-                started_at=case_started_at_iso,
-                finished_at=case_finished_at_iso,
-                duration_seconds=round(
-                    case_finished_monotonic - case_started_monotonic,
-                    3,
+            case_trace_path = agent_trace_dir / f"{_sanitize_case_id(case_id)}.json"
+            ExecutionEngine.write_case_trace(
+                case_trace_path,
+                _build_case_trace_payload(
+                    run_id=run_id,
+                    plugin_name=plugin_name,
+                    case=case,
+                    case_id=case_id,
+                    source_row=source_row,
+                    execution_policy=execution_policy,
+                    selection_trace=selection_trace,
+                    planning_result=planning_result,
+                    retry_result=retry_result,
                 ),
-                drift=bool(case.get("drift", False)),
-                case_id=case_id,
             )
-        )
+            case_trace_files.append(str(case_trace_path))
+
+            case_records.append(
+                CaseRunRecord(
+                    case=case,
+                    retry=retry_result,
+                    source_row=source_row,
+                    trace_path=str(case_trace_path),
+                    seq_start=seq_before,
+                    seq_end=seq_after,
+                    started_at=case_started_at_iso,
+                    finished_at=case_finished_at_iso,
+                    duration_seconds=round(
+                        case_finished_monotonic - case_started_monotonic,
+                        3,
+                    ),
+                    drift=bool(case.get("drift", False)),
+                    case_id=case_id,
+                )
+            )
+    except Exception as exc:
+        loop_error = exc
 
     dut_log_path = ""
     sta_log_path = ""
@@ -393,11 +392,93 @@ def run(
         version_manifest=version_manifest,
     )
 
+    def _write_core_cost_payload(
+        *,
+        analysis: Any,
+        metrics: Mapping[str, Any],
+    ) -> Any:
+        from testpilot.reporting.usage_reporter import (
+            CoreCostArtifacts,
+            build_core_cost_report,
+            write_core_cost_artifacts,
+        )
+
+        try:
+            frozen_usage = orchestrator.usage_ledger.freeze()
+            runtime = getattr(orchestrator, "agent_runtime", None)
+            agent_state = (
+                runtime.public_summary()
+                if runtime is not None and hasattr(runtime, "public_summary")
+                else {}
+            )
+            report = build_core_cost_report(
+                run_result=run_result,
+                planning_by_case=planning_by_case,
+                agent_recovery_support=getattr(orchestrator, "agent_recovery_support", {}),
+                usage=frozen_usage,
+                metrics=metrics,
+                analysis=analysis,
+                agent_state=agent_state,
+            )
+            return write_core_cost_artifacts(
+                artifact_dir=artifact_dir,
+                report=report,
+                usage=frozen_usage,
+                analysis=analysis,
+            )
+        except Exception as exc:
+            log.warning("core cost artifacts failed; continuing", exc_info=True)
+            return CoreCostArtifacts(
+                status="failed",
+                analysis_status=getattr(analysis, "status", "unavailable"),
+                error_type=type(exc).__name__,
+            )
+
+    from testpilot.core.assistance_metrics import compute_assistance_metrics
+
+    assistance_metrics = compute_assistance_metrics(case_records)
+    if loop_error is not None:
+        aborted_analysis = RunAnalysisResult(status="skipped_aborted")
+        core_artifacts = _write_core_cost_payload(
+            analysis=aborted_analysis,
+            metrics=assistance_metrics,
+        )
+        run_result.artifacts["core_agent_analysis"] = aborted_analysis.to_dict()
+        run_result.artifacts["core_cost_report"] = core_artifacts.to_payload()
+        setattr(loop_error, "core_agent_analysis", aborted_analysis.to_dict())
+        setattr(loop_error, "core_cost_report", core_artifacts.to_payload())
+        raise loop_error.with_traceback(loop_error.__traceback__)
+
+    # Analysis is deliberately a run-end operation: all case retry records
+    # above already contain their final verdicts, and this snapshot excludes
+    # the analysis calls themselves from per-case direct usage.
+    direct_usage = orchestrator.usage_ledger.snapshot()
+    analysis_metrics = {
+        **assistance_metrics,
+        "cases": len(case_records),
+        "pass_count": sum(bool(record.retry.verdict) for record in case_records),
+        "fail_count": sum(not bool(record.retry.verdict) for record in case_records),
+        "agent_tokens": direct_usage.model_tokens(),
+        "duration_seconds": round(max(0.0, time.monotonic() - run_started_monotonic), 3),
+    }
+    run_analysis = orchestrator._analyze_run(
+        run_result=run_result,
+        metrics=analysis_metrics,
+        direct_usage=direct_usage,
+    )
+    core_artifacts = _write_core_cost_payload(
+        analysis=run_analysis,
+        metrics=assistance_metrics,
+    )
     reporter = plugin.create_reporter()
     build_reports = getattr(reporter, "build_reports", None)
     if not callable(build_reports):
         raise RuntimeError(f"{plugin_name} reporter does not implement build_reports()")
     payload = build_reports(run_result)
+    # Keep the plugin contract unchanged: the reporter sees the RunResult
+    # exactly as produced by the core run.  Core-owned analysis and cost
+    # pointers are attached only after plugin reporting has completed.
+    run_result.artifacts["core_agent_analysis"] = run_analysis.to_dict()
     if isinstance(payload, dict):
         payload.setdefault(
             "agent_session_degraded",
@@ -407,6 +488,21 @@ def run(
                 {"degraded": False, "reason": ""},
             ),
         )
+        agent_recovered_case_ids: list[str] = []
+        tier2_audit: list[dict[str, Any]] = []
+        for record in case_records:
+            if bool(record.retry.agent_recovered):
+                agent_recovered_case_ids.append(record.case_id)
+            raw_audit = record.retry.tier2_audit or []
+            tier2_audit.extend(
+                dict(item) for item in raw_audit if isinstance(item, dict)
+            )
+        payload["tier2_remediation"] = {
+            "agent_recovered_case_ids": agent_recovered_case_ids,
+            "audit": tier2_audit,
+        }
+        payload["core_agent_analysis"] = run_analysis.to_dict()
+        payload["core_cost_report"] = core_artifacts.to_payload()
     return payload
 
 

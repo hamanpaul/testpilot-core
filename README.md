@@ -17,6 +17,13 @@ to drive them.
 ## Version
 
 The canonical project version is `VERSION`; release tags use `vX.Y.Z`.
+`testpilot --version` also inventories every installed `testpilot.plugins`
+entry point so operators can see the effective core/plugin/API combination:
+
+```text
+TestPilot <core-version> (<source-ref>)
+  plugin wifi_llapi <plugin-version> (api <api-version>)
+```
 
 ---
 
@@ -36,7 +43,7 @@ their own repositories and register themselves through the
 TestPilot is a plugin-based test automation framework for prplOS / OpenWrt embedded devices. The architecture splits into two planes:
 
 - **Deterministic verdict kernel** — test execution, evidence collection, pass/fail verdicts, and report projection.
-- **Copilot SDK control plane** — per-case session foundation, lifecycle hooks, advisory audit, safe remediation, and extension surfaces such as custom agents / skills / selective MCP.
+- **Copilot SDK control plane** — per-case session foundation, lifecycle hooks, advisory audit, tiered environment recovery, and extension surfaces such as custom agents / skills / selective MCP.
 
 Core principle: **the Copilot SDK handles the control plane; it does NOT decide the final verdict.**
 
@@ -45,7 +52,16 @@ Current landed control-plane subset today:
 - per-case runner selection with `selection_trace`
 - best-effort per-case Copilot session foundation
 - lifecycle hook dispatch (`pre_case`, `post_case`, `pre_step`, `post_step`, `on_failure`, `on_retry`)
-- advisory collection plus safe-environment remediation between retry attempts
+- advisory collection plus tier-1 deterministic remediation and opt-in tier-2 one-shot planning between retry attempts
+
+Tier-2 is reached only after the configured consecutive tier-1 failures. Core
+builds a bounded, tool-denied one-shot prompt from the plugin's advertised
+environment capabilities; the plugin executes the validated plan, then core
+forces deterministic `verify_env`. The agent never receives verdict authority
+or permission to rewrite case semantics. Every intervention is marked
+`agent_recovered` and retained in bounded/redacted case and run audit artifacts;
+the marker means the agent intervened, not that the verification gate passed.
+See [Tier-2 Environment Recovery Design](docs/superpowers/specs/2026-07-17-tier2-env-recovery-design.md).
 
 Custom agents / skills / MCP remain extension surfaces in the current codebase rather than default hot-path runtime wiring.
 
@@ -176,8 +192,6 @@ Options:
   --version         Show version and exit.
   -v, --verbose     Enable debug logging.
   --root DIRECTORY  Project root directory.
-  --azure           Use Azure OpenAI API. Prompts for endpoint, key, and model
-                    interactively.
   --update REF      Reinstall and reconcile the managed wheel install from its
                     pinned manifest, then exit. REF is accepted but cross-
                     version update is not yet implemented; the currently-
@@ -203,8 +217,6 @@ Options:
   --version         Show version and exit.
   -v, --verbose     Enable debug logging.
   --root DIRECTORY  Project root directory.
-  --azure           Use Azure OpenAI API. Prompts for endpoint, key, and model
-                    interactively.
   --update REF      Reinstall and reconcile the managed wheel install from its
                     pinned manifest, then exit. REF is accepted but cross-
                     version update is not yet implemented; the currently-
@@ -224,20 +236,28 @@ Repository skills for agent-assisted workflows live under `skills/`.
 
 ### Azure OpenAI (BYOK)
 
-The `--azure` flag enables Bring-Your-Own-Key Azure OpenAI authentication.
-It interactively prompts for endpoint, API key, and model, then exports the
-standard `COPILOT_PROVIDER_*` environment variables for the run. API keys and
-endpoints are never committed to version control; supply secrets through
-environment variables or your shell profile.
+TestPilot core automatically uses Azure when all required values are present.
+Without an API key it runs in deterministic/no-agent mode; a key without an
+endpoint or deployment produces a non-blocking misconfiguration notice. If
+`COPILOT_PROVIDER_TYPE` is set to a non-`azure` value, core also treats the
+runtime as misconfigured and emits the same redacted notice.
 
 ```bash
-testpilot --azure list-plugins
-```
-
-```bash
-# Optional (default: 2024-10-21):
+export COPILOT_PROVIDER_BASE_URL=https://your-resource.openai.azure.com
+export COPILOT_PROVIDER_API_KEY='<set in shell profile or secret store>'
+export COPILOT_MODEL=your-deployment-name
 export COPILOT_PROVIDER_AZURE_API_VERSION=2024-10-21
+testpilot run <plugin_name>
 ```
+
+`COPILOT_PROVIDER_TYPE` is not an enable switch; core constructs only the Azure
+provider and rejects non-azure values as misconfiguration. Azure deployment
+selection is independent of plugin runner labels. Per-case planning is
+advisory, tier-2 recovery requires plugin opt-in, and deterministic remediation
+remains plugin-owned. Core-owned usage and observational benefit metrics are
+written under `artifact_dir/agent_usage`; shared run-analysis tokens are not
+allocated to cases. Custom/skeleton runners report `unsupported_execution_path`
+and make no core model calls.
 
 ### Writing a Plugin
 
@@ -294,7 +314,10 @@ The canonical project version lives in `VERSION`; `pyproject.toml` and
 `src/testpilot/__init__.py` mirror it and must stay identical. Release tags use
 Semantic Versioning `vX.Y.Z`. User-facing pull requests should update
 `CHANGELOG.md` under `Unreleased`, or explicitly record why no changelog entry
-is needed.
+is needed. `testpilot --version` prints this core version followed by every
+installed plugin distribution version and declared SDK API version; a broken
+plugin metadata record is shown as `unknown` without hiding the remaining
+inventory.
 
 ---
 
@@ -313,9 +336,17 @@ is needed.
 TestPilot 是針對 prplOS / OpenWrt 嵌入式裝置的 plugin 化測試自動化框架，架構分為兩個平面：
 
 - **Deterministic verdict kernel** — 測試執行、證據蒐集、pass/fail 判定與報表投影。
-- **Copilot SDK control plane** — per-case session foundation、lifecycle hooks、advisory audit、safe remediation，以及 custom agents / skills / 選擇性 MCP 等擴充面。
+- **Copilot SDK control plane** — per-case session foundation、lifecycle hooks、advisory audit、分層環境修復，以及 custom agents / skills / 選擇性 MCP 等擴充面。
 
 核心原則：**Copilot SDK 負責 control plane；它不決定最終 verdict。**
+
+tier-1 先執行 plugin 的 deterministic allowlist 修復；只有達到設定的連續失敗門檻，
+才會在 retry 間隙 opt-in 升級 tier-2。core 以 plugin 宣告的 environment capability
+catalog 建立 bounded、tool-denied one-shot prompt，plugin 執行通過 schema/budget 的
+plan 後，core 一律強制重跑 deterministic `verify_env`。agent 不具 verdict 權限，也
+不能改 case semantics。任何介入都以 `agent_recovered` 標記並寫入已去敏、有上限的
+case/run audit；該標記只代表 agent 曾介入，不代表 verify gate 已通過。詳見
+[Tier-2 Environment Recovery Design](docs/superpowers/specs/2026-07-17-tier2-env-recovery-design.md)。
 
 ### 前置需求
 
@@ -416,14 +447,25 @@ testpilot run <plugin>
 
 ### Azure OpenAI（BYOK）
 
-`--azure` flag 啟用 Bring-Your-Own-Key 的 Azure OpenAI 認證，會互動式詢問
-endpoint、API key 與 model，再以標準 `COPILOT_PROVIDER_*` 環境變數提供給該次
-執行。API key 與 endpoint 不得提交版本控制；secrets 一律透過環境變數或 shell
-profile 注入。
+當 Azure endpoint、API key 與 deployment 都存在時，TestPilot core 自動啟用
+Azure；沒有 key 時使用 deterministic/no-agent mode，缺少其他欄位只會產生
+非阻斷的 misconfigured notice；若 `COPILOT_PROVIDER_TYPE` 被設成非 `azure`
+值，也會被視為 misconfigured。`COPILOT_PROVIDER_TYPE` 不作為啟用開關，core
+只建立 Azure provider。
 
 ```bash
-testpilot --azure list-plugins
+export COPILOT_PROVIDER_BASE_URL=https://your-resource.openai.azure.com
+export COPILOT_PROVIDER_API_KEY='<set in shell profile or secret store>'
+export COPILOT_MODEL=your-deployment-name
+export COPILOT_PROVIDER_AZURE_API_VERSION=2024-10-21
+testpilot run <plugin_name>
 ```
+
+每案 planning 僅供 advisory；tier-2 需 plugin opt-in，deterministic
+remediation 仍由 plugin 負責。core 報表位於 `artifact_dir/agent_usage`，共享
+run-end analysis token 不分攤到個案；custom/skeleton path 回報
+`unsupported_execution_path` 且不呼叫 core model。效益指標為 observational，
+不宣稱因果 uplift/regression。
 
 ### 撰寫 Plugin
 
@@ -455,4 +497,6 @@ hook）。Plugin 從 `testpilot.api` 匯入公開 SDK 介面，不得直接 reac
 canonical 版本位於 `VERSION`；`pyproject.toml` 與
 `src/testpilot/__init__.py` 為鏡像，必須一致。release tag 採 Semantic
 Versioning `vX.Y.Z`。對外 PR 應更新 `CHANGELOG.md` 的 `Unreleased`，或明確記錄
-為何不需 changelog entry。
+為何不需 changelog entry。`testpilot --version` 會在 core 版本後列出所有已安裝
+plugin 的 distribution version 與宣告的 SDK API version；單一 plugin metadata
+損壞時以 `unknown` 顯示，不會阻斷其餘 inventory。

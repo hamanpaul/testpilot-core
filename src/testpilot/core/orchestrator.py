@@ -12,14 +12,17 @@ This module keeps the public API identical to pre-split versions so that
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Literal, TypeVar
 
 try:
     from testpilot.core.copilot_session import (
         CopilotSDKUnavailableError,
         CopilotSessionManager,
         CopilotSessionRequest,
+        _MAX_ONE_SHOT_PROMPT_CHARS,
+        _MAX_ONE_SHOT_TIMEOUT_SECONDS,
         build_case_session_plan,
         build_session_id,
     )
@@ -29,6 +32,8 @@ except Exception:  # pragma: no cover - optional during incremental rollout
     CopilotSessionManager = None  # type: ignore[assignment,misc]
     CopilotSessionRequest = None  # type: ignore[assignment,misc]
     build_session_id = None  # type: ignore[assignment]
+    _MAX_ONE_SHOT_PROMPT_CHARS = 64_000
+    _MAX_ONE_SHOT_TIMEOUT_SECONDS = 600.0
 
 from testpilot.core.case_utils import (
     band_results as _band_results,
@@ -40,11 +45,31 @@ from testpilot.core.case_utils import (
     safe_int as _safe_int,
     sanitize_case_id as _sanitize_case_id,
 )
+from testpilot.core.azure_auth import AzureAgentRuntime, AzureAgentState, resolve_azure_agent_runtime
 from testpilot.core.execution_engine import ExecutionEngine
 from testpilot.core.advisory import AdvisoryCollector
 from testpilot.core.hook_policy import HookDispatcher, build_hook_policy
 from testpilot.core.plugin_loader import PluginLoader
-from testpilot.core.remediation import RuntimeRemediationCoordinator
+from testpilot.core.remediation import RuntimeRemediationCoordinator, tier2_support
+from testpilot.core.tier2_recovery import (
+    Tier2RecoveryContext,
+    parse_tier2_plan,
+)
+from testpilot.core.usage_ledger import UsageLedger, UsagePurpose
+from testpilot.core.case_planning import (
+    CasePlanningResult,
+    CasePlanningValidationError,
+    build_case_planning_prompt,
+    parse_case_planning_response,
+)
+from testpilot.core.run_analysis import (
+    RunAnalysisResult,
+    build_case_capsule,
+    build_run_analysis_prompt,
+    build_run_analysis_reducer_prompt,
+    pack_case_capsules,
+    parse_run_analysis_response,
+)
 from testpilot.core.runner_selector import (
     DEFAULT_EXECUTION_POLICY,
     RunnerSelector,
@@ -63,6 +88,38 @@ DEFAULT_CONFIG_DIR = "configs"
 # Re-export for backward compatibility
 __all__ = ["Orchestrator", "DEFAULT_EXECUTION_POLICY"]
 
+T = TypeVar("T")
+
+
+class AgentCallSkipped(RuntimeError):
+    def __init__(self, reason: Literal["no_agent", "circuit_breaker"]):
+        super().__init__(reason)
+        self.reason = reason
+
+
+class AgentProviderCallError(RuntimeError):
+    """Provider/SDK/session failure that opens the run circuit."""
+
+    def __init__(self, error_type: str):
+        super().__init__(error_type)
+        self.error_type = error_type
+
+
+class AgentResponseValidationError(ValueError):
+    """Purpose-schema rejection that leaves the provider circuit closed."""
+
+    def __init__(self, error_type: str):
+        super().__init__(error_type)
+        self.error_type = error_type
+
+
+class AgentRequestValidationError(ValueError):
+    """Local request validation failure before any provider interaction."""
+
+
+def _planning_result_error(exc: Exception) -> CasePlanningResult:
+    return CasePlanningResult(status="failed", error_type=type(exc).__name__)
+
 
 class Orchestrator(OrchestratorRunBackendCompat):
     """主編排器：載入 plugin、排程測試、協調監控與報告。
@@ -76,6 +133,7 @@ class Orchestrator(OrchestratorRunBackendCompat):
         project_root: Path | str | None = None,
         plugins_dir: Path | str | None = None,
         config_path: Path | str | None = None,
+        agent_runtime: AzureAgentRuntime | None = None,
     ) -> None:
         self.root = Path(project_root) if project_root else Path(__file__).resolve().parents[3]
         self.plugins_dir = Path(plugins_dir) if plugins_dir else self.root / DEFAULT_PLUGINS_DIR
@@ -89,11 +147,17 @@ class Orchestrator(OrchestratorRunBackendCompat):
         self.loader = PluginLoader(self.plugins_dir)
         self.runner_selector = RunnerSelector(self.plugins_dir)
         self.execution_engine = ExecutionEngine(self.config)
-        self.session_manager: CopilotSessionManager | None = self._try_init_session_manager()
-        # Loud surfacing (#16): when the SDK session foundation fails, remediation
-        # silently falls back to the builtin classifier. Track a run-level degraded
-        # status so the failure is warned once and carried in the run payload.
+        self.agent_runtime = agent_runtime or resolve_azure_agent_runtime()
+        self.session_manager: CopilotSessionManager | None = None
+        # Loud surfacing (#16): track general SDK session foundation failures at
+        # run scope. Current remediation policy may still use an independent,
+        # tool-denied tier-2 one-shot session (#4).
         self.agent_session_degraded: dict[str, Any] = {"degraded": False, "reason": ""}
+        self.usage_ledger = UsageLedger()
+        self.agent_circuit_open = False
+        self.agent_circuit_error_type = ""
+        self.agent_recovery_support: dict[str, Any] = {}
+        self._reset_run_state()
 
     def _reset_run_state(self) -> None:
         """Reset per-run state at the start of each run.
@@ -103,6 +167,17 @@ class Orchestrator(OrchestratorRunBackendCompat):
         run's degraded status into the next run's payload.
         """
         self.agent_session_degraded = {"degraded": False, "reason": ""}
+        self.usage_ledger = UsageLedger()
+        self.agent_circuit_open = False
+        self.agent_circuit_error_type = ""
+        self.agent_recovery_support = {}
+        self.agent_runtime.reset_to_initial()
+        if self.agent_runtime.status.state is AzureAgentState.AZURE_READY and self.session_manager is None:
+            self.session_manager = self._try_init_session_manager()
+            if self.session_manager is None:
+                self.agent_circuit_open = True
+                self.agent_circuit_error_type = "CopilotSDKUnavailableError"
+                self.agent_runtime.mark_degraded(self.agent_circuit_error_type)
 
     @property
     def run_handle(self) -> RunHandle | None:
@@ -114,6 +189,10 @@ class Orchestrator(OrchestratorRunBackendCompat):
         plugin_name: str,
         plugin: Any,
         agent_config: dict[str, Any],
+        run_id: str,
+        case_id: str,
+        runner: dict[str, Any],
+        provider_config: dict[str, Any] | None,
     ) -> ExecutionEngine:
         policy = build_hook_policy(agent_config)
         dispatcher = HookDispatcher(policy)
@@ -125,10 +204,68 @@ class Orchestrator(OrchestratorRunBackendCompat):
         remediation_policy = agent_config.get("remediation", {})
         if not isinstance(remediation_policy, dict):
             remediation_policy = {}
+        raw_tier2_policy = remediation_policy.get("tier2", {})
+        tier2_policy = (
+            dict(raw_tier2_policy)
+            if isinstance(raw_tier2_policy, dict)
+            else {}
+        )
+        timeout_seconds, timeout_warning = self._normalize_tier2_timeout_seconds(
+            tier2_policy.get("timeout_seconds", 60.0)
+        )
+        tier2_policy["timeout_seconds"] = timeout_seconds
+        if timeout_warning:
+            tier2_policy["_warnings"] = [timeout_warning]
+        if tier2_policy:
+            remediation_policy = dict(remediation_policy)
+            remediation_policy["tier2"] = tier2_policy
+        support = tier2_support(plugin, remediation_policy)
+        support_map = getattr(self, "agent_recovery_support", None)
+        if support_map is None:
+            support_map = self.agent_recovery_support = {}
+        support_map[case_id] = support
+        tier2_requester = None
+        runtime = getattr(self, "agent_runtime", None)
+        runtime_ready = runtime is not None and runtime.status.state is AzureAgentState.AZURE_READY
+        if support.supported and runtime_ready and not self.agent_circuit_open:
+            remediation_invocation = 0
+
+            def _request_tier2_plan(
+                prompt: str,
+                context: dict[str, Any],
+            ) -> str | None:
+                nonlocal remediation_invocation
+                remediation_invocation += 1
+                session_id = build_session_id(
+                    run_id,
+                    case_id=case_id,
+                    remediate_attempt=remediation_invocation,
+                )
+                raw, _ = self._invoke_agent_one_shot(
+                    run_id=run_id,
+                    case_id=case_id,
+                    purpose="agent_recovery",
+                    session_id=session_id,
+                    prompt=prompt,
+                    timeout_seconds=timeout_seconds,
+                    validate=lambda raw: parse_tier2_plan(
+                        raw,
+                        capability_schemas=Tier2RecoveryContext.from_mapping(
+                            context
+                        ).capability_schemas,
+                        max_actions=max(
+                            0, _safe_int(tier2_policy.get("max_actions"), 3)
+                        ),
+                    ),
+                )
+                return raw
+
+            tier2_requester = _request_tier2_plan
         remediation = RuntimeRemediationCoordinator(
             plugin=plugin,
             topology=self.config,
             policy=remediation_policy,
+            tier2_requester=tier2_requester,
         )
         for hook_name, handler in (
             ("pre_case", remediation.handle_pre_case),
@@ -153,45 +290,262 @@ class Orchestrator(OrchestratorRunBackendCompat):
         if CopilotSessionManager is None:
             return None
         try:
-            mgr = CopilotSessionManager()
-            mgr._load_sdk()  # probe availability
-            return mgr
+            manager = CopilotSessionManager()
+            manager._load_sdk()  # probe availability
+            return manager
         except Exception:
             log.debug("Copilot SDK unavailable — session foundation disabled")
             return None
 
-    def _create_case_session(
-        self,
-        session_plan: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        """Attempt to create an SDK session from a session plan; return handle info or None."""
-        if self.session_manager is None or CopilotSessionRequest is None:
-            return None
-        try:
-            provider = session_plan.get("provider_config")
-            request = CopilotSessionRequest(
-                session_id=str(session_plan.get("session_id", "")),
-                model=str(session_plan.get("model", "")),
-                reasoning_effort=str(session_plan.get("reasoning_effort", "high")),
-                provider=provider,
+    @staticmethod
+    def _validate_one_shot_request(
+        *,
+        prompt: Any,
+        timeout_seconds: Any,
+    ) -> tuple[str, float]:
+        prompt_text = str(prompt)
+        if not prompt_text.strip():
+            raise AgentRequestValidationError(
+                "Copilot one-shot prompt must not be empty"
             )
-            handle = self.session_manager.create_session(request)
-            return {
-                "session_id": handle.session_id,
-                "workspace_path": handle.workspace_path,
-                "status": "created",
-            }
+        if len(prompt_text) > _MAX_ONE_SHOT_PROMPT_CHARS:
+            raise AgentRequestValidationError(
+                "Copilot one-shot prompt size limit exceeded "
+                f"({_MAX_ONE_SHOT_PROMPT_CHARS} chars)"
+            )
+        try:
+            normalized_timeout = float(timeout_seconds)
+        except (TypeError, ValueError) as exc:
+            raise AgentRequestValidationError(
+                "Copilot one-shot timeout_seconds must be positive and bounded"
+            ) from exc
+        if (
+            not math.isfinite(normalized_timeout)
+            or normalized_timeout <= 0
+            or normalized_timeout > _MAX_ONE_SHOT_TIMEOUT_SECONDS
+        ):
+            raise AgentRequestValidationError(
+                "Copilot one-shot timeout_seconds must be positive"
+            )
+        return prompt_text, normalized_timeout
+
+    @staticmethod
+    def _normalize_tier2_timeout_seconds(value: Any) -> tuple[float, str]:
+        default_timeout = 60.0
+        try:
+            normalized = float(value)
+        except (TypeError, ValueError):
+            return (
+                default_timeout,
+                "tier2.timeout_seconds invalid; using default 60.0",
+            )
+        if not math.isfinite(normalized) or normalized <= 0:
+            return (
+                default_timeout,
+                "tier2.timeout_seconds invalid; using default 60.0",
+            )
+        if normalized > _MAX_ONE_SHOT_TIMEOUT_SECONDS:
+            return (
+                float(_MAX_ONE_SHOT_TIMEOUT_SECONDS),
+                (
+                    "tier2.timeout_seconds exceeded one-shot limit; "
+                    f"clamped to {float(_MAX_ONE_SHOT_TIMEOUT_SECONDS):.1f}"
+                ),
+            )
+        return normalized, ""
+
+    def _invoke_agent_one_shot(
+        self,
+        *,
+        run_id: str,
+        case_id: str | None,
+        purpose: UsagePurpose,
+        session_id: str,
+        prompt: str,
+        timeout_seconds: float,
+        validate: Callable[[str], T],
+    ) -> tuple[str, T]:
+        """Execute one measured, tool-denied agent turn.
+
+        Provider/session failures are run-fatal for agent calls and open the
+        circuit. Response validation is purpose-local and keeps the provider
+        available for the next call.
+        """
+        if getattr(self, "agent_circuit_open", False):
+            raise AgentCallSkipped("circuit_breaker")
+        if getattr(self, "agent_runtime", None) is None or self.agent_runtime.status.state is not AzureAgentState.AZURE_READY:
+            raise AgentCallSkipped("no_agent")
+
+        binding = self.usage_ledger.start_invocation(
+            run_id=run_id,
+            session_id=session_id,
+            case_id=case_id,
+            purpose=purpose,
+            model=self.agent_runtime.status.deployment,
+        )
+        try:
+            prompt_text, normalized_timeout = self._validate_one_shot_request(
+                prompt=prompt,
+                timeout_seconds=timeout_seconds,
+            )
         except Exception as exc:
-            if not self.agent_session_degraded["degraded"]:
-                log.warning(
-                    "SDK session foundation failed; remediation will run with "
-                    "builtin-fallback for the whole run: %s",
-                    exc,
+            error_type = type(exc).__name__
+            self.usage_ledger.finish_invocation(
+                binding,
+                status="failed",
+                error_type=error_type,
+            )
+            raise AgentResponseValidationError(error_type) from None
+        try:
+            provider = self.agent_runtime.sdk_provider_config()
+            if provider is None or CopilotSessionRequest is None:
+                raise CopilotSDKUnavailableError("Azure provider is unavailable")
+            if self.session_manager is None:
+                raise CopilotSDKUnavailableError("Copilot one-shot manager is unavailable")
+            request = CopilotSessionRequest(
+                session_id=session_id,
+                model=self.agent_runtime.status.deployment,
+                reasoning_effort="high",
+                provider=provider,
+                on_event=self.usage_ledger.event_handler(binding),
+            )
+            raw = self.session_manager.send_one_shot(
+                request,
+                prompt_text,
+                timeout_seconds=normalized_timeout,
+            )
+        except Exception as exc:
+            error_type = type(exc).__name__
+            self.usage_ledger.finish_invocation(binding, status="failed", error_type=error_type)
+            self.agent_circuit_open = True
+            self.agent_circuit_error_type = error_type
+            self.agent_runtime.mark_degraded(error_type)
+            self._record_agent_session_failure(
+                exc,
+                warning="Azure SDK one-shot failed; later agent calls are disabled",
+            )
+            raise AgentProviderCallError(error_type) from None
+
+        try:
+            parsed = validate(raw)
+        except Exception as exc:
+            error_type = type(exc).__name__
+            self.usage_ledger.finish_invocation(binding, status="failed", error_type=error_type)
+            raise AgentResponseValidationError(error_type) from None
+
+        self.usage_ledger.finish_invocation(binding, status="completed")
+        return raw, parsed
+
+    def _plan_case(
+        self,
+        *,
+        run_id: str,
+        plugin_name: str,
+        case: dict[str, Any],
+        case_ordinal: int,
+        case_count: int,
+        execution_policy: dict[str, Any],
+    ) -> CasePlanningResult:
+        if getattr(self, "agent_circuit_open", False):
+            return CasePlanningResult(status="skipped_circuit_breaker")
+        if getattr(self, "agent_runtime", None) is None or self.agent_runtime.status.state is not AzureAgentState.AZURE_READY:
+            return CasePlanningResult(status="skipped_no_agent")
+        case_id = str(case.get("id", "?"))
+        session_plan = build_case_session_plan(
+            run_id, case_id, {}, agent_runtime=self.agent_runtime
+        )
+        if session_plan is None:
+            return CasePlanningResult(status="skipped_no_agent")
+        try:
+            prompt = build_case_planning_prompt(
+                case=case,
+                execution_policy=execution_policy,
+                run_metadata={"run_id": run_id, "plugin_name": plugin_name, "case_ordinal": case_ordinal, "case_count": case_count},
+            )
+            _, advisory = self._invoke_agent_one_shot(
+                run_id=run_id,
+                case_id=case_id,
+                purpose="case_planning",
+                session_id=str(session_plan["session_id"]),
+                prompt=prompt,
+                timeout_seconds=60.0,
+                validate=parse_case_planning_response,
+            )
+            return CasePlanningResult(status="completed", advisory=advisory)
+        except AgentCallSkipped as exc:
+            return CasePlanningResult(status="skipped_circuit_breaker" if exc.reason == "circuit_breaker" else "skipped_no_agent")
+        except (CasePlanningValidationError, AgentResponseValidationError) as exc:
+            return _planning_result_error(exc)
+        except AgentProviderCallError as exc:
+            return CasePlanningResult(status="failed", error_type=exc.error_type)
+
+    def _analyze_run(self, *, run_result: Any, metrics: dict[str, Any], direct_usage: Any) -> RunAnalysisResult:
+        """Analyze completed verdicts once, after execution has ended."""
+        if not run_result.cases:
+            return RunAnalysisResult(status="skipped_no_cases")
+        if self.agent_circuit_open:
+            return RunAnalysisResult(status="skipped_circuit_breaker")
+        if not self.agent_runtime.status.ready:
+            return RunAnalysisResult(status="skipped_no_agent")
+        batch_calls = 0
+        reducer_calls = 0
+        try:
+            capsules = []
+            for record in run_result.cases:
+                usage = direct_usage.case_totals(record.case_id) if hasattr(direct_usage, "case_totals") else direct_usage.get(record.case_id, {})
+                capsules.append(build_case_capsule(record, direct_usage=usage))
+            batches = pack_case_capsules(capsules)
+            summaries = []
+            for index, batch in enumerate(batches, 1):
+                batch_calls += 1
+                _, parsed = self._invoke_agent_one_shot(
+                    run_id=run_result.run_id, case_id=None,
+                    purpose="run_analysis_batch",
+                    session_id=build_session_id(run_result.run_id, purpose="analysis-batch", invocation_index=index),
+                    prompt=build_run_analysis_prompt(capsules=batch, metrics=metrics, batch_index=index, batch_count=len(batches)),
+                    timeout_seconds=60.0,
+                    validate=lambda raw, ids={x.case_id for x in batch}: parse_run_analysis_response(raw, allowed_case_ids=ids),
                 )
-                self.agent_session_degraded = {"degraded": True, "reason": str(exc)}
-            else:
-                log.debug("SDK session creation failed (already degraded): %s", exc)
-            return {"status": "failed", "error": str(exc)}
+                summaries.append(parsed)
+            if len(summaries) == 1:
+                return RunAnalysisResult.from_mapping(summaries[0], batch_calls=1)
+            reducer_calls = 1
+            _, reduced = self._invoke_agent_one_shot(
+                run_id=run_result.run_id, case_id=None, purpose="run_analysis_reducer",
+                session_id=build_session_id(run_result.run_id, purpose="analysis-reducer", invocation_index=1),
+                prompt=build_run_analysis_reducer_prompt(summaries=summaries, metrics=metrics),
+                timeout_seconds=60.0,
+                validate=lambda raw: parse_run_analysis_response(raw, allowed_case_ids=set()),
+            )
+            findings = [item for summary in summaries for item in summary["case_findings"]]
+            return RunAnalysisResult.from_mapping(reduced, batch_calls=len(batches), reducer_calls=1, case_findings=findings)
+        except Exception as exc:
+            return RunAnalysisResult(status="failed", batch_calls=batch_calls, reducer_calls=reducer_calls, error_type=getattr(exc, "error_type", type(exc).__name__))
+
+    def _record_agent_session_failure(
+        self,
+        exc: Exception,
+        *,
+        warning: str,
+    ) -> str:
+        """Surface an SDK/provider failure once without persisting its text."""
+        safe_reason = f"SDK session operation failed ({type(exc).__name__})"
+        if not self.agent_session_degraded["degraded"]:
+            log.warning(
+                "%s: error_type=%s",
+                warning,
+                type(exc).__name__,
+            )
+            self.agent_session_degraded = {
+                "degraded": True,
+                "reason": safe_reason,
+            }
+        else:
+            log.debug(
+                "SDK session operation failed (already degraded): error_type=%s",
+                type(exc).__name__,
+            )
+        return safe_reason
 
     def _cleanup_case_session(self, session_id: str | None) -> None:
         """Best-effort cleanup of a case-level SDK session."""
@@ -324,13 +678,21 @@ class Orchestrator(OrchestratorRunBackendCompat):
         dut_fw_ver: str | None,
         provider_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return runner.run(
+        payload = runner.run(
             self,
             plugin_name,
             case_ids,
             dut_fw_ver,
             provider_config,
         )
+        if isinstance(payload, dict):
+            payload["core_cost_report"] = {
+                "status": "unsupported_execution_path",
+                "execution_path": "custom_runner",
+                "coverage": "core_sdk_calls_only",
+                "analysis_status": "unavailable",
+            }
+        return payload
 
     def _skeleton_run(
         self,
@@ -351,6 +713,12 @@ class Orchestrator(OrchestratorRunBackendCompat):
             "cases_count": len(cases),
             "case_ids": [c.get("id", "?") for c in cases],
             "status": "skeleton — not yet implemented",
+            "core_cost_report": {
+                "status": "unsupported_execution_path",
+                "execution_path": "skeleton",
+                "coverage": "core_sdk_calls_only",
+                "analysis_status": "unavailable",
+            },
         }
 
     # -- public entry point ----------------------------------------------------

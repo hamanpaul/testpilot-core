@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from testpilot.cli import main
@@ -56,6 +57,23 @@ class TestCLIDocAlignment:
         """--version flag is mentioned in README."""
         text = _readme_text()
         assert "--version" in text
+
+    @pytest.mark.parametrize("path", [
+        Path(__file__).resolve().parents[1] / name
+        for name in ("README.md", "docs/spec.md", "docs/plan.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md", ".github/copilot-instructions.md")
+    ])
+    def test_current_docs_have_no_retired_azure_auth(self, path):
+        text = path.read_text(encoding="utf-8")
+        assert "testpilot --azure" not in text
+        assert "--azure flag" not in text
+        assert "GitHub OAuth fallback" not in text
+        assert "GitHub OAuth（預設）" not in text
+
+    def test_readme_help_has_no_azure_flag(self):
+        result = CliRunner().invoke(main, ["--help"])
+        assert result.exit_code == 0
+        assert "--azure" not in result.output
+        assert "--azure" not in _readme_text()
 
     def test_list_plugins_exists_in_cli(self):
         """list-plugins command exists and responds to --help."""

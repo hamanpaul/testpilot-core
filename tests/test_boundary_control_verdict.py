@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
 from testpilot.core.case_utils import band_results, overall_case_status
-from testpilot.core.execution_engine import ExecutionEngine, RetryResult
+from testpilot.core.execution_engine import ExecutionEngine
 from testpilot.core.hook_policy import (
     HookContext,
     HookDispatcher,
@@ -294,6 +294,8 @@ class TestRetryVerdictBoundary:
         assert result.verdict is False
         assert result.attempts_used == 1
         assert result.max_attempts == 1
+        assert result.tier2_audit == []
+        assert result.agent_recovered is False
 
     def test_fail_fast_no_retry(self, engine: ExecutionEngine) -> None:
         plugin = _make_plugin(evaluate_ok=False)
@@ -307,6 +309,68 @@ class TestRetryVerdictBoundary:
         assert result.verdict is False
         assert result.attempts_used == 1
         assert result.max_attempts == 5
+
+    def test_pre_case_can_raise_case_local_retry_budget(
+        self,
+        hooked_engine: tuple[ExecutionEngine, HookDispatcher],
+    ) -> None:
+        eng, dispatcher = hooked_engine
+
+        def _raise_budget(ctx: HookContext, data: dict[str, Any]) -> HookResult:
+            del ctx
+            data["max_attempts"] = 3
+            return HookResult()
+
+        dispatcher.register("pre_case", _raise_budget)
+        plugin = _make_plugin(evaluate_ok=False)
+
+        result = eng.execute_with_retry(
+            plugin=plugin,
+            case=_make_case(),
+            runner=_RUNNER,
+            execution_policy=_policy_with({"retry": {"max_attempts": 1}}),
+        )
+
+        assert result.max_attempts == 3
+        assert result.attempts_used == 3
+
+    def test_on_retry_halt_preserves_trace_and_skips_next_attempt(
+        self,
+        hooked_engine: tuple[ExecutionEngine, HookDispatcher],
+    ) -> None:
+        eng, dispatcher = hooked_engine
+
+        def _halt_retry(ctx: HookContext, data: dict[str, Any]) -> HookResult:
+            del ctx
+            data["remediation_history"] = [
+                {"decision_source": "tier2-agent", "applied": False}
+            ]
+            data["tier2_audit"] = [{"status": "failed"}]
+            data["agent_recovered"] = True
+            data["failure_snapshot"] = {
+                "category": "environment",
+                "phase": "tier2_verify_env",
+            }
+            return HookResult(proceed=False, advice="tier-2 gate failed")
+
+        dispatcher.register("on_retry", _halt_retry)
+        plugin = _make_plugin(evaluate_ok=False)
+
+        result = eng.execute_with_retry(
+            plugin=plugin,
+            case=_make_case(),
+            runner=_RUNNER,
+            execution_policy=_policy_with({"retry": {"max_attempts": 3}}),
+        )
+
+        assert plugin.setup_env.call_count == 1
+        assert result.attempts_used == 1
+        assert result.remediation_history == [
+            {"decision_source": "tier2-agent", "applied": False}
+        ]
+        assert result.tier2_audit == [{"status": "failed"}]
+        assert result.agent_recovered is True
+        assert result.diagnostic_status == "FailEnv"
 
 
 # ===================================================================

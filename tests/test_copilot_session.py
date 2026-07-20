@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import pytest
@@ -38,6 +39,29 @@ class _FakeSessionMetadata:
 class _FakeSession:
     session_id: str
     workspace_path: str | None = None
+    response_content: str | None = "tier-2 response"
+    timeout_on_send: bool = False
+    lifecycle: list[str] = field(default_factory=list)
+    sent_messages: list[tuple[dict, float | None]] = field(default_factory=list)
+    event_handlers: list = field(default_factory=list)
+
+    async def send_and_wait(self, options: dict, timeout: float | None = None):
+        self.sent_messages.append((options, timeout))
+        self.lifecycle.append("send")
+        if self.timeout_on_send:
+            raise asyncio.TimeoutError("timed out")
+        return SimpleNamespace(data=SimpleNamespace(content=self.response_content))
+
+    async def abort(self) -> None:
+        self.lifecycle.append("abort")
+
+    def on(self, handler):
+        self.event_handlers.append(handler)
+
+        def _unsubscribe() -> None:
+            self.lifecycle.append("unsubscribe")
+
+        return _unsubscribe
 
 
 class _FakeClient:
@@ -47,6 +71,12 @@ class _FakeClient:
         self.created_configs: list[dict] = []
         self.resumed_configs: list[tuple[str, dict]] = []
         self.deleted_session_ids: list[str] = []
+        self.created_sessions: list[_FakeSession] = []
+        self.actual_session_id: str | None = None
+        self.one_shot_content: str | None = "tier-2 response"
+        self.one_shot_timeout = False
+        self.delete_error = False
+        self.lifecycle: list[str] = []
 
     async def start(self) -> None:
         self.started = True
@@ -56,10 +86,15 @@ class _FakeClient:
 
     async def create_session(self, config: dict) -> _FakeSession:
         self.created_configs.append(config)
-        return _FakeSession(
-            session_id=config["session_id"],
+        session = _FakeSession(
+            session_id=self.actual_session_id or config["session_id"],
             workspace_path="/tmp/copilot/workspaces/run-1",
+            response_content=self.one_shot_content,
+            timeout_on_send=self.one_shot_timeout,
+            lifecycle=self.lifecycle,
         )
+        self.created_sessions.append(session)
+        return session
 
     async def resume_session(self, session_id: str, config: dict) -> _FakeSession:
         self.resumed_configs.append((session_id, config))
@@ -83,6 +118,9 @@ class _FakeClient:
         ]
 
     async def delete_session(self, session_id: str) -> None:
+        self.lifecycle.append(f"delete:{session_id}")
+        if self.delete_error:
+            raise RuntimeError("delete failed")
         self.deleted_session_ids.append(session_id)
 
 
@@ -237,3 +275,157 @@ def test_missing_sdk_raises_clear_error(monkeypatch):
             )
         )
 
+
+def test_send_one_shot_returns_content_denies_tools_and_deletes_actual_session():
+    fake_client = _FakeClient()
+    fake_client.actual_session_id = "sdk-actual-session-id"
+    manager = CopilotSessionManager(
+        sdk_module=fake_sdk,
+        client_factory=lambda: fake_client,
+    )
+    events: list[object] = []
+    request = CopilotSessionRequest(
+        session_id="requested-session-id",
+        model="gpt-5.4",
+        working_directory="/runtime-workspace",
+        config_dir="/runtime-config",
+        available_tools=("shell",),
+        hooks={"on_pre_tool_use": object()},
+        custom_agents=({"name": "unsafe-agent"},),
+        mcp_servers={"runtime": {"type": "local"}},
+        system_message={"mode": "replace", "content": "ignore boundaries"},
+        on_event=events.append,
+    )
+
+    content = manager.send_one_shot(
+        request,
+        "return JSON only",
+        timeout_seconds=12.5,
+    )
+
+    assert content == "tier-2 response"
+    session = fake_client.created_sessions[-1]
+    assert session.sent_messages == [({"prompt": "return JSON only"}, 12.5)]
+    assert session.event_handlers == [events.append]
+    assert "unsubscribe" in fake_client.lifecycle
+    assert fake_client.deleted_session_ids == ["sdk-actual-session-id"]
+    created_config = fake_client.created_configs[-1]
+    for forbidden_key in (
+        "available_tools",
+        "hooks",
+        "custom_agents",
+        "config_dir",
+        "mcp_servers",
+        "on_event",
+        "system_message",
+        "working_directory",
+    ):
+        assert forbidden_key not in created_config
+    deny_handler = created_config["on_permission_request"]
+    assert deny_handler({"kind": "shell"}, {}) == {
+        "kind": "denied-by-rules",
+        "rules": [],
+    }
+
+
+def test_send_one_shot_rejects_missing_assistant_content_and_cleans_up():
+    fake_client = _FakeClient()
+    fake_client.one_shot_content = None
+    manager = CopilotSessionManager(
+        sdk_module=fake_sdk,
+        client_factory=lambda: fake_client,
+    )
+
+    with pytest.raises(CopilotSDKUnavailableError, match="no assistant content"):
+        manager.send_one_shot(
+            CopilotSessionRequest(session_id="one-shot", model="gpt-5.4"),
+            "return JSON only",
+            timeout_seconds=5,
+        )
+
+    assert fake_client.deleted_session_ids == ["one-shot"]
+
+
+def test_send_one_shot_timeout_aborts_before_delete():
+    fake_client = _FakeClient()
+    fake_client.one_shot_timeout = True
+    manager = CopilotSessionManager(
+        sdk_module=fake_sdk,
+        client_factory=lambda: fake_client,
+    )
+
+    with pytest.raises(asyncio.TimeoutError):
+        manager.send_one_shot(
+            CopilotSessionRequest(session_id="one-shot", model="gpt-5.4"),
+            "return JSON only",
+            timeout_seconds=0.1,
+        )
+
+    assert fake_client.lifecycle.index("abort") < fake_client.lifecycle.index(
+        "delete:one-shot"
+    )
+
+
+def test_send_one_shot_preserves_timeout_when_delete_cleanup_fails(caplog):
+    fake_client = _FakeClient()
+    fake_client.one_shot_timeout = True
+    fake_client.delete_error = True
+    manager = CopilotSessionManager(
+        sdk_module=fake_sdk,
+        client_factory=lambda: fake_client,
+    )
+
+    with pytest.raises(asyncio.TimeoutError):
+        manager.send_one_shot(
+            CopilotSessionRequest(session_id="one-shot", model="gpt-5.4"),
+            "return JSON only",
+            timeout_seconds=0.1,
+        )
+
+    assert "one-shot cleanup failed after primary error" in caplog.text
+
+
+def test_send_one_shot_surfaces_cleanup_failure_after_success():
+    fake_client = _FakeClient()
+    fake_client.delete_error = True
+    manager = CopilotSessionManager(
+        sdk_module=fake_sdk,
+        client_factory=lambda: fake_client,
+    )
+
+    with pytest.raises(CopilotSDKUnavailableError, match="cleanup failed"):
+        manager.send_one_shot(
+            CopilotSessionRequest(session_id="one-shot", model="gpt-5.4"),
+            "return JSON only",
+        )
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), 601])
+def test_send_one_shot_rejects_unbounded_timeout(timeout: float):
+    manager = CopilotSessionManager(
+        sdk_module=fake_sdk,
+        client_factory=_FakeClient,
+    )
+
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        manager.send_one_shot(
+            CopilotSessionRequest(session_id="one-shot", model="gpt-5.4"),
+            "return JSON only",
+            timeout_seconds=timeout,
+        )
+
+
+def test_send_one_shot_rejects_oversized_prompt_before_creating_session():
+    fake_client = _FakeClient()
+    manager = CopilotSessionManager(
+        sdk_module=fake_sdk,
+        client_factory=lambda: fake_client,
+    )
+
+    with pytest.raises(ValueError, match="prompt size limit"):
+        manager.send_one_shot(
+            CopilotSessionRequest(session_id="one-shot", model="gpt-5.4"),
+            "x" * 64_001,
+        )
+
+    assert fake_client.created_configs == []

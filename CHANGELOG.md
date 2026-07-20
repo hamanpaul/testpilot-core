@@ -9,12 +9,45 @@ preparation.
 
 ## [Unreleased]
 
+### Added
+- Azure-only automatic readiness and core-owned cost/benefit artifacts under
+  `artifact_dir/agent_usage`; per-case planning, capability-gated recovery and
+  run-end analysis now expose direct/shared token totals, deterministic token=0
+  outcomes, and deduplicated `assistant.usage` accounting.
+- `testpilot --version` 除 core 版本與 source ref 外，新增列出所有
+  `testpilot.plugins` entry-point 的 distribution version 與 `api_version`；
+  單一 plugin metadata/import 失敗時以 `unknown` fail-soft 顯示，不影響其餘
+  inventory 或 core 版本輸出（#18）。
+- plugin SDK 契約由 `1.1` additive 提升為 `1.2`，新增 tier-2 env-recovery
+  context/capability/audit 公開型別與兩個選配 `PluginBase` hooks；core prompt/parser
+  對 log/context/audit 做長度上限與 secret redaction，並只接受 capability catalog 內、
+  通過參數 schema 且不含 test semantics/verdict 欄位的 bounded JSON repair plan；
+  capability 亦須明示 plugin 負責強制的 environment execution boundary（#4）。
+- Copilot adapter 新增 bounded `send_one_shot()` planner session：只保留 provider/model
+  等無 tool 設定、強制 deny-all permission handler、明確訂定
+  `github-copilot-sdk>=0.1.23,<0.2` surface，並在 timeout 時先 abort、最後依 SDK
+  實際 session ID delete，避免 tier-2 planning 留下未受控背景工作（#4）。
+- runtime remediation 改為 deterministic tier-1 first；連續兩次 tier-1 未恢復環境後，
+  僅在 retry gap 升級一次 tier-2，執行 plugin-advertised plan 後由 core 強制
+  `verify_env`。retry budget、invocation/action 上限、test-semantics deep-copy guard、
+  bounded audit 與 `agent-recovered` 介入標記均由 core state machine 強制（#4）。
+- orchestrator 於每案 runner 選定後注入獨立的 Copilot one-shot requester，case trace
+  固定輸出 `remediation_history` / `tier2_audit` / `agent_recovered`，run payload 固定
+  輸出 `tier2_remediation` 供人工反哺 tier-1；SDK/provider/plan 失敗會一次性標記
+  degraded 並 fail-closed。另將含 Azure secret 的 runtime session plan 與公開
+  `selection_trace` 分離，provider/SDK/plugin callback 錯誤狀態只保存 stable exception
+  type，不落 raw exception text（#4）。
+
 ## [0.3.4] - 2026-07-08
 
 ### Added
 - 可運行的最小 sample plugin `examples/sample_echo`(獨立 dist `testpilot-sample-echo`,經 `testpilot.plugins` entry-point 被發現、僅依賴 `testpilot.api`、`create_runner`→`run_pipeline` 產出 Pass verdict,含 `register_cli` demo);CI 加真實安裝發現 smoke;dev-guide/README 指向 sample 並修死連結、清 `plugins/wifi_llapi/reports/` 並加 `.gitignore` 防 `plugins/*/reports/` run bundle 再被追蹤(保留 `templates/`;R-21)。對照 #3。
 
 ### Changed
+- Azure activation is environment-driven and core-only: no interactive enable
+  flag or OAuth/provider fallback. Plugin API and `RunResult` remain unchanged;
+  custom/skeleton paths report `unsupported_execution_path`. Benefit metrics are
+  observational and do not claim USD pricing or causal uplift/regression.
 - HTML report 的 WiFi LLAPI Hybrid (tri-band) Summary 版面對齊 xlsx `Summary` sheet:section 移到 KPI/total-case 之下、per-case Summary 表之上;per-band 依 `5G`/`6G`/`2.4G` 分色(列底色 + 左側 3px 色條);每 band 尾端補粗體 **TOTAL** 小計列(取自 `bucket_totals`);隱藏空的 `WiFi.Other` catch-all 列(xlsx 無此欄、真實物件恆對到具體分類;非零時仍顯示並計入 TOTAL)。純 `html_reporter` presentation 層改動,不動 `band_category` 計數邏輯。
 - run_loop 啟動時一律擷取 plugin 的 DUT version manifest 並透過 `RunResult.version_manifest` 傳給 downstream reporters；capture hook 若失敗則 warning 後 fail-soft 續跑、沿用空 manifest fallback。report naming 仍維持 CLI `--dut-fw-ver` 優先、否則取 manifest `git`、再 fallback `DUT-FW-VER`；generic Markdown/HTML reporters 於報告頂部新增預設收合的 `Environment / Versions` 區塊。
 

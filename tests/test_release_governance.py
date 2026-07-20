@@ -88,6 +88,9 @@ def test_agent_instruction_files_are_synchronized() -> None:
     assert "VERSION" in content
     assert "testpilot wifi_llapi" in content
     assert ".project-policy.yml" in content
+    assert "tier-2 必須由 plugin 明確 opt-in" in content
+    assert "agent_recovered" in content
+    assert "remediation tier-2 trigger 與 budgets" in content
 
 
 def test_policy_workflows_enforce_pinned_external_policy() -> None:

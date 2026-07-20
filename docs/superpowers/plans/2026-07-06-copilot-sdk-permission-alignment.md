@@ -1,10 +1,10 @@
 # copilot SDK 0.1.x Permission Handler 對齊 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **SUPERSEDED（2026-07-17）：** 本檔以下 checklist 與 code snippet 僅保留為 #16 的歷史執行紀錄，禁止重新執行或複製。現行契約以 `docs/superpowers/specs/2026-07-17-tier2-env-recovery-design.md` 為準：一般 per-case session 與 tool-denied tier-2 one-shot 共用 run-scoped `agent_session_degraded` marker；所有 provider/SDK/plugin callback 例外只保存 phase 與 exception type，不保存 raw exception text；tier-1 / tier-2 各自依 policy 執行，不做整場 builtin fallback。
 
 **Goal:** session foundation 在 github-copilot-sdk 0.1.x 下可成功建立（approve-all wire shape `{"kind": "approved"}`），建立失敗時 loud surfacing（一次性 warning + run payload degraded key）。
 
-**Architecture:** 只動三處——`copilot_session.py::_resolve_permission_handler`（自組 callable、feature-detect `PermissionRequestResult`）、`orchestrator._create_case_session`（一次性 warning + degraded 狀態）、`run_loop.run_plugin_cases`（回傳 payload 注入 `agent_session_degraded` key）。builtin-fallback 語意不變。
+**Architecture（歷史範圍）：** #16 當時只動 `copilot_session.py::_resolve_permission_handler`、`orchestrator._create_case_session` 與 `run_loop.run_plugin_cases`；後續 #4 已把現行架構擴充為 tier-1-first / opt-in tier-2，並以共享 degraded marker 呈現一般 session 與 tier-2 one-shot 的 SDK/provider failure。
 
 **Tech Stack:** Python 3.11+、pytest、github-copilot-sdk 0.1.x（僅 smoke，測試全 mock）。
 
@@ -128,9 +128,11 @@ def test_session_failure_warns_once_and_sets_degraded(caplog):
         h2 = orch._create_case_session(dict(plan))
     assert h1["status"] == "failed" and h2["status"] == "failed"  # 既有 per-case 行為不變
     warnings = [r for r in caplog.records
-                if r.levelno == logging.WARNING and "builtin-fallback" in r.getMessage()]
+                if r.levelno == logging.WARNING and "marked degraded" in r.getMessage()]
     assert len(warnings) == 1  # 一次性 loud warning
-    assert orch.agent_session_degraded == {"degraded": True, "reason": "boom"}
+    assert orch.agent_session_degraded["degraded"] is True
+    assert "RuntimeError" in orch.agent_session_degraded["reason"]
+    assert "boom" not in orch.agent_session_degraded["reason"]
 
 
 def test_no_failure_keeps_degraded_false():
@@ -157,15 +159,23 @@ Expected: FAIL——`agent_session_degraded` 屬性不存在。
         try:
             ...  # 既有建立邏輯不動
         except Exception as exc:
+            safe_reason = f"SDK session operation failed ({type(exc).__name__})"
             if not self.agent_session_degraded["degraded"]:
                 log.warning(
-                    "SDK session foundation failed; remediation will run with "
-                    "builtin-fallback for the whole run: %s", exc,
+                    "SDK session foundation failed; agent session marked "
+                    "degraded: error_type=%s",
+                    type(exc).__name__,
                 )
-                self.agent_session_degraded = {"degraded": True, "reason": str(exc)}
+                self.agent_session_degraded = {
+                    "degraded": True,
+                    "reason": safe_reason,
+                }
             else:
-                log.debug("SDK session creation failed (already degraded): %s", exc)
-            return {"status": "failed", "error": str(exc)}
+                log.debug(
+                    "SDK session operation failed (already degraded): error_type=%s",
+                    type(exc).__name__,
+                )
+            return {"status": "failed", "error": safe_reason}
 ```
 
 - [ ] **Step 4: 跑測試確認 GREEN，並確認既有 orchestrator 測試不破**
@@ -198,7 +208,8 @@ def test_run_payload_degraded_true_when_sessions_fail(...):
     # orch.session_manager = _FailingSessionManager()，runner 選 copilot 使 session plan 存在
     payload = run_plugin_cases(orchestrator=orch, plugin_name="fake", case_ids=None)
     assert payload["agent_session_degraded"]["degraded"] is True
-    assert "boom" in payload["agent_session_degraded"]["reason"]
+    assert "RuntimeError" in payload["agent_session_degraded"]["reason"]
+    assert "boom" not in payload["agent_session_degraded"]["reason"]
 ```
 
 - [ ] **Step 2: 跑測試確認 RED**
@@ -252,7 +263,7 @@ Expected: 印出 `{'kind': 'approved'}`，不 raise。
 
 ```markdown
 ### Fixed
-- copilot session foundation 對齊 github-copilot-sdk 0.1.x（`PermissionHandler.approve_all` 已不存在）：自組 approve-all permission handler（wire shape `{"kind": "approved"}`）；session 建立失敗改為一次性 loud warning + run payload `agent_session_degraded` key，終結 silent builtin-fallback（#16）
+- copilot session foundation 對齊 github-copilot-sdk 0.1.x（`PermissionHandler.approve_all` 已不存在）：自組 approve-all permission handler（wire shape `{"kind": "approved"}`）；session 建立失敗改為一次性 loud warning + run payload `agent_session_degraded` key，並只保存穩定 exception type（#16）
 ```
 
 - [ ] **Step 3: 最終驗證 + Commit**

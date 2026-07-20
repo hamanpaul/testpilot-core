@@ -237,9 +237,11 @@ Wifi_llapi reporting guidance:
 5. `wifi_llapi` 執行策略以 case-level 為主（每個 test case 各自呼叫 agent）。
 6. `wifi_llapi` 排程策略預設為 `sequential`（`max_concurrency=1`）。
 7. case 失敗策略為 `retry_then_fail_and_continue`，且 timeout 需隨 retry attempt 調整。
-8. `wifi_llapi` 目前允許的 live remediation 只限 safe environment repair：`serial_session_recover`、`sta_band_reconnect`、`sta_band_rebaseline`、`dut_band_rebaseline`、`case_env_reverify`。
-9. live remediation 僅允許發生在 retry attempts 之間；不得 mid-step takeover，也不得修改 YAML semantics、step 指令、pass criteria 或 xlsx final verdict。
-10. 若 agent remediation decision 無法取得、格式不合法、或超出 whitelist，必須 fallback 到 deterministic builtin classifier，或直接不套 remediation。
+8. tier-1 live remediation 維持 plugin-owned deterministic safe-environment allowlist；`wifi_llapi` 現有 action 為 `serial_session_recover`、`sta_band_reconnect`、`sta_band_rebaseline`、`dut_band_rebaseline`、`case_env_reverify`、受控 `dut_reboot`、受控 `dut_firstboot`。
+9. tier-2 必須由 plugin 明確 opt-in；tier-1 連續失敗達門檻後，core 才可在 `on_retry` 以 one-shot planner 從 plugin-advertised environment capability catalog 選 action，並強制 schema、action/invocation/timeout/attempt budget。
+10. tier-1 / tier-2 都只能發生在 retry attempts 之間；不得 mid-step takeover，也不得修改 YAML semantics、step 指令、pass criteria 或 xlsx final verdict。
+11. tier-2 one-shot 不取得 runtime tools；plugin 只執行通過 catalog/schema 的 env plan，之後由 core 強制 deterministic `verify_env`。SDK/provider/plan/執行/gate 任一失敗皆 fail-closed 並保留 audit。
+12. 任何 tier-2 agent 介入都必須標記 `agent_recovered` 並輸出 bounded/redacted audit；成功修法只能由人工作業反哺 tier-1，不得自動改規則。
 
 ## Plugin API Contract Policy
 
@@ -250,16 +252,12 @@ Wifi_llapi reporting guidance:
 
 ## Azure OpenAI BYOK Policy
 
-1. CLI 提供 `--azure` flag，啟動時互動式詢問 endpoint / api_key / model 三個參數。
-2. 認證順序：`--azure` 互動 → `COPILOT_PROVIDER_*` 環境變數 → GitHub OAuth → 全部失敗則結束程式。
-3. 環境變數命名遵循 Copilot CLI 官方慣例：
-   - `COPILOT_PROVIDER_TYPE=azure`
-   - `COPILOT_PROVIDER_BASE_URL=<endpoint>`
-   - `COPILOT_PROVIDER_API_KEY=<key>`
-   - `COPILOT_MODEL=<deployment-name>`
-   - `COPILOT_PROVIDER_AZURE_API_VERSION=<version>` (預設 `2024-10-21`)
-4. API key 與 endpoint 不得提交至版本控制；secrets 一律透過環境變數或 shell profile 注入。
-5. `agent-config.yaml` 只放執行策略（model priority / timeout / retry），不放 secrets。
+1. TestPilot core不提供互動式 Azure enable flag；`COPILOT_PROVIDER_API_KEY`存在且 endpoint/deployment完整時自動啟用，沒有 key時使用 deterministic/no-agent mode。
+2. TestPilot core只建立 Azure provider；不得 fallback到 GitHub OAuth、GitHub-hosted model或其他 provider。
+3. 必要環境變數：`COPILOT_PROVIDER_BASE_URL=<endpoint>`、`COPILOT_PROVIDER_API_KEY=<key>`、`COPILOT_MODEL=<deployment-name>`、`COPILOT_PROVIDER_AZURE_API_VERSION=<version>`（預設 `2024-10-21`）。
+4. `COPILOT_PROVIDER_TYPE`不作為 enable switch；`agent-config.yaml`只保存執行策略（包含 remediation tier-2 trigger 與 budgets），不保存 secrets。
+5. API key與 endpoint不得提交版本控制或寫入 trace/report；secrets只透過環境或 secret store注入。
+6. Core-owned agent calls必須 tool-denied；plugin未明確opt in tier-2 capability/executor時，agent recovery固定為unsupported/0。
 
 ## Code Style
 

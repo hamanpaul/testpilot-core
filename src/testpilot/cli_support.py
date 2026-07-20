@@ -8,6 +8,7 @@ import click
 from rich.console import Console
 
 from testpilot.core.orchestrator import Orchestrator
+from testpilot.core.azure_auth import resolve_azure_agent_runtime
 from testpilot.core.plugin_base import IncompatiblePluginError
 from testpilot.core.plugin_loader import PluginLoader
 from testpilot.core.testbed_bootstrap import stage_plugin_testbed
@@ -55,7 +56,7 @@ def get_orchestrator(ctx: Any, plugin_name: str | None = None) -> Orchestrator:
             stage_plugin_testbed(plugin.plugin_root, plugin_name, root / "configs")
         except FileNotFoundError as exc:
             raise click.ClickException(str(exc)) from exc
-    return Orchestrator(project_root=root)
+    return Orchestrator(project_root=root, agent_runtime=resolve_azure_agent_runtime())
 
 
 def run_plugin_cases(
@@ -66,16 +67,10 @@ def run_plugin_cases(
 ) -> None:
     """Run plugin cases through the shared normal-run orchestrator path."""
     orch = get_orchestrator(ctx, plugin_name)
-    provider_config = ctx.obj.get("provider_config")
-    provider_notice = str(ctx.obj.get("provider_notice") or "")
-    if provider_config and provider_notice == "azure_interactive":
-        console.print("[green]✓ Azure OpenAI authenticated.[/green]")
-    elif provider_config and provider_notice == "azure_env":
-        console.print("[green]✓ Azure OpenAI (from env vars).[/green]")
     result = orch.run(
         plugin_name,
         list(case_ids) if case_ids else None,
         dut_fw_ver=dut_fw_ver,
-        provider_config=provider_config,
+        provider_config=None,
     )
     console.print(result)

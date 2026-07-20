@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from testpilot.core.advisory import AdvisoryCollector, AdvisoryOutput
-from testpilot.core.hook_policy import HookContext
+from testpilot.core.execution_engine import ExecutionEngine
+from testpilot.core.hook_policy import (
+    HookContext,
+    HookDispatcher,
+    HookPolicyConfig,
+)
 from testpilot.core.remediation import (
     FailureSnapshot,
     RemediationAction,
     RemediationDecision,
     RemediationPlan,
     RemediationPlanner,
+    RemediationTraceEntry,
     RuntimeRemediationAction,
     RuntimeRemediationCoordinator,
 )
@@ -237,6 +245,39 @@ class TestLiveRemediationDataclasses:
         assert payload["actions"][0]["executor_key"] == "case_env_reverify"
         assert payload["failure"]["phase"] == "verify_env"
 
+    def test_runtime_artifact_shapes_redact_common_secrets(self) -> None:
+        snapshot = FailureSnapshot(
+            case_id="D001",
+            attempt_index=1,
+            phase="verify_env",
+            comment="password=snapshot-secret",
+            output="token=output-secret",
+        )
+        action = RuntimeRemediationAction(
+            executor_key="repair",
+            params={"api_key": "action-secret"},
+        )
+        trace = RemediationTraceEntry(
+            case_id="D001",
+            attempt_index=2,
+            decision_source="tier1-deterministic",
+            summary="repair",
+            failure_snapshot=snapshot.to_dict(),
+            executed_actions=[action.to_dict()],
+            comment="credential=trace-secret",
+        )
+
+        serialized = json.dumps(trace.to_dict())
+
+        for secret in (
+            "snapshot-secret",
+            "output-secret",
+            "action-secret",
+            "trace-secret",
+        ):
+            assert secret not in serialized
+        assert "[REDACTED]" in serialized
+
 
 class _LivePlugin:
     def __init__(self) -> None:
@@ -278,6 +319,12 @@ class _UnsafeLivePlugin(_LivePlugin):
                 {"executor_key": "rewrite_yaml", "safety_class": "unsafe"},
             ],
         }
+
+
+class _OpaqueTier1Plugin(_LivePlugin):
+    def execute_remediation(self, case, decision, topology):
+        del case, decision, topology
+        raise RuntimeError("opaque-tier1-secret-sentinel")
 
 
 class TestRuntimeRemediationCoordinator:
@@ -336,6 +383,45 @@ class TestRuntimeRemediationCoordinator:
         assert retry_data["remediation_trace_entry"]["applied"] is True
         assert retry_data["remediation_history"][0]["verify_after"] is True
 
+    def test_tier1_executor_exception_is_opaque_in_trace(self) -> None:
+        coordinator = RuntimeRemediationCoordinator(
+            plugin=_OpaqueTier1Plugin(),
+            topology=object(),
+            policy={
+                "enabled": True,
+                "allowed_actions": [
+                    "sta_band_rebaseline",
+                    "case_env_reverify",
+                ],
+            },
+        )
+        case = {
+            "id": "D001",
+            "_last_failure": {
+                "case_id": "D001",
+                "attempt_index": 1,
+                "phase": "verify_env",
+                "comment": "environment not ready",
+                "category": "environment",
+                "reason_code": "not_ready",
+            },
+        }
+        coordinator.handle_pre_case(self._ctx("pre_case"), {})
+        coordinator.handle_on_failure(
+            self._ctx("on_failure"),
+            {"case": case, "phase": "verify_env", "comment": "failed"},
+        )
+        retry_data = {"case": case, "attempt_index": 2}
+
+        coordinator.handle_on_retry(
+            self._ctx("on_retry", attempt_index=2),
+            retry_data,
+        )
+
+        serialized = json.dumps(retry_data)
+        assert "opaque-tier1-secret-sentinel" not in serialized
+        assert "RuntimeError" in retry_data["remediation_trace_entry"]["comment"]
+
     def test_non_env_failure_does_not_emit_decision(self) -> None:
         plugin = _LivePlugin()
         coordinator = RuntimeRemediationCoordinator(
@@ -358,6 +444,27 @@ class TestRuntimeRemediationCoordinator:
         coordinator.handle_on_failure(self._ctx("on_failure"), failure_data)
         assert "remediation_decision" not in failure_data
 
+    @pytest.mark.parametrize("phase", ["setup_env", "verify_env"])
+    def test_core_env_gate_phase_defaults_to_environment_without_plugin_snapshot(
+        self,
+        phase: str,
+    ) -> None:
+        coordinator = RuntimeRemediationCoordinator(
+            plugin=_LivePlugin(),
+            topology=object(),
+            policy={"enabled": True, "allowed_actions": ["case_env_reverify"]},
+        )
+        failure_data = {
+            "case": {"id": "D001"},
+            "phase": phase,
+            "comment": f"{phase} failed",
+        }
+
+        coordinator.handle_on_failure(self._ctx("on_failure"), failure_data)
+
+        assert failure_data["failure_snapshot"]["category"] == "environment"
+        assert "remediation_decision" in failure_data
+
     def test_unsafe_actions_are_rejected(self) -> None:
         plugin = _UnsafeLivePlugin()
         coordinator = RuntimeRemediationCoordinator(
@@ -376,6 +483,578 @@ class TestRuntimeRemediationCoordinator:
                 "reason_code": "sta_band_not_ready",
             },
         }
-        failure_data = {"case": case, "phase": "verify_env", "comment": "env_verify gate failed"}
+        failure_data = {
+            "case": case,
+            "phase": "verify_env",
+            "comment": "env_verify gate failed",
+        }
         coordinator.handle_on_failure(self._ctx("on_failure"), failure_data)
         assert "remediation_decision" not in failure_data
+
+    def test_non_env_failure_resets_tier1_miss_streak(self) -> None:
+        requester = _Tier2Requester()
+        coordinator = RuntimeRemediationCoordinator(
+            plugin=_UnsafeLivePlugin(),
+            topology=object(),
+            policy={
+                "enabled": True,
+                "allowed_actions": ["case_env_reverify"],
+                "tier2": {
+                    "enabled": True,
+                    "escalate_after_tier1_failures": 2,
+                    "max_total_attempts": 4,
+                },
+            },
+            tier2_requester=requester,
+        )
+        coordinator.handle_pre_case(self._ctx("pre_case"), {})
+
+        coordinator.handle_on_failure(
+            self._ctx("on_failure"),
+            {
+                "case": {
+                    "id": "D001",
+                    "_last_failure": {
+                        "category": "environment",
+                        "phase": "verify_env",
+                    },
+                },
+                "phase": "verify_env",
+                "comment": "environment failure one",
+            },
+        )
+        coordinator.handle_on_failure(
+            self._ctx("on_failure", attempt_index=2),
+            {
+                "case": {
+                    "id": "D001",
+                    "_last_failure": {
+                        "category": "test",
+                        "phase": "evaluate",
+                    },
+                },
+                "phase": "evaluate",
+                "comment": "non-environment failure",
+            },
+        )
+        coordinator.handle_on_failure(
+            self._ctx("on_failure", attempt_index=3),
+            {
+                "case": {
+                    "id": "D001",
+                    "_last_failure": {
+                        "category": "environment",
+                        "phase": "verify_env",
+                    },
+                },
+                "phase": "verify_env",
+                "comment": "environment failure two",
+            },
+        )
+        retry_data = {"case": {"id": "D001"}, "attempt_index": 4}
+
+        result = coordinator.handle_on_retry(
+            self._ctx("on_retry", attempt_index=4),
+            retry_data,
+        )
+
+        assert result.proceed is True
+        assert requester.calls == []
+        assert retry_data["tier2_audit"] == []
+
+
+class _Tier2Requester:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict]] = []
+
+    def __call__(self, prompt: str, context: dict) -> str:
+        self.calls.append((prompt, context))
+        return json.dumps(
+            {
+                "summary": "repair target environment",
+                "rationale": "tier-1 did not restore readiness",
+                "actions": [{"executor_key": "target_env_repair"}],
+            }
+        )
+
+
+class _InvalidTier2Requester(_Tier2Requester):
+    def __call__(self, prompt: str, context: dict) -> str:
+        self.calls.append((prompt, context))
+        return "not-json"
+
+
+class _OpaqueTier2Requester(_Tier2Requester):
+    def __call__(self, prompt: str, context: dict) -> str:
+        self.calls.append((prompt, context))
+        raise RuntimeError("opaque-requester-secret-sentinel")
+
+
+class _Tier2FlowPlugin:
+    def __init__(
+        self,
+        *,
+        verify_results: list[bool],
+        tier1_results: list[dict],
+        mutate_semantics: bool = False,
+    ) -> None:
+        self.verify_results = list(verify_results)
+        self.tier1_results = list(tier1_results)
+        self.mutate_semantics = mutate_semantics
+        self.builtin_decision_calls = 0
+        self.tier2_execute_calls = 0
+        self.evaluate_calls = 0
+
+    def setup_env(self, case, topology):
+        del case, topology
+        return True
+
+    def verify_env(self, case, topology):
+        del topology
+        result = self.verify_results.pop(0)
+        if not result:
+            case["_last_failure"] = {
+                "case_id": case["id"],
+                "attempt_index": case.get("_attempt_index", 0),
+                "phase": "verify_env",
+                "comment": "target environment not ready",
+                "category": "environment",
+                "reason_code": "target_not_ready",
+            }
+        return result
+
+    def execute_step(self, case, step, topology):
+        del case, topology
+        return {"success": True, "command": step["command"], "output": "ok"}
+
+    def evaluate(self, case, results):
+        del case, results
+        self.evaluate_calls += 1
+        return True
+
+    def teardown(self, case, topology):
+        del case, topology
+
+    def build_remediation_decision(
+        self,
+        case,
+        failure_snapshot,
+        topology,
+        *,
+        runner=None,
+        remediation_policy=None,
+    ):
+        del case, topology, runner, remediation_policy
+        self.builtin_decision_calls += 1
+        return {
+            "case_id": failure_snapshot.case_id,
+            "attempt_index": failure_snapshot.attempt_index,
+            "summary": "tier-1 deterministic repair",
+            "actions": [{"executor_key": "tier1_repair"}],
+        }
+
+    def request_remediation_decision(self, *args, **kwargs):
+        del args, kwargs
+        raise AssertionError("legacy agent-first hook must never be called")
+
+    def execute_remediation(self, case, decision, topology):
+        del case, decision, topology
+        return self.tier1_results.pop(0)
+
+    def build_tier2_remediation_context(
+        self,
+        case,
+        failure_snapshot,
+        topology,
+        *,
+        runner=None,
+        remediation_policy=None,
+    ):
+        del case, failure_snapshot, topology, runner, remediation_policy
+        return {
+            "diagnosis": "target readiness probe remains down",
+            "log_excerpt": ["probe rc=1"],
+            "capabilities": [
+                {
+                    "executor_key": "target_env_repair",
+                    "description": "repair target environment state",
+                    "execution_boundary": "isolated target transport",
+                    "params_schema": {},
+                }
+            ],
+            "verify_env_definition": "target readiness probe returns success",
+        }
+
+    def execute_tier2_remediation(self, case, plan, topology):
+        del plan, topology
+        self.tier2_execute_calls += 1
+        if self.mutate_semantics:
+            case["steps"][0]["command"] = "rewritten-command"
+            case["pass_criteria"].append("rewritten-criteria")
+        return {
+            "success": True,
+            "comment": "tier-2 environment repair applied",
+            "actions": [
+                {"executor_key": "target_env_repair", "success": True}
+            ],
+        }
+
+
+def _tier2_engine(
+    plugin: _Tier2FlowPlugin,
+    requester: _Tier2Requester,
+    *,
+    max_invocations_per_case: int = 1,
+    max_total_attempts: int = 4,
+) -> ExecutionEngine:
+    dispatcher = HookDispatcher(
+        HookPolicyConfig(
+            enabled_hooks={"pre_case", "on_failure", "on_retry", "post_case"},
+            fail_open=False,
+        )
+    )
+    coordinator = RuntimeRemediationCoordinator(
+        plugin=plugin,
+        topology=object(),
+        policy={
+            "enabled": True,
+            "allowed_actions": ["tier1_repair"],
+            "tier2": {
+                "enabled": True,
+                "escalate_after_tier1_failures": 2,
+                "max_invocations_per_case": max_invocations_per_case,
+                "max_actions": 2,
+                "max_total_attempts": max_total_attempts,
+            },
+        },
+        tier2_requester=requester,
+    )
+    dispatcher.register("pre_case", coordinator.handle_pre_case)
+    dispatcher.register("on_failure", coordinator.handle_on_failure)
+    dispatcher.register("on_retry", coordinator.handle_on_retry)
+    dispatcher.register("post_case", coordinator.handle_post_case)
+    return ExecutionEngine(config=object(), hook_dispatcher=dispatcher)
+
+
+def _tier2_case() -> dict:
+    return {
+        "id": "D001",
+        "steps": [{"id": "step-1", "command": "original-command"}],
+        "pass_criteria": ["original-criteria"],
+    }
+
+
+def _tier2_policy() -> dict:
+    return {
+        "retry": {"max_attempts": 2},
+        "failure_policy": "retry_then_fail_and_continue",
+    }
+
+
+def test_tier1_explicit_failures_escalate_once_and_recover() -> None:
+    plugin = _Tier2FlowPlugin(
+        verify_results=[False, False, True, True],
+        tier1_results=[
+            {"success": False, "verify_after": False, "comment": "tier-1 failed"},
+            {"success": False, "verify_after": False, "comment": "tier-1 failed"},
+        ],
+    )
+    requester = _Tier2Requester()
+
+    result = _tier2_engine(plugin, requester).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=_tier2_policy(),
+    )
+
+    assert result.verdict is True
+    assert result.max_attempts == 4
+    assert plugin.builtin_decision_calls == 2
+    assert len(requester.calls) == 1
+    assert plugin.tier2_execute_calls == 1
+    assert result.agent_recovered is True
+    assert result.tier2_audit[0]["verify_gate"]["passed"] is True
+    assert [entry["decision_source"] for entry in result.remediation_history] == [
+        "tier1-deterministic",
+        "tier1-deterministic",
+        "tier2-agent",
+    ]
+
+
+def test_tier2_max_total_attempts_is_a_hard_case_budget() -> None:
+    plugin = _Tier2FlowPlugin(
+        verify_results=[False, False, True, True],
+        tier1_results=[
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+        ],
+    )
+    requester = _Tier2Requester()
+    policy = _tier2_policy()
+    policy["retry"]["max_attempts"] = 20
+
+    result = _tier2_engine(plugin, requester).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=policy,
+    )
+
+    assert result.max_attempts == 4
+
+
+def test_tier2_rejects_unreachable_total_attempt_budget() -> None:
+    with pytest.raises(ValueError, match="max_total_attempts"):
+        RuntimeRemediationCoordinator(
+            plugin=object(),
+            topology=object(),
+            policy={
+                "enabled": True,
+                "tier2": {
+                    "enabled": True,
+                    "escalate_after_tier1_failures": 2,
+                    "max_total_attempts": 3,
+                },
+            },
+            tier2_requester=_Tier2Requester(),
+        )
+
+
+def test_tier2_failed_verify_gate_halts_before_test_execution() -> None:
+    plugin = _Tier2FlowPlugin(
+        verify_results=[False, False, False],
+        tier1_results=[
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+        ],
+    )
+    requester = _Tier2Requester()
+
+    result = _tier2_engine(plugin, requester).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=_tier2_policy(),
+    )
+
+    assert result.verdict is False
+    assert result.diagnostic_status == "FailEnv"
+    assert result.agent_recovered is True
+    assert result.tier2_audit[0]["verify_gate"]["passed"] is False
+    assert plugin.evaluate_calls == 0
+
+
+def test_tier2_disabled_for_case_does_not_retrigger_budget_halt() -> None:
+    plugin = _Tier2FlowPlugin(
+        verify_results=[False, False, False, False, True],
+        tier1_results=[
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+        ],
+    )
+    requester = _InvalidTier2Requester()
+
+    result = _tier2_engine(
+        plugin,
+        requester,
+        max_total_attempts=6,
+    ).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=_tier2_policy(),
+    )
+
+    assert result.verdict is True
+    assert len(requester.calls) == 1
+    assert result.tier2_audit[0]["status"] == "rejected"
+    assert "budget exhausted" not in (result.comment or "")
+    assert plugin.tier2_execute_calls == 0
+
+
+def test_zero_tier2_invocation_budget_behaves_like_tier2_disabled() -> None:
+    plugin = _Tier2FlowPlugin(
+        verify_results=[False, False, True],
+        tier1_results=[
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+        ],
+    )
+    requester = _Tier2Requester()
+    policy = _tier2_policy()
+    policy["retry"]["max_attempts"] = 3
+
+    result = _tier2_engine(
+        plugin,
+        requester,
+        max_invocations_per_case=0,
+    ).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=policy,
+    )
+
+    assert result.verdict is True
+    assert requester.calls == []
+    assert plugin.tier2_execute_calls == 0
+
+
+def test_tier2_can_invoke_twice_when_case_budget_is_two() -> None:
+    class _MultiTier2FlowPlugin(_Tier2FlowPlugin):
+        def __init__(self) -> None:
+            super().__init__(
+                verify_results=[False, False, True, True, True, True, True],
+                tier1_results=[
+                    {"success": False, "verify_after": False},
+                    {"success": False, "verify_after": False},
+                    {"success": False, "verify_after": False},
+                    {"success": False, "verify_after": False},
+                ],
+            )
+            self.evaluate_results = [False, False, True]
+
+        def evaluate(self, case, results):
+            del results
+            self.evaluate_calls += 1
+            verdict = self.evaluate_results.pop(0)
+            if not verdict:
+                case["_last_failure"] = {
+                    "case_id": case["id"],
+                    "attempt_index": case.get("_attempt_index", 0),
+                    "phase": "evaluate",
+                    "comment": "environment drifted after recovery",
+                    "category": "environment",
+                    "reason_code": "env_drift",
+                }
+            return verdict
+
+    plugin = _MultiTier2FlowPlugin()
+    requester = _Tier2Requester()
+
+    result = _tier2_engine(
+        plugin,
+        requester,
+        max_invocations_per_case=2,
+        max_total_attempts=6,
+    ).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=_tier2_policy(),
+    )
+
+    assert result.verdict is True
+    assert len(requester.calls) == 2
+    assert plugin.tier2_execute_calls == 2
+    assert [entry["decision_source"] for entry in result.remediation_history].count(
+        "tier2-agent"
+    ) == 2
+    assert len(result.tier2_audit) == 2
+
+
+def test_real_verify_failures_override_optimistic_tier1_results() -> None:
+    plugin = _Tier2FlowPlugin(
+        verify_results=[False, False, False, True, True],
+        tier1_results=[
+            {"success": True, "verify_after": True},
+            {"success": True, "verify_after": True},
+        ],
+    )
+    requester = _Tier2Requester()
+
+    result = _tier2_engine(plugin, requester).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=_tier2_policy(),
+    )
+
+    assert result.verdict is True
+    assert result.attempts_used == 4
+    assert plugin.builtin_decision_calls == 2
+    assert len(requester.calls) == 1
+    assert result.agent_recovered is True
+
+
+def test_tier2_executor_cannot_mutate_case_semantics() -> None:
+    case = _tier2_case()
+    plugin = _Tier2FlowPlugin(
+        verify_results=[False, False],
+        tier1_results=[
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+        ],
+        mutate_semantics=True,
+    )
+    requester = _Tier2Requester()
+
+    result = _tier2_engine(plugin, requester).execute_with_retry(
+        plugin=plugin,
+        case=case,
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=_tier2_policy(),
+    )
+
+    assert result.verdict is False
+    assert result.tier2_audit[0]["status"] == "rejected"
+    assert "test semantics" in result.tier2_audit[0]["error"]
+    assert case["steps"][0]["command"] == "original-command"
+    assert case["pass_criteria"] == ["original-criteria"]
+
+
+def test_invalid_tier2_plan_fails_closed_with_audit_and_single_invocation() -> None:
+    plugin = _Tier2FlowPlugin(
+        verify_results=[False, False],
+        tier1_results=[
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+        ],
+    )
+    requester = _InvalidTier2Requester()
+
+    result = _tier2_engine(plugin, requester).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=_tier2_policy(),
+    )
+
+    assert result.verdict is False
+    assert result.diagnostic_status == "Inconclusive"
+    assert result.agent_recovered is True
+    assert result.tier2_audit[0]["status"] == "rejected"
+    assert len(requester.calls) == 1
+    assert plugin.tier2_execute_calls == 0
+    assert plugin.evaluate_calls == 0
+
+
+def test_tier2_requester_exception_is_opaque_in_audit() -> None:
+    plugin = _Tier2FlowPlugin(
+        verify_results=[False, False],
+        tier1_results=[
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+        ],
+    )
+    requester = _OpaqueTier2Requester()
+
+    result = _tier2_engine(plugin, requester).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=_tier2_policy(),
+    )
+
+    serialized = json.dumps(
+        {
+            "tier2_audit": result.tier2_audit,
+            "remediation_history": result.remediation_history,
+        }
+    )
+    assert result.tier2_audit[0]["status"] == "failed"
+    assert "RuntimeError" in result.tier2_audit[0]["error"]
+    assert "opaque-requester-secret-sentinel" not in serialized

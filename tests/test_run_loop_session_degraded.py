@@ -6,8 +6,6 @@ foundation failure is loud (not silent) all the way out to the run result.
 
 These tests drive ``run_loop.run`` with a hermetic stub orchestrator + fake
 plugin/reporter (no real run backend / serialwrap) so they stay hardware-free.
-The ``_create_case_session`` → ``agent_session_degraded`` wiring itself is
-covered by ``tests/test_orchestrator_session_degraded.py``.
 """
 
 from __future__ import annotations
@@ -17,6 +15,7 @@ from typing import Any
 
 from testpilot.core import run_loop
 from testpilot.core.prepared_run import PreparedRun
+from testpilot.core.usage_ledger import UsageLedger
 
 
 class _FakeReporter:
@@ -105,6 +104,13 @@ class _StubOrchestrator:
         self.run_handle = None
         self.agent_session_degraded = degraded
         self.events = events
+        self.usage_ledger = UsageLedger()
+
+    def _analyze_run(self, *, run_result: Any, metrics: dict[str, Any], direct_usage: Any) -> Any:
+        del run_result, metrics, direct_usage
+        if self.events is not None:
+            self.events.append("run_analysis")
+        return type("Analysis", (), {"to_dict": lambda _self: {"status": "skipped_no_cases"}})()
 
     def _start_run_capture(self, run_id: str) -> Path | None:
         del run_id
@@ -126,11 +132,15 @@ def test_run_payload_carries_agent_session_degraded(tmp_path: Path) -> None:
     orch = _StubOrchestrator(tmp_path, {"degraded": False, "reason": ""})
     payload = run_loop.run(orch, "fake", None, None)
     assert payload["agent_session_degraded"] == {"degraded": False, "reason": ""}
+    assert payload["tier2_remediation"] == {
+        "agent_recovered_case_ids": [],
+        "audit": [],
+    }
 
 
 def test_run_payload_degraded_true_when_sessions_fail(tmp_path: Path) -> None:
-    # session foundation 在 run 中失敗後 orchestrator.agent_session_degraded 被標記
-    # （見 test_orchestrator_session_degraded）；payload 必須原樣攜出。
+    # session foundation 在 run 中失敗後 orchestrator.agent_session_degraded 被標記；
+    # payload 必須原樣攜出。
     orch = _StubOrchestrator(tmp_path, {"degraded": True, "reason": "boom"})
     payload = run_loop.run(orch, "fake", None, None)
     assert payload["agent_session_degraded"]["degraded"] is True
@@ -166,6 +176,47 @@ def test_run_starts_capture_before_version_manifest_probe(tmp_path: Path) -> Non
     run_loop.run(orch, "fake", None, None)
 
     assert events[:2] == ["start_run_capture", "capture_version_manifest"]
+
+
+def test_run_analyzes_after_all_cases_and_before_reporter(tmp_path: Path) -> None:
+    events: list[str] = []
+    plugin = _FakePlugin(events=events)
+    reporter = plugin.create_reporter()
+    original = reporter.build_reports
+
+    def build_reports(run_result: Any) -> dict[str, Any]:
+        events.append("reporter")
+        return original(run_result)
+
+    reporter.build_reports = build_reports  # type: ignore[method-assign]
+    plugin.create_reporter = lambda: reporter  # type: ignore[method-assign]
+    orch = _StubOrchestrator(tmp_path, {"degraded": False, "reason": ""}, plugin=plugin, events=events)
+
+    run_loop.run(orch, "fake", None, None)
+
+    assert events.index("run_analysis") < events.index("reporter")
+
+
+def test_plugin_reporter_receives_run_result_before_core_analysis_attachment(
+    tmp_path: Path,
+) -> None:
+    observed: list[bool] = []
+    plugin = _FakePlugin()
+    reporter = plugin.create_reporter()
+    original = reporter.build_reports
+
+    def build_reports(run_result: Any) -> dict[str, Any]:
+        observed.append("core_agent_analysis" in run_result.artifacts)
+        return original(run_result)
+
+    reporter.build_reports = build_reports  # type: ignore[method-assign]
+    plugin.create_reporter = lambda: reporter  # type: ignore[method-assign]
+    orch = _StubOrchestrator(tmp_path, {"degraded": False, "reason": ""}, plugin=plugin)
+
+    payload = run_loop.run(orch, "fake", None, None)
+
+    assert observed == [False]
+    assert "core_agent_analysis" in payload
 
 
 def test_run_payload_preserves_manifest_when_cli_fw_ver_wins_naming(tmp_path: Path) -> None:

@@ -143,6 +143,38 @@ class PluginBase(ABC):
             "actions": [],
         }
 
+    def build_tier2_remediation_context(
+        self,
+        case: dict[str, Any],
+        failure_snapshot: Any,
+        topology: Any,
+        *,
+        runner: dict[str, Any] | None = None,
+        remediation_policy: dict[str, Any] | None = None,
+    ) -> Any:
+        """Return bounded domain context and an environment capability catalog.
+
+        Core owns prompt construction and the LLM call. The default keeps tier-2
+        disabled until a plugin explicitly advertises its environment-only
+        recovery capabilities.
+        """
+        del case, failure_snapshot, topology, runner, remediation_policy
+        return None
+
+    def execute_tier2_remediation(
+        self,
+        case: dict[str, Any],
+        plan: Any,
+        topology: Any,
+    ) -> dict[str, Any]:
+        """Execute a core-validated tier-2 environment repair plan."""
+        del case, plan, topology
+        return {
+            "success": False,
+            "comment": "tier-2 remediation not supported",
+            "actions": [],
+        }
+
     # -- optional case-level hooks --------------------------------------------
 
     def validate_case(self, case: dict[str, Any]) -> None:
