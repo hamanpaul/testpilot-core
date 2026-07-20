@@ -56,9 +56,21 @@ Prepare releases in a dedicated branch and PR:
    the dots from the version).
 2. Update `VERSION`, `pyproject.toml`, and `src/testpilot/__init__.py` to
    `X.Y.Z`.
-3. Finalize `CHANGELOG.md`:
-   - keep a fresh `Unreleased` section at the top
-   - move release-ready notes into `## [X.Y.Z]`
+3. Finalize `CHANGELOG.md` by collating pending fragments into the release
+   section (policy v1.0.9+ uses the per-PR `changelog.d/*.md` fragment model,
+   not direct `Unreleased` edits):
+   - `python3 -m policy_check.changelog collate --version X.Y.Z --date YYYY-MM-DD`
+     folds every `changelog.d/*.md` fragment into a dated `## [X.Y.Z]` section
+     (grouped by fragment `type`: `feat`→Added, `fix`→Fixed,
+     `refactor`/`perf`/`change`→Changed, `remove`→Removed,
+     `deprecate`→Deprecated, `security`→Security — `chore` is not a valid
+     fragment type, use `change`) and clears `changelog.d/`.
+   - keep a fresh, empty `## [Unreleased]` section at the top for readability
+     (R-04 at v1.0.9+ only requires the `# Changelog` title, not populated
+     `Unreleased` content).
+   - if `[Unreleased]` still carries stale direct-edit entries left over from
+     before the fragment switch, fold anything not already covered by a
+     fragment into the new dated section, then clear `[Unreleased]`.
 4. Update `README.md`, `docs/release-flow.md`, and `AGENTS.md` if the release
    changes supported workflows, release rules, or operator guidance.
 5. Ensure CI, release version validation, and policy/help sync checks are green.
