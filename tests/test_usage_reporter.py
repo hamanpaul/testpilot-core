@@ -315,3 +315,47 @@ def test_reporter_projects_planning_status_when_no_agent_call_was_made():
     assert per_case["D002"]["agent"]["status"] == "failed:AgentRequestValidationError"
     assert per_case["D002"]["agent"]["error_type"] == "AgentRequestValidationError"
     assert per_case["D003"]["agent"]["status"] == "not_called"
+
+
+def _invocation(invocation_id: str, *, purpose: str, status: str, error_type: str = "") -> InvocationRecord:
+    return InvocationRecord(
+        invocation_id=invocation_id,
+        run_id="r",
+        session_id=f"s-{invocation_id}",
+        case_id="D001",
+        purpose=purpose,
+        allocation="direct",
+        model="azure",
+        started_at="",
+        finished_at="",
+        status=status,
+        error_type=error_type,
+        usage_status="exact",
+    )
+
+
+def test_reporter_mixed_invocation_statuses_report_partial_not_completed():
+    snapshot = UsageSnapshot(
+        (
+            _invocation("i1", purpose="agent_recovery", status="failed", error_type="TimeoutError"),
+            _invocation("i2", purpose="agent_recovery", status="completed"),
+            _invocation("i3", purpose="run_analysis", status="failed", error_type="TimeoutError"),
+        ),
+        (),
+        (),
+        0,
+        0,
+        0,
+    )
+    record = _record("D001", attempts=[False], final=False)
+    report = build_core_cost_report(
+        run_result=SimpleNamespace(cases=[record]),
+        planning_by_case={},
+        agent_recovery_support={},
+        usage=snapshot,
+        metrics={},
+        analysis=SimpleNamespace(to_dict=lambda: {"status": "failed", "summary": ""}),
+        agent_state={"initial_agent_state": "azure_ready", "final_agent_state": "azure_ready"},
+    )
+    assert report["per_case"][0]["agent_recovery"]["status"] == "partial"
+    assert report["analysis"]["status"] == "failed"

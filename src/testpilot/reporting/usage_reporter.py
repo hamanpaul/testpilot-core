@@ -37,7 +37,16 @@ def _usage_summary(usage: UsageSnapshot, *, case_id: str | None, purpose: str) -
     rows = _usage_rows(usage, case_id=case_id, purpose=purpose)
     tokens = sum(r.model_tokens for r in rows)
     status = "not_called" if not calls else ("exact" if all(r.usage_status == "exact" for r in calls) else "unavailable")
-    return {"purpose": purpose, "status": "completed" if any(r.status == "completed" for r in calls) else (calls[0].status if calls else "not_called"), "calls": len(calls), "input_tokens": sum(r.input_tokens for r in rows), "output_tokens": sum(r.output_tokens for r in rows), "total_tokens": tokens, "usage_status": status, "cache_read_tokens": sum(r.cache_read_tokens for r in rows), "cache_write_tokens": sum(r.cache_write_tokens for r in rows), "provider_cost_units": sum(r.provider_cost_units or 0 for r in rows) if any(r.provider_cost_units is not None for r in rows) else None}
+    invocation_statuses = {r.status for r in calls}
+    if not calls:
+        call_status = "not_called"
+    elif invocation_statuses == {"completed"}:
+        call_status = "completed"
+    elif invocation_statuses == {"failed"}:
+        call_status = "failed"
+    else:
+        call_status = "partial"
+    return {"purpose": purpose, "status": call_status, "calls": len(calls), "input_tokens": sum(r.input_tokens for r in rows), "output_tokens": sum(r.output_tokens for r in rows), "total_tokens": tokens, "usage_status": status, "cache_read_tokens": sum(r.cache_read_tokens for r in rows), "cache_write_tokens": sum(r.cache_write_tokens for r in rows), "provider_cost_units": sum(r.provider_cost_units or 0 for r in rows) if any(r.provider_cost_units is not None for r in rows) else None}
 
 
 def _deterministic(record: Any) -> dict[str, Any]:
