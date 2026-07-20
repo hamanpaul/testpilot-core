@@ -71,10 +71,10 @@ def test_usage_dedupes_by_api_call_then_event_id():
     handler(_usage_event(event_id="event-1", api_call_id="call-2"))
     ledger.finish_invocation(binding, status="completed")
     snapshot = ledger.freeze()
-    assert len(snapshot.usage) == 2
-    assert snapshot.duplicate_usage_events == 1
+    assert len(snapshot.usage) == 1
+    assert snapshot.duplicate_usage_events == 2
     assert snapshot.usage[0].dedupe_basis == "api_call_id"
-    assert snapshot.model_tokens(case_id="D001") == 240
+    assert snapshot.model_tokens(case_id="D001") == 120
     assert snapshot.usage[0].cache_read_tokens == 40
     assert snapshot.usage[0].provider_cost_units == 1.25
     assert snapshot.usage[0].duration_seconds == 2.5
@@ -91,6 +91,47 @@ def test_event_id_is_fallback_when_api_call_id_missing():
     assert len(snapshot.usage) == 1
     assert snapshot.duplicate_usage_events == 1
     assert snapshot.usage[0].dedupe_basis == "event_id"
+
+
+def test_event_id_is_also_reserved_when_api_call_id_exists():
+    ledger = UsageLedger()
+    binding = _binding(ledger)
+    handler = ledger.event_handler(binding)
+    handler(_usage_event(event_id="event-1", api_call_id="call-1"))
+    handler(_usage_event(event_id="event-1", api_call_id=None))
+    ledger.finish_invocation(binding, status="completed")
+    snapshot = ledger.freeze()
+    assert len(snapshot.usage) == 1
+    assert snapshot.duplicate_usage_events == 1
+
+
+def test_api_call_dedupe_applies_across_bindings_in_same_session():
+    ledger = UsageLedger()
+    binding_one = ledger.start_invocation(
+        run_id="run-1",
+        session_id="shared-session",
+        case_id="D001",
+        purpose="case_planning",
+        model="azure-deployment",
+    )
+    binding_two = ledger.start_invocation(
+        run_id="run-1",
+        session_id="shared-session",
+        case_id="D002",
+        purpose="agent_recovery",
+        model="azure-deployment",
+    )
+
+    ledger.event_handler(binding_one)(_usage_event(event_id="event-1", api_call_id="call-1"))
+    ledger.event_handler(binding_two)(_usage_event(event_id="event-2", api_call_id="call-1"))
+    ledger.finish_invocation(binding_one, status="completed")
+    ledger.finish_invocation(binding_two, status="completed")
+
+    snapshot = ledger.freeze()
+
+    assert len(snapshot.usage) == 1
+    assert snapshot.duplicate_usage_events == 1
+    assert snapshot.usage[0].case_id == "D001"
 
 
 @pytest.mark.parametrize("event_id,api_call_id,input_tokens", [

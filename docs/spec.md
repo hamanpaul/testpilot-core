@@ -28,17 +28,20 @@ TestPilot 是一套 plugin-based 嵌入式裝置測試自動化框架，面向 p
 
 Core resolves Azure readiness from environment variables only. A missing API key
 selects deterministic/no-agent mode; a partial key/endpoint/deployment is a
-non-blocking misconfigured state; a complete configuration enables Azure. Core
-never falls back to OAuth or another provider, and never exposes secrets through
-plugin context or artifacts. Agent calls are tool-denied and the first provider,
-SDK, or auth failure opens a run circuit; malformed output does not. Per-case
-planning is advisory, tier-2 recovery requires explicit plugin capability and
-executor support, and deterministic remediation remains plugin-owned. After all
-final verdicts, one bounded run-end analysis computes observational benefit
-metrics. Usage is authoritative from `assistant.usage`, deduplicated, and
-reported in core-owned `artifact_dir/agent_usage` artifacts; shared analysis
-tokens are not allocated to cases. Custom and skeleton runners report
-`unsupported_execution_path` with zero core calls.
+non-blocking misconfigured state; setting `COPILOT_PROVIDER_TYPE` to any
+non-`azure` value is also misconfigured. A complete configuration enables
+Azure. Core never falls back to OAuth or another provider, and never exposes
+secrets through plugin context or artifacts. CLI dispatch emits a redacted
+misconfigured notice but still continues deterministic execution. Agent calls
+are tool-denied and the first provider, SDK, or auth failure opens a run
+circuit; malformed output does not. Per-case planning is advisory, tier-2
+recovery requires explicit plugin capability and executor support, and
+deterministic remediation remains plugin-owned. After all final verdicts, one
+bounded run-end analysis computes observational benefit metrics. Usage is
+authoritative from `assistant.usage`, deduplicated, and reported in core-owned
+`artifact_dir/agent_usage` artifacts; shared analysis tokens are not allocated
+to cases. Custom and skeleton runners report `unsupported_execution_path` with
+zero core calls.
 
 ### 核心設計原則
 

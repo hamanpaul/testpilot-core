@@ -16,19 +16,10 @@ from testpilot.api import (
     sanitize_case_id as _sanitize_case_id,
 )
 from testpilot.core.execution_engine import ExecutionEngine
+from testpilot.core.run_analysis import RunAnalysisResult
 from testpilot.runtime.run_backend import RunHandle
 
 log = logging.getLogger(__name__)
-
-_SESSION_PLAN_TRACE_FIELDS = frozenset(
-    {
-        "provider",
-        "session_id",
-        "model",
-        "reasoning_effort",
-        "status",
-    }
-)
 
 
 @dataclass
@@ -216,17 +207,6 @@ def _build_case_trace_payload(
         "tier2_audit": retry_result.tier2_audit or [],
         "agent_recovered": bool(retry_result.agent_recovered),
     }
-
-
-def _public_session_plan(session_plan: Mapping[str, Any]) -> dict[str, Any]:
-    """Return trace-safe session metadata while retaining private SDK config."""
-    return {
-        key: session_plan[key]
-        for key in _SESSION_PLAN_TRACE_FIELDS
-        if key in session_plan
-    }
-
-
 def run(
     orchestrator: Any,
     plugin_name: str,
@@ -277,94 +257,97 @@ def run(
     first_case_started_at_iso = ""
 
     case_seq_ranges: dict[str, dict[str, int | None]] = {}
+    loop_error: Exception | None = None
+    try:
+        for case_ordinal, case in enumerate(cases, start=1):
+            case_id = str(case.get("id", "?"))
+            source = case.get("source", {}) if isinstance(case.get("source"), dict) else {}
+            try:
+                source_row = int(source.get("row", 0))
+            except (TypeError, ValueError):
+                source_row = 0
 
-    for case_ordinal, case in enumerate(cases, start=1):
-        case_id = str(case.get("id", "?"))
-        source = case.get("source", {}) if isinstance(case.get("source"), dict) else {}
-        try:
-            source_row = int(source.get("row", 0))
-        except (TypeError, ValueError):
-            source_row = 0
-
-        selected_runner, selection_trace = orchestrator.runner_selector.select_case_runner(
-            plugin_name=plugin_name,
-            case=case,
-            agent_config=agent_config,
-        )
-        planning_result = orchestrator._plan_case(
-            run_id=run_id,
-            plugin_name=plugin_name,
-            case=case,
-            case_ordinal=case_ordinal,
-            case_count=len(cases),
-            execution_policy=execution_policy,
-        )
-        planning_by_case[case_id] = planning_result
-        orchestrator._build_execution_engine(
-            plugin_name=plugin_name,
-            plugin=plugin,
-            agent_config=agent_config,
-            run_id=run_id,
-            case_id=case_id,
-            runner=selected_runner,
-            provider_config=None,
-        )
-
-        seq_before = _mark_seq_position(orchestrator, run_handle)
-        case_started_monotonic = time.monotonic()
-        case_started_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
-        if first_case_started_monotonic is None:
-            first_case_started_monotonic = case_started_monotonic
-            first_case_started_at_iso = case_started_at_iso
-        retry_result = orchestrator.execution_engine.execute_with_retry(
-            plugin=plugin,
-            case=case,
-            runner=selected_runner,
-            execution_policy=execution_policy,
-        )
-        case_finished_monotonic = time.monotonic()
-        case_finished_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
-        seq_after = _mark_seq_position(orchestrator, run_handle)
-        case_seq_ranges[case_id] = {
-            "seq_start": seq_before,
-            "seq_end": seq_after,
-        }
-
-        case_trace_path = agent_trace_dir / f"{_sanitize_case_id(case_id)}.json"
-        ExecutionEngine.write_case_trace(
-            case_trace_path,
-            _build_case_trace_payload(
+            selected_runner, selection_trace = orchestrator.runner_selector.select_case_runner(
+                plugin_name=plugin_name,
+                case=case,
+                agent_config=agent_config,
+            )
+            planning_result = orchestrator._plan_case(
                 run_id=run_id,
                 plugin_name=plugin_name,
                 case=case,
-                case_id=case_id,
-                source_row=source_row,
+                case_ordinal=case_ordinal,
+                case_count=len(cases),
                 execution_policy=execution_policy,
-                selection_trace=selection_trace,
-                planning_result=planning_result,
-                retry_result=retry_result,
-            ),
-        )
-        case_trace_files.append(str(case_trace_path))
-
-        case_records.append(
-            CaseRunRecord(
-                case=case,
-                retry=retry_result,
-                source_row=source_row,
-                trace_path=str(case_trace_path),
-                seq_start=seq_before,
-                seq_end=seq_after,
-                started_at=case_started_at_iso,
-                finished_at=case_finished_at_iso,
-                duration_seconds=round(
-                    case_finished_monotonic - case_started_monotonic,
-                    3,
-                ),
-                drift=bool(case.get("drift", False)),
-                case_id=case_id,
             )
-        )
+            planning_by_case[case_id] = planning_result
+            orchestrator._build_execution_engine(
+                plugin_name=plugin_name,
+                plugin=plugin,
+                agent_config=agent_config,
+                run_id=run_id,
+                case_id=case_id,
+                runner=selected_runner,
+                provider_config=None,
+            )
+
+            seq_before = _mark_seq_position(orchestrator, run_handle)
+            case_started_monotonic = time.monotonic()
+            case_started_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+            if first_case_started_monotonic is None:
+                first_case_started_monotonic = case_started_monotonic
+                first_case_started_at_iso = case_started_at_iso
+            retry_result = orchestrator.execution_engine.execute_with_retry(
+                plugin=plugin,
+                case=case,
+                runner=selected_runner,
+                execution_policy=execution_policy,
+            )
+            case_finished_monotonic = time.monotonic()
+            case_finished_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+            seq_after = _mark_seq_position(orchestrator, run_handle)
+            case_seq_ranges[case_id] = {
+                "seq_start": seq_before,
+                "seq_end": seq_after,
+            }
+
+            case_trace_path = agent_trace_dir / f"{_sanitize_case_id(case_id)}.json"
+            ExecutionEngine.write_case_trace(
+                case_trace_path,
+                _build_case_trace_payload(
+                    run_id=run_id,
+                    plugin_name=plugin_name,
+                    case=case,
+                    case_id=case_id,
+                    source_row=source_row,
+                    execution_policy=execution_policy,
+                    selection_trace=selection_trace,
+                    planning_result=planning_result,
+                    retry_result=retry_result,
+                ),
+            )
+            case_trace_files.append(str(case_trace_path))
+
+            case_records.append(
+                CaseRunRecord(
+                    case=case,
+                    retry=retry_result,
+                    source_row=source_row,
+                    trace_path=str(case_trace_path),
+                    seq_start=seq_before,
+                    seq_end=seq_after,
+                    started_at=case_started_at_iso,
+                    finished_at=case_finished_at_iso,
+                    duration_seconds=round(
+                        case_finished_monotonic - case_started_monotonic,
+                        3,
+                    ),
+                    drift=bool(case.get("drift", False)),
+                    case_id=case_id,
+                )
+            )
+    except Exception as exc:
+        loop_error = exc
 
     dut_log_path = ""
     sta_log_path = ""
@@ -409,13 +392,67 @@ def run(
         version_manifest=version_manifest,
     )
 
+    def _write_core_cost_payload(
+        *,
+        analysis: Any,
+        metrics: Mapping[str, Any],
+    ) -> Any:
+        from testpilot.reporting.usage_reporter import (
+            CoreCostArtifacts,
+            build_core_cost_report,
+            write_core_cost_artifacts,
+        )
+
+        try:
+            frozen_usage = orchestrator.usage_ledger.freeze()
+            runtime = getattr(orchestrator, "agent_runtime", None)
+            agent_state = (
+                runtime.public_summary()
+                if runtime is not None and hasattr(runtime, "public_summary")
+                else {}
+            )
+            report = build_core_cost_report(
+                run_result=run_result,
+                planning_by_case=planning_by_case,
+                agent_recovery_support=getattr(orchestrator, "agent_recovery_support", {}),
+                usage=frozen_usage,
+                metrics=metrics,
+                analysis=analysis,
+                agent_state=agent_state,
+            )
+            return write_core_cost_artifacts(
+                artifact_dir=artifact_dir,
+                report=report,
+                usage=frozen_usage,
+                analysis=analysis,
+            )
+        except Exception as exc:
+            log.warning("core cost artifacts failed; continuing", exc_info=True)
+            return CoreCostArtifacts(
+                status="failed",
+                analysis_status=getattr(analysis, "status", "unavailable"),
+                error_type=type(exc).__name__,
+            )
+
+    from testpilot.core.assistance_metrics import compute_assistance_metrics
+
+    assistance_metrics = compute_assistance_metrics(case_records)
+    if loop_error is not None:
+        aborted_analysis = RunAnalysisResult(status="skipped_aborted")
+        core_artifacts = _write_core_cost_payload(
+            analysis=aborted_analysis,
+            metrics=assistance_metrics,
+        )
+        run_result.artifacts["core_agent_analysis"] = aborted_analysis.to_dict()
+        run_result.artifacts["core_cost_report"] = core_artifacts.to_payload()
+        setattr(loop_error, "core_agent_analysis", aborted_analysis.to_dict())
+        setattr(loop_error, "core_cost_report", core_artifacts.to_payload())
+        raise loop_error.with_traceback(loop_error.__traceback__)
+
     # Analysis is deliberately a run-end operation: all case retry records
     # above already contain their final verdicts, and this snapshot excludes
     # the analysis calls themselves from per-case direct usage.
-    from testpilot.core.assistance_metrics import compute_assistance_metrics
-
     direct_usage = orchestrator.usage_ledger.snapshot()
-    assistance_metrics = compute_assistance_metrics(case_records)
     analysis_metrics = {
         **assistance_metrics,
         "cases": len(case_records),
@@ -429,33 +466,10 @@ def run(
         metrics=analysis_metrics,
         direct_usage=direct_usage,
     )
-    from testpilot.reporting.usage_reporter import (
-        CoreCostArtifacts,
-        build_core_cost_report,
-        write_core_cost_artifacts,
+    core_artifacts = _write_core_cost_payload(
+        analysis=run_analysis,
+        metrics=assistance_metrics,
     )
-    try:
-        frozen_usage = orchestrator.usage_ledger.freeze()
-        runtime = getattr(orchestrator, "agent_runtime", None)
-        agent_state = runtime.public_summary() if runtime is not None and hasattr(runtime, "public_summary") else {}
-        report = build_core_cost_report(
-            run_result=run_result,
-            planning_by_case=planning_by_case,
-            agent_recovery_support=getattr(orchestrator, "agent_recovery_support", {}),
-            usage=frozen_usage,
-            metrics=assistance_metrics,
-            analysis=run_analysis,
-            agent_state=agent_state,
-        )
-        core_artifacts = write_core_cost_artifacts(
-            artifact_dir=artifact_dir,
-            report=report,
-            usage=frozen_usage,
-            analysis=run_analysis,
-        )
-    except Exception as exc:
-        log.warning("core cost artifacts failed; continuing", exc_info=True)
-        core_artifacts = CoreCostArtifacts(status="failed", analysis_status=getattr(run_analysis, "status", "unavailable"), error_type=type(exc).__name__)
     reporter = plugin.create_reporter()
     build_reports = getattr(reporter, "build_reports", None)
     if not callable(build_reports):

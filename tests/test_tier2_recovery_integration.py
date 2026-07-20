@@ -221,6 +221,17 @@ class _RunBackend:
 
 
 class _RunnerSelector:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float = 12.5,
+        max_invocations_per_case: int = 1,
+        max_total_attempts: int = 4,
+    ) -> None:
+        self.timeout_seconds = timeout_seconds
+        self.max_invocations_per_case = max_invocations_per_case
+        self.max_total_attempts = max_total_attempts
+
     def load_agent_config(
         self,
         plugin_name: str,
@@ -244,10 +255,10 @@ class _RunnerSelector:
                 "tier2": {
                     "enabled": True,
                     "escalate_after_tier1_failures": 2,
-                    "max_invocations_per_case": 1,
+                    "max_invocations_per_case": self.max_invocations_per_case,
                     "max_actions": 2,
-                    "max_total_attempts": 4,
-                    "timeout_seconds": 12.5,
+                    "max_total_attempts": self.max_total_attempts,
+                    "timeout_seconds": self.timeout_seconds,
                 },
             },
         }
@@ -288,6 +299,21 @@ class _OneShotManager:
         timeout_seconds: float,
     ) -> str:
         self.calls.append((request, prompt, timeout_seconds))
+        if prompt.startswith("Return only JSON matching the fixed run-analysis schema."):
+            return json.dumps(
+                {
+                    "summary": "analysis complete",
+                    "benefit_assessment": ["tier-2 recovered the case"],
+                    "cost_observations": ["one analysis batch"],
+                    "case_findings": [
+                        {
+                            "case_id": "D001",
+                            "assessment": "agent recovery restored readiness",
+                            "evidence": ["final pass", "verify gate passed"],
+                        }
+                    ],
+                }
+            )
         return json.dumps(
             {
                 "summary": "repair target environment",
@@ -322,12 +348,18 @@ class _InvalidOneShotManager(_OneShotManager):
 
 
 class _IntegrationOrchestrator(Orchestrator):
-    def __init__(self, root: Path, plugin: _Tier2Plugin) -> None:
+    def __init__(
+        self,
+        root: Path,
+        plugin: _Tier2Plugin,
+        *,
+        runner_selector: _RunnerSelector | None = None,
+    ) -> None:
         self.root = root
         self.plugins_dir = root
         self.config = object()
         self.loader = _Loader(plugin)
-        self.runner_selector = _RunnerSelector()
+        self.runner_selector = runner_selector or _RunnerSelector()
         self.run_backend = _RunBackend()
         self._run_handle = None
         self.session_manager = _OneShotManager()
@@ -346,10 +378,6 @@ class _IntegrationOrchestrator(Orchestrator):
         return None
 
     def _stop_run_capture(self) -> None:
-        return None
-
-    def _create_case_session(self, session_plan: dict[str, Any]) -> None:
-        del session_plan
         return None
 
     def _cleanup_case_session(self, session_id: str | None) -> None:
@@ -383,6 +411,8 @@ def test_core_run_loop_wires_one_shot_and_projects_bounded_audit(
     assert plugin.tier2_calls == 1
     assert payload["tier2_remediation"]["agent_recovered_case_ids"] == ["D001"]
     assert payload["tier2_remediation"]["audit"][0]["status"] == "verified"
+    assert payload["core_agent_analysis"]["status"] == "complete"
+    assert payload["core_cost_report"]["status"] == "complete"
 
     one_shot_calls = orchestrator.session_manager.calls
     recovery_calls = [item for item in one_shot_calls if "-remediate-" in item[0].session_id]
@@ -453,6 +483,26 @@ def test_invalid_one_shot_plan_degrades_session_and_is_rejected(
     assert payload["tier2_remediation"]["audit"][0]["status"] == "rejected"
     assert payload["tier2_remediation"]["audit"][0]["raw_response"] == ""
     assert plugin.tier2_calls == 0
+
+
+def test_tier2_timeout_is_clamped_without_degrading_run(tmp_path: Path) -> None:
+    plugin = _Tier2Plugin()
+    orchestrator = _IntegrationOrchestrator(
+        tmp_path,
+        plugin,
+        runner_selector=_RunnerSelector(timeout_seconds=3600),
+    )
+
+    payload = run_loop.run(orchestrator, "fake", None, None)
+
+    recovery_calls = [
+        item for item in orchestrator.session_manager.calls
+        if "-remediate-" in item[0].session_id
+    ]
+    assert len(recovery_calls) == 1
+    assert recovery_calls[0][2] == 600.0
+    assert payload["agent_session_degraded"] == {"degraded": False, "reason": ""}
+    assert payload["tier2_remediation"]["audit"][0]["warnings"]
 
 
 @pytest.mark.parametrize(

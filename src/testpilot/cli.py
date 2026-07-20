@@ -27,6 +27,7 @@ from testpilot.cli_support import (
     run_plugin_cases,
 )
 from testpilot.core.azure_auth import (
+    AzureAgentState,
     resolve_azure_agent_runtime,
 )
 from testpilot.core.plugin_loader import PluginLoader
@@ -1237,6 +1238,12 @@ def main(
     runtime = resolve_azure_agent_runtime()
     ctx.obj["agent_state"] = runtime.public_summary()
     ctx.obj["provider_config"] = None
+    if runtime.status.state is AzureAgentState.MISCONFIGURED:
+        click.echo(
+            "Azure agent support is misconfigured "
+            f"({runtime.status.reason_code}); continuing without agent features."
+        )
+        ctx.obj["provider_notice"] = "azure_env"
 
 
 @main.command("list-plugins")

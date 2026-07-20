@@ -42,7 +42,7 @@ class CaseAnalysisCapsule:
 
 
 AnalysisStatus = Literal[
-    "complete", "failed", "skipped_no_agent", "skipped_circuit_breaker", "skipped_no_cases"
+    "complete", "failed", "skipped_no_agent", "skipped_circuit_breaker", "skipped_no_cases", "skipped_aborted"
 ]
 
 
@@ -82,6 +82,34 @@ def _verdict(value: Any) -> Literal["Pass", "Fail"]:
     return "Pass" if str(value).lower() in {"pass", "passed", "true", "ok"} else "Fail"
 
 
+def _mapping_sequence(value: Any) -> list[Mapping[str, Any]]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
+def _deterministic_remediation_summary(retry: Any, final: Literal["Pass", "Fail"]) -> dict[str, Any]:
+    history = [
+        entry
+        for entry in _mapping_sequence(getattr(retry, "remediation_history", ()))
+        if entry.get("decision_source") == "tier1-deterministic"
+        and isinstance(entry.get("executed_actions"), Sequence)
+        and not isinstance(entry.get("executed_actions"), (str, bytes, bytearray))
+    ]
+    actions = [
+        action
+        for entry in history
+        for action in entry["executed_actions"]
+        if isinstance(action, Mapping)
+    ]
+    return {
+        "observed": bool(history),
+        "applied": sum(bool(entry.get("applied")) for entry in history),
+        "attempts": len(actions),
+        "final_verdict": final,
+    }
+
+
 def build_case_capsule(record: Any, *, direct_usage: Mapping[str, Any]) -> CaseAnalysisCapsule:
     retry = getattr(record, "retry", None)
     attempts = getattr(retry, "attempts", None)
@@ -95,9 +123,6 @@ def build_case_capsule(record: Any, *, direct_usage: Mapping[str, Any]) -> CaseA
     snapshot = getattr(retry, "failure_snapshot", None) or {}
     if not isinstance(snapshot, Mapping):
         snapshot = {}
-    tier1 = getattr(retry, "remediation", None)
-    if not isinstance(tier1, Mapping):
-        tier1 = {}
     audit = getattr(retry, "tier2_audit", None) or []
     verified = sum(1 for item in audit if isinstance(item, Mapping) and item.get("verify_gate", {}).get("passed") is True)
     return CaseAnalysisCapsule(
@@ -106,11 +131,7 @@ def build_case_capsule(record: Any, *, direct_usage: Mapping[str, Any]) -> CaseA
         attempts_used=attempts_used,
         failure_category=_status(snapshot.get("category")),
         failure_reason_code=_status(snapshot.get("reason_code")),
-        deterministic_remediation={
-            "observed": bool(tier1), "applied": bool(tier1.get("applied", False)),
-            "attempts": sum(1 for item in (tier1.get("executed_actions", []) if isinstance(tier1.get("executed_actions", []), list) else []) if isinstance(item, Mapping)),
-            "final_verdict": final,
-        },
+        deterministic_remediation=_deterministic_remediation_summary(retry, final),
         agent_recovery={"observed": bool(audit), "verified_count": verified,
                         "final_verdict": final, "recovered": bool(getattr(retry, "agent_recovered", False))},
         direct_model_tokens=max(0, int(direct_usage.get("model_tokens", 0) or 0)),
@@ -175,14 +196,19 @@ def parse_run_analysis_response(raw_response: str, *, allowed_case_ids: set[str]
     if not isinstance(findings, list) or len(findings) > len(allowed_case_ids):
         raise RunAnalysisValidationError("invalid case_findings")
     normalized: list[dict[str, Any]] = []
+    seen_case_ids: set[str] = set()
     for item in findings:
         if not isinstance(item, dict) or set(item) != {"case_id", "assessment", "evidence"} or item["case_id"] not in allowed_case_ids:
             raise RunAnalysisValidationError("invalid case finding")
+        case_id = str(item["case_id"])
+        if case_id in seen_case_ids:
+            raise RunAnalysisValidationError("duplicate case_id finding")
+        seen_case_ids.add(case_id)
         assessment = str(item["assessment"])
         evidence = _validate_list(item["evidence"], name="evidence", max_items=8, max_chars=500)
         if len(assessment) > 2000:
             raise RunAnalysisValidationError("oversized finding assessment")
-        normalized.append({"case_id": item["case_id"], "assessment": assessment, "evidence": list(evidence)})
+        normalized.append({"case_id": case_id, "assessment": assessment, "evidence": list(evidence)})
     return {"summary": summary, "benefit_assessment": list(benefits), "cost_observations": list(costs), "case_findings": normalized}
 
 

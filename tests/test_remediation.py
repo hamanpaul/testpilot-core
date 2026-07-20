@@ -703,6 +703,9 @@ class _Tier2FlowPlugin:
 def _tier2_engine(
     plugin: _Tier2FlowPlugin,
     requester: _Tier2Requester,
+    *,
+    max_invocations_per_case: int = 1,
+    max_total_attempts: int = 4,
 ) -> ExecutionEngine:
     dispatcher = HookDispatcher(
         HookPolicyConfig(
@@ -719,9 +722,9 @@ def _tier2_engine(
             "tier2": {
                 "enabled": True,
                 "escalate_after_tier1_failures": 2,
-                "max_invocations_per_case": 1,
+                "max_invocations_per_case": max_invocations_per_case,
                 "max_actions": 2,
-                "max_total_attempts": 4,
+                "max_total_attempts": max_total_attempts,
             },
         },
         tier2_requester=requester,
@@ -840,6 +843,117 @@ def test_tier2_failed_verify_gate_halts_before_test_execution() -> None:
     assert result.agent_recovered is True
     assert result.tier2_audit[0]["verify_gate"]["passed"] is False
     assert plugin.evaluate_calls == 0
+
+
+def test_tier2_disabled_for_case_does_not_retrigger_budget_halt() -> None:
+    plugin = _Tier2FlowPlugin(
+        verify_results=[False, False, False, False, True],
+        tier1_results=[
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+        ],
+    )
+    requester = _InvalidTier2Requester()
+
+    result = _tier2_engine(
+        plugin,
+        requester,
+        max_total_attempts=6,
+    ).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=_tier2_policy(),
+    )
+
+    assert result.verdict is True
+    assert len(requester.calls) == 1
+    assert result.tier2_audit[0]["status"] == "rejected"
+    assert "budget exhausted" not in (result.comment or "")
+    assert plugin.tier2_execute_calls == 0
+
+
+def test_zero_tier2_invocation_budget_behaves_like_tier2_disabled() -> None:
+    plugin = _Tier2FlowPlugin(
+        verify_results=[False, False, True],
+        tier1_results=[
+            {"success": False, "verify_after": False},
+            {"success": False, "verify_after": False},
+        ],
+    )
+    requester = _Tier2Requester()
+    policy = _tier2_policy()
+    policy["retry"]["max_attempts"] = 3
+
+    result = _tier2_engine(
+        plugin,
+        requester,
+        max_invocations_per_case=0,
+    ).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=policy,
+    )
+
+    assert result.verdict is True
+    assert requester.calls == []
+    assert plugin.tier2_execute_calls == 0
+
+
+def test_tier2_can_invoke_twice_when_case_budget_is_two() -> None:
+    class _MultiTier2FlowPlugin(_Tier2FlowPlugin):
+        def __init__(self) -> None:
+            super().__init__(
+                verify_results=[False, False, True, True, True, True, True],
+                tier1_results=[
+                    {"success": False, "verify_after": False},
+                    {"success": False, "verify_after": False},
+                    {"success": False, "verify_after": False},
+                    {"success": False, "verify_after": False},
+                ],
+            )
+            self.evaluate_results = [False, False, True]
+
+        def evaluate(self, case, results):
+            del results
+            self.evaluate_calls += 1
+            verdict = self.evaluate_results.pop(0)
+            if not verdict:
+                case["_last_failure"] = {
+                    "case_id": case["id"],
+                    "attempt_index": case.get("_attempt_index", 0),
+                    "phase": "evaluate",
+                    "comment": "environment drifted after recovery",
+                    "category": "environment",
+                    "reason_code": "env_drift",
+                }
+            return verdict
+
+    plugin = _MultiTier2FlowPlugin()
+    requester = _Tier2Requester()
+
+    result = _tier2_engine(
+        plugin,
+        requester,
+        max_invocations_per_case=2,
+        max_total_attempts=6,
+    ).execute_with_retry(
+        plugin=plugin,
+        case=_tier2_case(),
+        runner={"cli_agent": "copilot", "model": "gpt-5.4"},
+        execution_policy=_tier2_policy(),
+    )
+
+    assert result.verdict is True
+    assert len(requester.calls) == 2
+    assert plugin.tier2_execute_calls == 2
+    assert [entry["decision_source"] for entry in result.remediation_history].count(
+        "tier2-agent"
+    ) == 2
+    assert len(result.tier2_audit) == 2
 
 
 def test_real_verify_failures_override_optimistic_tier1_results() -> None:

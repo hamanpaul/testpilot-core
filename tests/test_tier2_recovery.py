@@ -9,9 +9,11 @@ import pytest
 from testpilot.core.tier2_recovery import (
     Tier2Capability,
     Tier2PlanValidationError,
+    Tier2PromptPayload,
     Tier2RecoveryAudit,
     Tier2RecoveryContext,
     build_tier2_prompt,
+    build_tier2_prompt_payload,
     parse_tier2_plan,
 )
 
@@ -32,7 +34,12 @@ def _context() -> dict:
                 "executor_key": "env_command",
                 "description": "run a plugin-owned environment repair command",
                 "execution_boundary": "isolated target environment transport",
-                "params_schema": {"command": "string"},
+                "params_schema": {
+                    "command": {
+                        "type": "string",
+                        "enum": ["repair"],
+                    }
+                },
             },
             {
                 "executor_key": "service_restart",
@@ -71,14 +78,40 @@ def test_context_requires_declared_execution_boundary() -> None:
         Tier2RecoveryContext.from_mapping(raw)
 
 
+def test_context_rejects_freeform_command_like_param_name_without_enum() -> None:
+    raw = _context()
+    raw["capabilities"][0]["params_schema"] = {"command": {"type": "string"}}
+
+    with pytest.raises(ValueError, match="enum"):
+        Tier2RecoveryContext.from_mapping(raw)
+
+
+def test_context_rejects_capability_catalog_larger_than_limit() -> None:
+    raw = _context()
+    raw["capabilities"] = [
+        {
+            "executor_key": f"capability_{index}",
+            "description": "repair target environment",
+            "execution_boundary": "isolated target environment transport",
+            "params_schema": {},
+        }
+        for index in range(21)
+    ]
+
+    with pytest.raises(ValueError, match="must not exceed 20"):
+        Tier2RecoveryContext.from_mapping(raw)
+
+
 def test_prompt_is_bounded_and_redacts_common_secrets() -> None:
     context = _context()
     context["diagnosis"] = (
-        "api_key=top-secret password: hunter2 credential=credential-secret"
+        'api_key=top-secret password: hunter2 credential=credential-secret KeyPassPhrase = "opaque-passphrase"'
     )
     context["log_excerpt"] = [
         "Authorization: Bearer abcdef",
         "token=secret-token",
+        "psk=hunter2",
+        "wpa_passphrase=opaque-psk",
         "x" * 4_000,
     ] * 30
 
@@ -98,6 +131,8 @@ def test_prompt_is_bounded_and_redacts_common_secrets() -> None:
     assert "secret-token" not in prompt
     assert "output-secret" not in prompt
     assert "credential-secret" not in prompt
+    assert "opaque-passphrase" not in prompt
+    assert "opaque-psk" not in prompt
     assert "[REDACTED]" in prompt
     assert len(prompt) < 40_000
     assert "test steps" in prompt
@@ -113,7 +148,7 @@ def test_prompt_renormalizes_direct_context_instances() -> None:
                 executor_key="env_command",
                 description="environment repair",
                 execution_boundary="isolated target environment transport",
-                params_schema={"command": "string"},
+                params_schema={"command": {"type": "string", "enum": ["repair"]}},
             ),
         ),
         verify_env_definition="token=verify-secret",
@@ -129,6 +164,54 @@ def test_prompt_renormalizes_direct_context_instances() -> None:
     assert "basic-secret" not in prompt
     assert "verify-secret" not in prompt
     assert prompt.count("[REDACTED]") >= 3
+
+
+def test_prompt_payload_truncates_large_context_and_marks_audit() -> None:
+    context = _context()
+    context["capabilities"] = [
+        {
+            "executor_key": f"capability_{index}",
+            "description": "d" * 400,
+            "execution_boundary": "b" * 400,
+            "params_schema": {
+                f"param_{param_index}": {
+                    "type": "string",
+                    "enum": [f"value_{param_index}_{value_index}" for value_index in range(20)],
+                    "max_length": 1000,
+                }
+                for param_index in range(40)
+            },
+        }
+        for index in range(20)
+    ]
+    context["metadata"] = {
+        "huge": "x" * 40_000,
+        "extra": ["y" * 2_000] * 20,
+    }
+    payload = build_tier2_prompt_payload(
+        context=context,
+        failure={
+            "category": "environment",
+            "reason_code": "not_ready",
+            "output": "z" * 20_000,
+        },
+        tier1_failures=2,
+    )
+
+    audit = Tier2RecoveryAudit(
+        case_id="D001",
+        attempt_index=1,
+        tier1_failures=2,
+        trigger_threshold=2,
+        context=context,
+        prompt=payload.prompt,
+        truncated=payload.truncated,
+    )
+
+    assert isinstance(payload, Tier2PromptPayload)
+    assert payload.truncated is True
+    assert len(payload.prompt) <= 64_000
+    assert audit.to_dict()["truncated"] is True
 
 
 def test_parse_plan_accepts_plain_json_and_marks_tier2_actions() -> None:
@@ -175,7 +258,9 @@ def test_parse_plan_accepts_one_fenced_json_object() -> None:
         """```json
 {"summary":"repair","actions":[{"executor_key":"env_command","params":{"command":"repair"}}]}
 ```""",
-        capability_schemas={"env_command": {"command": "string"}},
+        capability_schemas={
+            "env_command": {"command": {"type": "string", "enum": ["repair"]}}
+        },
         max_actions=1,
     )
 
@@ -272,7 +357,7 @@ def test_parse_plan_rejects_oversized_executable_param_instead_of_truncating() -
             "actions": [
                 {
                     "executor_key": "target_env_shell",
-                    "params": {"command": "x" * 1_001},
+                    "params": {"payload": "x" * 1_001},
                 }
             ],
         }
@@ -281,7 +366,7 @@ def test_parse_plan_rejects_oversized_executable_param_instead_of_truncating() -
     with pytest.raises(Tier2PlanValidationError, match="length limit"):
         parse_tier2_plan(
             raw,
-            capability_schemas={"target_env_shell": {"command": "string"}},
+            capability_schemas={"target_env_shell": {"payload": "string"}},
             max_actions=1,
         )
 
@@ -338,6 +423,11 @@ def test_parse_plan_rejects_non_finite_json_numbers() -> None:
             "sensitive material",
         ),
         (
+            '{"summary":"bad","actions":['
+            '{"executor_key":"env_command","params":{"psk":"hunter2"}}]}',
+            "sensitive material",
+        ),
+        (
             '{"summary":"too many","actions":['
             '{"executor_key":"env_command"},{"executor_key":"env_command"}]}',
             "action budget",
@@ -349,7 +439,9 @@ def test_parse_plan_rejects_unsafe_or_invalid_payloads(raw: str, match: str) -> 
     with pytest.raises(Tier2PlanValidationError, match=match):
         parse_tier2_plan(
             raw,
-            capability_schemas={"env_command": {"command": "string"}},
+            capability_schemas={
+                "env_command": {"command": {"type": "string", "enum": ["repair"]}}
+            },
             max_actions=1,
         )
 
@@ -370,7 +462,28 @@ def test_audit_serializes_empty_and_completed_shapes() -> None:
         "attempt_index": 3,
         "tier1_failures": 2,
         "trigger_threshold": 2,
-        "context": context.to_dict(),
+        "context": {
+            **context.to_dict(),
+            "capabilities": [
+                {
+                    "executor_key": "env_command",
+                    "description": "run a plugin-owned environment repair command",
+                    "execution_boundary": "isolated target environment transport",
+                    "params_schema": {
+                        "command": {
+                            "type": "[TRUNCATED]",
+                            "enum": "[TRUNCATED]",
+                        }
+                    },
+                },
+                {
+                    "executor_key": "service_restart",
+                    "description": "restart one environment service",
+                    "execution_boundary": "plugin-owned service controller",
+                    "params_schema": {"service": "string"},
+                },
+            ],
+        },
         "prompt": "prompt",
         "raw_response": "",
         "plan": None,
@@ -378,6 +491,8 @@ def test_audit_serializes_empty_and_completed_shapes() -> None:
         "verify_gate": None,
         "status": "pending",
         "error": "",
+        "warnings": [],
+        "truncated": False,
     }
 
 
@@ -388,10 +503,10 @@ def test_audit_serialization_redacts_and_bounds_untrusted_fields() -> None:
         tier1_failures=2,
         trigger_threshold=2,
         context={"password": "context-secret"},
-        prompt="Authorization: Basic prompt-secret\n" + "x" * 80_000,
-        raw_response='{"token":"response-secret"}',
+        prompt="Authorization: Basic prompt-secret\npsk=hunter2\n" + "x" * 80_000,
+        raw_response='{"token":"response-secret","wpa_passphrase":"opaque-psk"}',
         execution={"output": "password=execution-secret"},
-        error="api_key=error-secret",
+        error='api_key=error-secret KeyPassPhrase = "opaque-passphrase"',
     )
 
     serialized = json.dumps(audit.to_dict())
@@ -402,6 +517,9 @@ def test_audit_serialization_redacts_and_bounds_untrusted_fields() -> None:
         "response-secret",
         "execution-secret",
         "error-secret",
+        "hunter2",
+        "opaque-psk",
+        "opaque-passphrase",
     ):
         assert secret not in serialized
     assert "[REDACTED]" in serialized

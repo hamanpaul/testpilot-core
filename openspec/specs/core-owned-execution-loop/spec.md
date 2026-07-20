@@ -1,11 +1,15 @@
 ## ADDED Requirements
 
 ### Requirement: core 擁有預設 test-case run 迴圈
-testpilot core SHALL 提供預設的 test-case run 迴圈(`core/run_loop.py`),寫在 `RunBackend`(裝置存取)與 plugin hooks 之上,產出 `RunResult`。當 plugin 未提供 `create_runner()` override 時,orchestrator SHALL 走此 core 迴圈;plugin 僅透過 hook(`prepare_run` / `capture_dut_firmware_version` / `execution_policy` / `execute_step` / `create_reporter`)接入,MUST NOT 自帶整-run 迴圈。
+testpilot core SHALL 提供預設的 test-case run 迴圈(`core/run_loop.py`),寫在 `RunBackend`(裝置存取)與 plugin hooks 之上,產出 `RunResult`。當 plugin 未提供 `create_runner()` override 時,orchestrator SHALL 走此 core 迴圈;plugin 僅透過 hook(`prepare_run` / `capture_dut_firmware_version` / `execution_policy` / `execute_step` / `create_reporter`)接入,MUST NOT 自帶整-run 迴圈。Core-owned run SHALL select the plugin runner without changing its identity, perform Azure-ready advisory planning before each deterministic case, preserve plugin-owned tier-1 remediation and capability-gated tier-2 recovery during retries, then perform bounded core analysis and write core artifacts after all final verdicts but before the unchanged plugin reporter is called.
 
 #### Scenario: wifi_llapi 走 core 預設迴圈
 - **WHEN** 執行 `testpilot wifi_llapi`(未提供 create_runner)
-- **THEN** orchestrator 走 core `run_loop`,經 wifi 的 hooks 完成執行並產 `RunResult`,交 `create_reporter().build_reports()` 產報表
+- **THEN** orchestrator 走 core `run_loop`,經 wifi 的 hooks 完成執行並產 `RunResult`,交 `create_reporter().build_reports()` 產報表,且 core cost report 以 additive pointer 附加在 reporter payload 之後
+
+#### Scenario: Azure-ready case ordering
+- **WHEN** a core-loop plugin case is selected on an Azure-ready run
+- **THEN** core records planning before deterministic execution, preserves selected runner metadata, executes any permitted tier-2 recovery only through the plugin contract, and analyzes only after every case has a final verdict
 
 #### Scenario: wifi production 不再依賴 core 執行內部
 - **WHEN** 對 `plugins/wifi_llapi/` production(排除 tests/scripts)掃描 import

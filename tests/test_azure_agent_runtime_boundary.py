@@ -22,7 +22,9 @@ def test_orchestrator_does_not_probe_sdk_without_azure(monkeypatch, tmp_path: Pa
 
 
 def test_plugin_context_does_not_hold_private_agent_runtime() -> None:
-    source = Path("src/testpilot/cli.py").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "src/testpilot/cli.py").read_text(
+        encoding="utf-8"
+    )
 
     assert 'ctx.obj["agent_runtime"]' not in source
     assert 'ctx.obj["provider_config"] = None' in source

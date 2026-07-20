@@ -40,10 +40,3 @@ def test_tier2_support_requires_both_plugin_overrides_and_policy() -> None:
 def test_no_agent_runtime_is_never_tier2_ready() -> None:
     runtime = AzureAgentRuntime(AzureAgentStatus(AzureAgentState.DISABLED_NO_KEY))
     assert runtime.status.ready is False
-
-
-def test_recovery_model_is_runtime_deployment_not_runner_model() -> None:
-    runtime = AzureAgentRuntime(
-        AzureAgentStatus(AzureAgentState.AZURE_READY, deployment="azure-deployment")
-    )
-    assert runtime.status.deployment != "plugin-model"

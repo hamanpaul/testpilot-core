@@ -35,7 +35,12 @@ class CasePlanningResult:
         return {"status": self.status, "advisory": self.advisory.to_dict() if self.advisory else None, "error_type": self.error_type}
 
 
-_SECRET_PATTERN = re.compile(r"(?i)(password|passwd|api[_-]?key|token|secret)\s*[:=]\s*([^\s,;]+)")
+_SECRET_PATTERN = re.compile(
+    r"(?i)(password|passwd|api[_-]?key|token|secret|psk|"
+    r"(?:key|wpa[_-]?)?pass[_-]?phrase|wep[_-]?key|private[_-]?key)"
+    r"\s*[:=]\s*([^\s,;]+)"
+)
+_REDACTION_SENTINELS = {"******", "[REDACTED]", "<redacted>"}
 
 
 def _text(value: Any, limit: int) -> str:
@@ -94,6 +99,10 @@ def parse_case_planning_response(raw_response: str) -> CasePlanningAdvisory:
         raise CasePlanningValidationError("planning response values are invalid")
     if len(attention) > 16 or len(expected) > 16 or any(not isinstance(x, str) or len(x) > 1_000 for x in [*attention, *expected]):
         raise CasePlanningValidationError("planning response values are unbounded")
-    if any(_SECRET_PATTERN.search(item) for item in [risk, *attention, *expected]):
+    values = [risk, *attention, *expected]
+    if any(
+        _SECRET_PATTERN.search(item) or str(item).strip() in _REDACTION_SENTINELS
+        for item in values
+    ):
         raise CasePlanningValidationError("planning response contains secret-like data")
     return CasePlanningAdvisory(risk, tuple(attention), tuple(expected))

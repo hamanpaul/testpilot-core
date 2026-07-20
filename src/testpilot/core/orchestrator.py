@@ -12,6 +12,7 @@ This module keeps the public API identical to pre-split versions so that
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Any, Callable, Literal, TypeVar
 
@@ -20,6 +21,8 @@ try:
         CopilotSDKUnavailableError,
         CopilotSessionManager,
         CopilotSessionRequest,
+        _MAX_ONE_SHOT_PROMPT_CHARS,
+        _MAX_ONE_SHOT_TIMEOUT_SECONDS,
         build_case_session_plan,
         build_session_id,
     )
@@ -29,6 +32,8 @@ except Exception:  # pragma: no cover - optional during incremental rollout
     CopilotSessionManager = None  # type: ignore[assignment,misc]
     CopilotSessionRequest = None  # type: ignore[assignment,misc]
     build_session_id = None  # type: ignore[assignment]
+    _MAX_ONE_SHOT_PROMPT_CHARS = 64_000
+    _MAX_ONE_SHOT_TIMEOUT_SECONDS = 600.0
 
 from testpilot.core.case_utils import (
     band_results as _band_results,
@@ -106,6 +111,10 @@ class AgentResponseValidationError(ValueError):
     def __init__(self, error_type: str):
         super().__init__(error_type)
         self.error_type = error_type
+
+
+class AgentRequestValidationError(ValueError):
+    """Local request validation failure before any provider interaction."""
 
 
 def _planning_result_error(exc: Exception) -> CasePlanningResult:
@@ -201,6 +210,15 @@ class Orchestrator(OrchestratorRunBackendCompat):
             if isinstance(raw_tier2_policy, dict)
             else {}
         )
+        timeout_seconds, timeout_warning = self._normalize_tier2_timeout_seconds(
+            tier2_policy.get("timeout_seconds", 60.0)
+        )
+        tier2_policy["timeout_seconds"] = timeout_seconds
+        if timeout_warning:
+            tier2_policy["_warnings"] = [timeout_warning]
+        if tier2_policy:
+            remediation_policy = dict(remediation_policy)
+            remediation_policy["tier2"] = tier2_policy
         support = tier2_support(plugin, remediation_policy)
         support_map = getattr(self, "agent_recovery_support", None)
         if support_map is None:
@@ -211,7 +229,6 @@ class Orchestrator(OrchestratorRunBackendCompat):
         runtime_ready = runtime is not None and runtime.status.state is AzureAgentState.AZURE_READY
         if support.supported and runtime_ready and not self.agent_circuit_open:
             remediation_invocation = 0
-            timeout_seconds = tier2_policy.get("timeout_seconds", 60.0)
 
             def _request_tier2_plan(
                 prompt: str,
@@ -280,6 +297,63 @@ class Orchestrator(OrchestratorRunBackendCompat):
             log.debug("Copilot SDK unavailable — session foundation disabled")
             return None
 
+    @staticmethod
+    def _validate_one_shot_request(
+        *,
+        prompt: Any,
+        timeout_seconds: Any,
+    ) -> tuple[str, float]:
+        prompt_text = str(prompt)
+        if not prompt_text.strip():
+            raise AgentRequestValidationError(
+                "Copilot one-shot prompt must not be empty"
+            )
+        if len(prompt_text) > _MAX_ONE_SHOT_PROMPT_CHARS:
+            raise AgentRequestValidationError(
+                "Copilot one-shot prompt size limit exceeded "
+                f"({_MAX_ONE_SHOT_PROMPT_CHARS} chars)"
+            )
+        try:
+            normalized_timeout = float(timeout_seconds)
+        except (TypeError, ValueError) as exc:
+            raise AgentRequestValidationError(
+                "Copilot one-shot timeout_seconds must be positive and bounded"
+            ) from exc
+        if (
+            not math.isfinite(normalized_timeout)
+            or normalized_timeout <= 0
+            or normalized_timeout > _MAX_ONE_SHOT_TIMEOUT_SECONDS
+        ):
+            raise AgentRequestValidationError(
+                "Copilot one-shot timeout_seconds must be positive"
+            )
+        return prompt_text, normalized_timeout
+
+    @staticmethod
+    def _normalize_tier2_timeout_seconds(value: Any) -> tuple[float, str]:
+        default_timeout = 60.0
+        try:
+            normalized = float(value)
+        except (TypeError, ValueError):
+            return (
+                default_timeout,
+                "tier2.timeout_seconds invalid; using default 60.0",
+            )
+        if not math.isfinite(normalized) or normalized <= 0:
+            return (
+                default_timeout,
+                "tier2.timeout_seconds invalid; using default 60.0",
+            )
+        if normalized > _MAX_ONE_SHOT_TIMEOUT_SECONDS:
+            return (
+                float(_MAX_ONE_SHOT_TIMEOUT_SECONDS),
+                (
+                    "tier2.timeout_seconds exceeded one-shot limit; "
+                    f"clamped to {float(_MAX_ONE_SHOT_TIMEOUT_SECONDS):.1f}"
+                ),
+            )
+        return normalized, ""
+
     def _invoke_agent_one_shot(
         self,
         *,
@@ -310,6 +384,19 @@ class Orchestrator(OrchestratorRunBackendCompat):
             model=self.agent_runtime.status.deployment,
         )
         try:
+            prompt_text, normalized_timeout = self._validate_one_shot_request(
+                prompt=prompt,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:
+            error_type = type(exc).__name__
+            self.usage_ledger.finish_invocation(
+                binding,
+                status="failed",
+                error_type=error_type,
+            )
+            raise AgentResponseValidationError(error_type) from None
+        try:
             provider = self.agent_runtime.sdk_provider_config()
             if provider is None or CopilotSessionRequest is None:
                 raise CopilotSDKUnavailableError("Azure provider is unavailable")
@@ -324,8 +411,8 @@ class Orchestrator(OrchestratorRunBackendCompat):
             )
             raw = self.session_manager.send_one_shot(
                 request,
-                prompt,
-                timeout_seconds=timeout_seconds,
+                prompt_text,
+                timeout_seconds=normalized_timeout,
             )
         except Exception as exc:
             error_type = type(exc).__name__
@@ -434,37 +521,6 @@ class Orchestrator(OrchestratorRunBackendCompat):
             return RunAnalysisResult.from_mapping(reduced, batch_calls=len(batches), reducer_calls=1, case_findings=findings)
         except Exception as exc:
             return RunAnalysisResult(status="failed", batch_calls=batch_calls, reducer_calls=reducer_calls, error_type=getattr(exc, "error_type", type(exc).__name__))
-
-    def _create_case_session(
-        self,
-        session_plan: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        """Attempt to create an SDK session from a session plan; return handle info or None."""
-        if self.session_manager is None or CopilotSessionRequest is None:
-            return None
-        try:
-            provider = session_plan.get("provider_config")
-            request = CopilotSessionRequest(
-                session_id=str(session_plan.get("session_id", "")),
-                model=str(session_plan.get("model", "")),
-                reasoning_effort=str(session_plan.get("reasoning_effort", "high")),
-                provider=provider,
-            )
-            handle = self.session_manager.create_session(request)
-            return {
-                "session_id": handle.session_id,
-                "workspace_path": handle.workspace_path,
-                "status": "created",
-            }
-        except Exception as exc:
-            safe_reason = self._record_agent_session_failure(
-                exc,
-                warning=(
-                    "SDK session foundation failed; agent session marked "
-                    "degraded"
-                ),
-            )
-            return {"status": "failed", "error": safe_reason}
 
     def _record_agent_session_failure(
         self,

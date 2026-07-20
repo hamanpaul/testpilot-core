@@ -18,7 +18,7 @@ from testpilot.core.tier2_recovery import (
     Tier2PlanValidationError,
     Tier2RecoveryAudit,
     Tier2RecoveryContext,
-    build_tier2_prompt,
+    build_tier2_prompt_payload,
     parse_tier2_plan,
     sanitize_tier2_value,
 )
@@ -396,11 +396,6 @@ class RuntimeRemediationCoordinator:
 
         raw_tier2 = self.policy.get("tier2")
         self.tier2_policy = dict(raw_tier2) if isinstance(raw_tier2, Mapping) else {}
-        self.tier2_enabled = (
-            self.enabled
-            and bool(self.tier2_policy.get("enabled", False))
-            and self.tier2_requester is not None
-        )
         self.tier2_trigger_failures = max(
             1,
             self._policy_int(
@@ -414,6 +409,12 @@ class RuntimeRemediationCoordinator:
                 self.tier2_policy.get("max_invocations_per_case"),
                 1,
             ),
+        )
+        self.tier2_enabled = (
+            self.enabled
+            and bool(self.tier2_policy.get("enabled", False))
+            and self.tier2_requester is not None
+            and self.tier2_max_invocations > 0
         )
         self.tier2_max_actions = max(
             0,
@@ -643,6 +644,7 @@ class RuntimeRemediationCoordinator:
 
         if (
             self.tier2_enabled
+            and not state["tier2_disabled_for_case"]
             and state["tier1_failure_streak"] >= self.tier2_trigger_failures
         ):
             if state["tier2_invocations"] >= self.tier2_max_invocations:
@@ -834,6 +836,13 @@ class RuntimeRemediationCoordinator:
             trigger_threshold=self.tier2_trigger_failures,
             context={},
             prompt="",
+            warnings=[
+                str(item)
+                for item in self.tier2_policy.get("_warnings", [])
+                if str(item).strip()
+            ]
+            if isinstance(self.tier2_policy.get("_warnings"), list)
+            else [],
         )
         log.info(
             "tier-2 escalation case=%s invocation=%d/%d",
@@ -872,7 +881,7 @@ class RuntimeRemediationCoordinator:
             context = Tier2RecoveryContext.from_mapping(
                 _as_mapping(raw_context)
             )
-            prompt = build_tier2_prompt(
+            prompt_payload = build_tier2_prompt_payload(
                 context=context,
                 failure=snapshot.to_dict(),
                 tier1_failures=state["tier1_failure_streak"],
@@ -887,7 +896,8 @@ class RuntimeRemediationCoordinator:
                 status="rejected",
             )
         audit.context = context.to_dict()
-        audit.prompt = prompt
+        audit.prompt = prompt_payload.prompt
+        audit.truncated = prompt_payload.truncated
 
         if self.tier2_requester is None:
             return self._skip_tier2_before_execution(
@@ -899,7 +909,7 @@ class RuntimeRemediationCoordinator:
             )
         state["agent_recovered"] = True
         try:
-            raw_response = self.tier2_requester(prompt, context.to_dict())
+            raw_response = self.tier2_requester(prompt_payload.prompt, context.to_dict())
             if not isinstance(raw_response, str) or not raw_response.strip():
                 raise ValueError("tier-2 requester returned no plan")
             audit.raw_response = raw_response

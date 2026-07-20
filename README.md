@@ -238,7 +238,9 @@ Repository skills for agent-assisted workflows live under `skills/`.
 
 TestPilot core automatically uses Azure when all required values are present.
 Without an API key it runs in deterministic/no-agent mode; a key without an
-endpoint or deployment produces a non-blocking misconfiguration notice.
+endpoint or deployment produces a non-blocking misconfiguration notice. If
+`COPILOT_PROVIDER_TYPE` is set to a non-`azure` value, core also treats the
+runtime as misconfigured and emits the same redacted notice.
 
 ```bash
 export COPILOT_PROVIDER_BASE_URL=https://your-resource.openai.azure.com
@@ -248,13 +250,14 @@ export COPILOT_PROVIDER_AZURE_API_VERSION=2024-10-21
 testpilot run <plugin_name>
 ```
 
-`COPILOT_PROVIDER_TYPE` is ignored as an enable switch; core constructs only
-the Azure provider. Azure deployment selection is independent of plugin runner
-labels. Per-case planning is advisory, tier-2 recovery requires plugin opt-in,
-and deterministic remediation remains plugin-owned. Core-owned usage and
-observational benefit metrics are written under `artifact_dir/agent_usage`;
-shared run-analysis tokens are not allocated to cases. Custom/skeleton runners
-report `unsupported_execution_path` and make no core model calls.
+`COPILOT_PROVIDER_TYPE` is not an enable switch; core constructs only the Azure
+provider and rejects non-azure values as misconfiguration. Azure deployment
+selection is independent of plugin runner labels. Per-case planning is
+advisory, tier-2 recovery requires plugin opt-in, and deterministic remediation
+remains plugin-owned. Core-owned usage and observational benefit metrics are
+written under `artifact_dir/agent_usage`; shared run-analysis tokens are not
+allocated to cases. Custom/skeleton runners report `unsupported_execution_path`
+and make no core model calls.
 
 ### Writing a Plugin
 
@@ -445,8 +448,9 @@ testpilot run <plugin>
 ### Azure OpenAI（BYOK）
 
 當 Azure endpoint、API key 與 deployment 都存在時，TestPilot core 自動啟用
-Azure；沒有 key 時使用 deterministic/no-agent mode，缺少其他欄位則只產生
-非阻斷的 misconfigured 狀態。`COPILOT_PROVIDER_TYPE` 不作為啟用開關，core
+Azure；沒有 key 時使用 deterministic/no-agent mode，缺少其他欄位只會產生
+非阻斷的 misconfigured notice；若 `COPILOT_PROVIDER_TYPE` 被設成非 `azure`
+值，也會被視為 misconfigured。`COPILOT_PROVIDER_TYPE` 不作為啟用開關，core
 只建立 Azure provider。
 
 ```bash

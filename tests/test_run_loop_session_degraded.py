@@ -6,8 +6,6 @@ foundation failure is loud (not silent) all the way out to the run result.
 
 These tests drive ``run_loop.run`` with a hermetic stub orchestrator + fake
 plugin/reporter (no real run backend / serialwrap) so they stay hardware-free.
-The ``_create_case_session`` → ``agent_session_degraded`` wiring itself is
-covered by ``tests/test_orchestrator_session_degraded.py``.
 """
 
 from __future__ import annotations
@@ -141,8 +139,8 @@ def test_run_payload_carries_agent_session_degraded(tmp_path: Path) -> None:
 
 
 def test_run_payload_degraded_true_when_sessions_fail(tmp_path: Path) -> None:
-    # session foundation 在 run 中失敗後 orchestrator.agent_session_degraded 被標記
-    # （見 test_orchestrator_session_degraded）；payload 必須原樣攜出。
+    # session foundation 在 run 中失敗後 orchestrator.agent_session_degraded 被標記；
+    # payload 必須原樣攜出。
     orch = _StubOrchestrator(tmp_path, {"degraded": True, "reason": "boom"})
     payload = run_loop.run(orch, "fake", None, None)
     assert payload["agent_session_degraded"]["degraded"] is True

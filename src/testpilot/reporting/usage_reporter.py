@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from testpilot.core.assistance_metrics import summarize_case_assistance
 from testpilot.core.usage_ledger import UsageSnapshot
 
 
@@ -40,24 +41,35 @@ def _usage_summary(usage: UsageSnapshot, *, case_id: str | None, purpose: str) -
 
 
 def _deterministic(record: Any) -> dict[str, Any]:
-    history = getattr(record.retry, "remediation_history", None) or []
-    rows = [x for x in history if isinstance(x, Mapping) and str(x.get("decision_source", "")).startswith("tier1-deterministic") and x.get("executed_actions")]
+    summary = summarize_case_assistance(record)
+    rows = list(summary.deterministic_records)
     actions = [a for x in rows for a in x.get("executed_actions", []) if isinstance(a, Mapping)]
     plugin_attempted = sum(isinstance(x.get("verify_after"), bool) for x in rows)
     plugin_passed = sum(x.get("verify_after") is True for x in rows)
     core_attempted = sum(isinstance(x.get("core_verify_after"), bool) for x in rows)
     core_passed = sum(x.get("core_verify_after") is True for x in rows)
-    return {"calls": len(rows), "tokens": 0, "actions": len(actions), "applied": sum(bool(x.get("applied")) for x in rows), "failed": sum(not bool(x.get("applied")) for x in rows), "plugin_verify": {"attempted": plugin_attempted, "passed": plugin_passed}, "core_next_attempt_verify": {"attempted": core_attempted, "passed": core_passed}, "observed_resolution": any(bool(x.get("applied")) and x.get("verify_after") is True for x in rows)}
+    applied = sum(bool(x.get("applied")) for x in rows)
+    return {"calls": len(rows), "tokens": 0, "actions": len(actions), "applied": applied, "failed": sum(not bool(x.get("applied")) for x in rows), "plugin_verify": {"attempted": plugin_attempted, "passed": plugin_passed}, "core_next_attempt_verify": {"attempted": core_attempted, "passed": core_passed}, "observed_resolution": (not summary.initial_pass and applied > 0 and not summary.agent_intervened and summary.final_pass)}
 
 
 def build_core_cost_report(*, run_result: Any, planning_by_case: Mapping[str, Any], agent_recovery_support: Mapping[str, Any], usage: UsageSnapshot, metrics: Mapping[str, Any], analysis: Any, agent_state: Mapping[str, str]) -> dict[str, Any]:
     per_case = []
     for record in run_result.cases:
         case_id = str(record.case_id or record.case.get("id", ""))
+        assistance = summarize_case_assistance(record)
         agent = _usage_summary(usage, case_id=case_id, purpose="case_planning")
+        planning_result = planning_by_case.get(case_id)
+        planning_status = str(getattr(planning_result, "status", "") or "")
+        planning_error_type = str(getattr(planning_result, "error_type", "") or "")
+        if agent["calls"] == 0:
+            if planning_status == "failed" and planning_error_type:
+                agent["status"] = f"failed:{planning_error_type}"
+            elif planning_status.startswith("skipped_"):
+                agent["status"] = planning_status
+        agent["error_type"] = planning_error_type
         recovery = _usage_summary(usage, case_id=case_id, purpose="agent_recovery")
         support = agent_recovery_support.get(case_id)
-        recovery.update({"supported": bool(getattr(support, "supported", False)), "reason": str(getattr(support, "reason", "") or ""), "observed_resolution": bool(getattr(record.retry, "agent_recovered", False))})
+        recovery.update({"supported": bool(getattr(support, "supported", False)), "reason": str(getattr(support, "reason", "") or ""), "intervened": assistance.agent_intervened, "observed_resolution": assistance.agent_observed_resolution})
         deterministic = _deterministic(record)
         per_case.append({"case_id": case_id, "agent": agent, "deterministic_remediation": deterministic, "agent_recovery": recovery, "direct_total_tokens": agent["total_tokens"] + recovery["total_tokens"]})
     shared_rows = _usage_rows(usage, purpose="run_analysis_batch") + _usage_rows(usage, purpose="run_analysis_reducer")
@@ -71,10 +83,11 @@ def build_core_cost_report(*, run_result: Any, planning_by_case: Mapping[str, An
 
 
 def _markdown(report: Mapping[str, Any], analysis: Any) -> str:
+    summary = str(report.get("analysis", {}).get("summary", ""))[:4000].replace("```", "")
     lines = ["# Core Agent Cost Report", "", f"- coverage: `{report.get('coverage')}`", f"- execution_path: `{report.get('execution_path')}`", f"- agent state: `{report.get('agent_state', {}).get('initial_agent_state', '')}` → `{report.get('agent_state', {}).get('final_agent_state', '')}`", "", "| case | planning tokens | deterministic actions | recovery tokens | direct total |", "|---|---:|---:|---:|---:|"]
     for row in report.get("per_case", []):
         lines.append(f"| {row['case_id']} | {row['agent']['total_tokens']} | {row['deterministic_remediation']['actions']} | {row['agent_recovery']['total_tokens']} | {row['direct_total_tokens']} |")
-    lines += ["", f"- shared run-analysis tokens: {report.get('shared', {}).get('run_analysis_tokens', 0)}", f"- all core model tokens: {report.get('total', {}).get('all_core_model_tokens', 0)}", "", "## Analysis", "", str(report.get("analysis", {}).get("summary", ""))[:4000]]
+    lines += ["", f"- shared run-analysis tokens: {report.get('shared', {}).get('run_analysis_tokens', 0)}", f"- all core model tokens: {report.get('total', {}).get('all_core_model_tokens', 0)}", "", "## Analysis", "", "```", summary, "```"]
     return "\n".join(lines) + "\n"
 
 
@@ -86,6 +99,13 @@ def write_core_cost_artifacts(*, artifact_dir: Path, report: Mapping[str, Any], 
     (out / "cost-report.md").write_text(_markdown(report, analysis), encoding="utf-8")
     analysis_payload = analysis.to_dict() if hasattr(analysis, "to_dict") else dict(analysis or {})
     (out / "run-analysis.json").write_text(json.dumps(analysis_payload, indent=2, sort_keys=True, ensure_ascii=True) + "\n", encoding="utf-8")
-    (out / "run-analysis.md").write_text("# Run Analysis\n\n" + str(analysis_payload.get("summary", ""))[:4000] + "\n", encoding="utf-8")
-    status = "partial" if analysis_payload.get("status") == "failed" else "complete"
+    summary = str(analysis_payload.get("summary", ""))[:4000].replace("```", "")
+    (out / "run-analysis.md").write_text("# Run Analysis\n\n```\n" + summary + "\n```\n", encoding="utf-8")
+    analysis_status = str(analysis_payload.get("status", ""))
+    if analysis_status == "failed":
+        status = "partial"
+    elif analysis_status == "skipped_aborted":
+        status = "aborted"
+    else:
+        status = "complete"
     return CoreCostArtifacts(status=status, json_path=str(out / "cost-report.json"), markdown_path=str(out / "cost-report.md"), analysis_status=str(analysis_payload.get("status", "")))

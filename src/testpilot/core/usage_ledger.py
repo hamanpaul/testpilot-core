@@ -153,9 +153,20 @@ class UsageLedger:
             if not api_call_id and not event_id:
                 raise ValueError("usage event has no identifier")
             dedupe_basis: Literal["api_call_id", "event_id"] = "api_call_id" if api_call_id else "event_id"
-            key = (binding.session_id, str(api_call_id or event_id))
-            seen = self._seen_api_calls if dedupe_basis == "api_call_id" else self._seen_event_ids
-            if key in seen:
+            api_key = (
+                (binding.session_id, str(api_call_id))
+                if api_call_id
+                else None
+            )
+            event_key = (
+                (binding.session_id, str(event_id))
+                if event_id
+                else None
+            )
+            if (
+                (api_key is not None and api_key in self._seen_api_calls)
+                or (event_key is not None and event_key in self._seen_event_ids)
+            ):
                 self._duplicate_usage_events += 1
                 return False
             inputs = self._number(getattr(data, "input_tokens", None), integral=True)
@@ -166,7 +177,10 @@ class UsageLedger:
             cache_write = self._number(getattr(data, "cache_write_tokens", 0), integral=True, default=0)
             cost = self._number(getattr(data, "cost", None), integral=False)
             duration = self._number(getattr(data, "duration", None), integral=False)
-            seen.add(key)
+            if api_key is not None:
+                self._seen_api_calls.add(api_key)
+            if event_key is not None:
+                self._seen_event_ids.add(event_key)
             timestamp = getattr(event, "timestamp", None)
             timestamp = timestamp.isoformat() if hasattr(timestamp, "isoformat") else _now()
             row = UsageRecord(binding.invocation_id, binding.session_id, str(api_call_id) if api_call_id else None, str(event_id) if event_id else None, dedupe_basis, binding.case_id, binding.purpose, binding.allocation, getattr(data, "model", binding.model), inputs, outputs, cache_read or 0, cache_write or 0, cost, duration, timestamp)

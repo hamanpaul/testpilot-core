@@ -20,10 +20,12 @@ _MAX_CAPABILITY_DESCRIPTION_CHARS = 400
 _MAX_GENERIC_STRING_CHARS = 1_000
 _MAX_GENERIC_ITEMS = 20
 _MAX_GENERIC_KEYS = 40
+_MAX_ONE_SHOT_PROMPT_CHARS = 64_000
 _MAX_RAW_RESPONSE_CHARS = 64_000
 _MAX_AUDIT_PROMPT_CHARS = 40_000
 
 _EXECUTOR_KEY_RE = re.compile(r"[A-Za-z0-9_.-]{1,100}")
+_COMMAND_LIKE_PARAM_RE = re.compile(r"(?i)(?:command|cmd|exec|shell|script|argv)")
 _FENCED_JSON_RE = re.compile(
     r"\A```(?:json)?\s*(\{.*\})\s*```\Z",
     flags=re.DOTALL | re.IGNORECASE,
@@ -34,13 +36,15 @@ _AUTH_HEADER_RE = re.compile(
 _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|"
     r"password|passwd|secret|authorization|credential|endpoint|"
-    r"base[_-]?url)\b\s*[:=]\s*)"
+    r"base[_-]?url|psk|(?:key|wpa[_-]?)?pass[_-]?phrase|"
+    r"wep[_-]?key|private[_-]?key)\b\s*[:=]\s*)"
     r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
 )
 _SENSITIVE_JSON_VALUE_RE = re.compile(
     r'(?i)("(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|'
     r'password|passwd|secret|authorization|credential|endpoint|'
-    r'base[_-]?url)"\s*:\s*)'
+    r'base[_-]?url|psk|(?:key|wpa[_-]?)?pass[_-]?phrase|'
+    r'wep[_-]?key|private[_-]?key)"\s*:\s*)'
     r'("[^"\r\n]*")'
 )
 _SENSITIVE_KEY_MARKERS = (
@@ -55,6 +59,10 @@ _SENSITIVE_KEY_MARKERS = (
     "credential",
     "endpoint",
     "baseurl",
+    "psk",
+    "passphrase",
+    "wepkey",
+    "privatekey",
 )
 _FORBIDDEN_CONTROL_FIELDS = {
     "caseyaml",
@@ -158,6 +166,10 @@ class Tier2RecoveryContext:
             (str, bytes, bytearray),
         ):
             raise ValueError("tier-2 capabilities must be a sequence")
+        if len(list(raw_capabilities)) > _MAX_CAPABILITIES:
+            raise ValueError(
+                f"tier-2 capability catalog must not exceed {_MAX_CAPABILITIES} entries"
+            )
 
         capabilities: list[Tier2Capability] = []
         seen_executor_keys: set[str] = set()
@@ -281,6 +293,8 @@ class Tier2RecoveryAudit:
     verify_gate: dict[str, Any] | None = None
     status: str = "pending"
     error: str = ""
+    warnings: list[str] = field(default_factory=list)
+    truncated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -302,32 +316,22 @@ class Tier2RecoveryAudit:
             "verify_gate": sanitize_tier2_value(self.verify_gate),
             "status": _bounded_text(self.status, 100),
             "error": _redact_text(self.error, limit=2_000),
+            "warnings": [
+                _redact_text(item, limit=500)
+                for item in self.warnings[:8]
+                if str(item).strip()
+            ],
+            "truncated": bool(self.truncated),
         }
 
 
-def build_tier2_prompt(
-    *,
-    context: Tier2RecoveryContext | Mapping[str, Any],
-    failure: Mapping[str, Any],
-    tier1_failures: int,
-) -> str:
-    """Build the core-owned one-shot prompt from bounded plugin context."""
-    normalized_context = Tier2RecoveryContext.from_mapping(
-        context.to_dict()
-        if isinstance(context, Tier2RecoveryContext)
-        else context
-    )
-    payload = {
-        "tier1_failures": max(0, int(tier1_failures)),
-        "failure": sanitize_tier2_value(failure),
-        "context": normalized_context.to_dict(),
-    }
-    structured_input = json.dumps(
-        payload,
-        ensure_ascii=False,
-        indent=2,
-        sort_keys=True,
-    )
+@dataclass(frozen=True, slots=True)
+class Tier2PromptPayload:
+    prompt: str
+    truncated: bool = False
+
+
+def _tier2_prompt_template(structured_input: str) -> str:
     return (
         "You are TestPilot's tier-2 environment-recovery planner. "
         "Produce a bounded environment repair plan only.\n\n"
@@ -353,6 +357,228 @@ def build_tier2_prompt(
         "Structured failure scene and plugin contract:\n"
         f"{structured_input}"
     )
+
+
+def _render_prompt_payload(payload: Mapping[str, Any]) -> str:
+    structured_input = json.dumps(
+        payload,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    return _tier2_prompt_template(structured_input)
+
+
+def _prompt_failure_view(
+    failure: Mapping[str, Any],
+    *,
+    compact: bool,
+    minimal: bool,
+) -> dict[str, Any]:
+    view = dict(failure)
+    if minimal:
+        return {
+            "category": _bounded_text(view.get("category", ""), 64),
+            "reason_code": _bounded_text(view.get("reason_code", ""), 128),
+            "comment": _bounded_text(view.get("comment", ""), 240),
+        }
+    if compact:
+        trimmed = {
+            "category": _bounded_text(view.get("category", ""), 64),
+            "reason_code": _bounded_text(view.get("reason_code", ""), 128),
+            "comment": _bounded_text(view.get("comment", ""), 400),
+            "output": _bounded_text(view.get("output", ""), 600),
+        }
+        evidence = view.get("evidence", [])
+        if isinstance(evidence, Sequence) and not isinstance(
+            evidence,
+            (str, bytes, bytearray),
+        ):
+            trimmed["evidence"] = [
+                _bounded_text(item, 200)
+                for item in list(evidence)[:4]
+            ]
+        return trimmed
+    return view
+
+
+def _prompt_params_schema(
+    schema: Mapping[str, Any],
+    *,
+    compact: bool,
+) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    for index, (raw_name, raw_spec) in enumerate(schema.items()):
+        if compact and index >= 12:
+            projected["..."] = "[TRUNCATED]"
+            break
+        name = _bounded_text(raw_name, 100)
+        if isinstance(raw_spec, str):
+            projected[name] = raw_spec
+            continue
+        if not isinstance(raw_spec, Mapping):
+            projected[name] = sanitize_tier2_value(raw_spec)
+            continue
+        spec: dict[str, Any] = {"type": str(raw_spec.get("type", "string"))}
+        if raw_spec.get("required") is True:
+            spec["required"] = True
+        if "enum" in raw_spec and isinstance(raw_spec["enum"], list):
+            limit = 8 if compact else len(raw_spec["enum"])
+            spec["enum"] = [
+                sanitize_tier2_value(item)
+                for item in raw_spec["enum"][:limit]
+            ]
+        if "max_length" in raw_spec:
+            spec["max_length"] = raw_spec["max_length"]
+        projected[name] = spec
+    return projected
+
+
+def _prompt_context_view(
+    context: Tier2RecoveryContext,
+    *,
+    compact: bool,
+    minimal: bool,
+) -> dict[str, Any]:
+    if minimal:
+        return {
+            "diagnosis": _bounded_text(context.diagnosis, 400),
+            "log_excerpt": [
+                _bounded_text(item, 160)
+                for item in context.log_excerpt[:2]
+            ],
+            "capabilities": [
+                {
+                    "executor_key": capability.executor_key,
+                    "params_schema": _prompt_params_schema(
+                        capability.params_schema,
+                        compact=True,
+                    ),
+                }
+                for capability in context.capabilities[:8]
+            ],
+            "verify_env_definition": _bounded_text(
+                context.verify_env_definition,
+                400,
+            ),
+            "metadata": {"truncated": True},
+        }
+    capabilities = []
+    for capability in context.capabilities:
+        item: dict[str, Any] = {
+            "executor_key": capability.executor_key,
+            "description": _bounded_text(
+                capability.description,
+                160 if compact else _MAX_CAPABILITY_DESCRIPTION_CHARS,
+            ),
+            "execution_boundary": _bounded_text(
+                capability.execution_boundary,
+                160 if compact else _MAX_CAPABILITY_DESCRIPTION_CHARS,
+            ),
+            "params_schema": _prompt_params_schema(
+                capability.params_schema,
+                compact=compact,
+            ),
+        }
+        capabilities.append(item)
+    metadata = {"truncated": True} if compact else dict(context.metadata)
+    return {
+        "diagnosis": _bounded_text(
+            context.diagnosis,
+            800 if compact else _MAX_DIAGNOSIS_CHARS,
+        ),
+        "log_excerpt": [
+            _bounded_text(item, 240 if compact else _MAX_LOG_LINE_CHARS)
+            for item in (
+                context.log_excerpt[:4] if compact else context.log_excerpt
+            )
+        ],
+        "capabilities": capabilities,
+        "verify_env_definition": _bounded_text(
+            context.verify_env_definition,
+            800 if compact else _MAX_VERIFY_DEFINITION_CHARS,
+        ),
+        "metadata": metadata,
+    }
+
+
+def build_tier2_prompt_payload(
+    *,
+    context: Tier2RecoveryContext | Mapping[str, Any],
+    failure: Mapping[str, Any],
+    tier1_failures: int,
+) -> Tier2PromptPayload:
+    normalized_context = Tier2RecoveryContext.from_mapping(
+        context.to_dict()
+        if isinstance(context, Tier2RecoveryContext)
+        else context
+    )
+    safe_failure = sanitize_tier2_value(failure)
+    base_payload = {
+        "tier1_failures": max(0, int(tier1_failures)),
+        "failure": _prompt_failure_view(
+            safe_failure if isinstance(safe_failure, Mapping) else {},
+            compact=False,
+            minimal=False,
+        ),
+        "context": _prompt_context_view(
+            normalized_context,
+            compact=False,
+            minimal=False,
+        ),
+    }
+    prompt = _render_prompt_payload(base_payload)
+    if len(prompt) <= _MAX_ONE_SHOT_PROMPT_CHARS:
+        return Tier2PromptPayload(prompt=prompt, truncated=False)
+
+    compact_payload = {
+        "tier1_failures": base_payload["tier1_failures"],
+        "failure": _prompt_failure_view(
+            safe_failure if isinstance(safe_failure, Mapping) else {},
+            compact=True,
+            minimal=False,
+        ),
+        "context": _prompt_context_view(
+            normalized_context,
+            compact=True,
+            minimal=False,
+        ),
+    }
+    prompt = _render_prompt_payload(compact_payload)
+    if len(prompt) <= _MAX_ONE_SHOT_PROMPT_CHARS:
+        return Tier2PromptPayload(prompt=prompt, truncated=True)
+
+    minimal_payload = {
+        "tier1_failures": base_payload["tier1_failures"],
+        "failure": _prompt_failure_view(
+            safe_failure if isinstance(safe_failure, Mapping) else {},
+            compact=True,
+            minimal=True,
+        ),
+        "context": _prompt_context_view(
+            normalized_context,
+            compact=True,
+            minimal=True,
+        ),
+    }
+    prompt = _render_prompt_payload(minimal_payload)
+    if len(prompt) > _MAX_ONE_SHOT_PROMPT_CHARS:
+        raise ValueError("tier-2 prompt exceeds bounded size")
+    return Tier2PromptPayload(prompt=prompt, truncated=True)
+
+
+def build_tier2_prompt(
+    *,
+    context: Tier2RecoveryContext | Mapping[str, Any],
+    failure: Mapping[str, Any],
+    tier1_failures: int,
+) -> str:
+    """Build the core-owned one-shot prompt from bounded plugin context."""
+    return build_tier2_prompt_payload(
+        context=context,
+        failure=failure,
+        tier1_failures=tier1_failures,
+    ).prompt
 
 
 def _contains_forbidden_control_field(value: Any) -> bool:
@@ -500,6 +726,14 @@ def _validate_capability_schema(schema: Mapping[str, Any]) -> None:
         if type_name not in _SUPPORTED_PARAM_TYPES:
             raise ValueError(
                 f"tier-2 capability parameter {name!r} has unsupported type {type_name!r}"
+            )
+        if (
+            _COMMAND_LIKE_PARAM_RE.search(name)
+            and type_name == "string"
+            and (not isinstance(raw_spec, Mapping) or "enum" not in raw_spec)
+        ):
+            raise ValueError(
+                f"tier-2 capability parameter {name!r} must declare enum"
             )
         if isinstance(raw_spec, Mapping) and "enum" in raw_spec:
             if any(
