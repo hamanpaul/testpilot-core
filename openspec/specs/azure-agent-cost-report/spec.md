@@ -1,4 +1,10 @@
-## ADDED Requirements
+# azure-agent-cost-report Specification
+
+## Purpose
+
+定義 Azure-only core agent runtime 的啟用判定與成本報表契約：core 僅在完整 Azure 環境設定下啟用 agent 支援（無 OAuth／其他 provider fallback），所有 agent 階段（per-case planning、tier-2 recovery、run-end analysis）皆 bounded、tool-denied、observational，並以 `agent_usage/` artifacts 與 additive payload pointer 呈現用量與成本，不影響測試 verdict。
+
+## Requirements
 
 ### Requirement: Azure readiness automatically controls core agent support
 TestPilot core SHALL resolve `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_BASE_URL`, and `COPILOT_MODEL` into `disabled_no_key`, `misconfigured`, `azure_ready`, or `degraded` state. Core MUST create only an Azure provider mapping, MUST ignore `COPILOT_PROVIDER_TYPE` as an enable switch, and MUST NOT fall back to OAuth or another provider.

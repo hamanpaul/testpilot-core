@@ -1,4 +1,10 @@
-## ADDED Requirements
+# core-owned-execution-loop Specification
+
+## Purpose
+
+定義 core 擁有的預設 test-case run 迴圈契約：plugin 僅以 hooks 接入（不得自帶整-run 迴圈），run 路徑對 case YAML 唯讀，core agent 階段（planning／tier-2／analysis）在迴圈中的排序與邊界，以及 core artifacts 與 plugin reporter 的先後關係。
+
+## Requirements
 
 ### Requirement: core 擁有預設 test-case run 迴圈
 testpilot core SHALL 提供預設的 test-case run 迴圈(`core/run_loop.py`),寫在 `RunBackend`(裝置存取)與 plugin hooks 之上,產出 `RunResult`。當 plugin 未提供 `create_runner()` override 時,orchestrator SHALL 走此 core 迴圈;plugin 僅透過 hook(`prepare_run` / `capture_dut_firmware_version` / `execution_policy` / `execute_step` / `create_reporter`)接入,MUST NOT 自帶整-run 迴圈。Core-owned run SHALL select the plugin runner without changing its identity, perform Azure-ready advisory planning before each deterministic case, preserve plugin-owned tier-1 remediation and capability-gated tier-2 recovery during retries, then perform bounded core analysis and write core artifacts after all final verdicts but before the unchanged plugin reporter is called.
