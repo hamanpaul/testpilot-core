@@ -72,8 +72,12 @@ class OrchestratorRunBackendCompat:
                         "alias": alias,
                         # testbed 可用 console_profile（station-layer）或 profile 指定
                         # serialwrap session profile；未指定維持 prpl-template。
-                        "profile": cfg.get(
-                            "console_profile", cfg.get("profile", "prpl-template")
+                        # truthy fallback：空字串/None 也回退，避免產生
+                        # "None:COM0" 之類的 session_id。
+                        "profile": (
+                            cfg.get("console_profile")
+                            or cfg.get("profile")
+                            or "prpl-template"
                         ),
                         "serial_port": cfg.get("serial_port", ""),
                     }
