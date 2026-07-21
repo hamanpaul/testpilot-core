@@ -70,7 +70,11 @@ class OrchestratorRunBackendCompat:
                     {
                         "com": selector,
                         "alias": alias,
-                        "profile": "prpl-template",
+                        # testbed 可用 console_profile（station-layer）或 profile 指定
+                        # serialwrap session profile；未指定維持 prpl-template。
+                        "profile": cfg.get(
+                            "console_profile", cfg.get("profile", "prpl-template")
+                        ),
                         "serial_port": cfg.get("serial_port", ""),
                     }
                 )
