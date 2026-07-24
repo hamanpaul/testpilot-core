@@ -4,6 +4,8 @@
 
 ---
 
+![TestPilot Core architecture overview](docs/assets/testpilot-core-intro.png)
+
 ## Install
 
 This README is the canonical install reference. For online install (managed venv, newest API-compatible core/plugins; serialwrap pinned), see [Quick Start](#quick-start). For offline environments or update procedures, see [Managed Install and Update](#managed-install-and-update). After any install or update, run `testpilot --verify-install` to confirm health.
