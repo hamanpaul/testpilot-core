@@ -10,11 +10,11 @@ from testpilot.serialwrap_binary import resolve_serialwrap_binary
 def test_resolve_uses_path_when_env_points_to_missing_binary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("SERIALWRAP_BIN", "/home/paul_chen/.paul_chen/serialwrap")
+    monkeypatch.setenv("SERIALWRAP_BIN", "/opt/missing/serialwrap")
 
     def fake_which(cmd: str) -> str | None:
         if cmd == "serialwrap":
-            return "/home/paul_chen/.paul_tools/serialwrap"
+            return "/opt/tools/serialwrap"
         return None
 
     monkeypatch.setattr("testpilot.serialwrap_binary.shutil.which", fake_which)
@@ -24,7 +24,7 @@ def test_resolve_uses_path_when_env_points_to_missing_binary(
         config_label="'serialwrap_binary' in testbed config",
     )
 
-    assert resolved == "/home/paul_chen/.paul_tools/serialwrap"
+    assert resolved == "/opt/tools/serialwrap"
 
 
 def test_resolve_uses_config_when_env_points_to_missing_binary(

@@ -21,7 +21,7 @@ def run_command_guidance() -> str:
         "Correct format:\n"
         "  testpilot run <plugin_name> [--case <case_id>] [--dut-fw-ver <fw_ver>]\n\n"
         "Example:\n"
-        "  testpilot run wifi_llapi --case wifi-llapi-D004-kickstation --dut-fw-ver BGW720-B0-403\n\n"
+        "  testpilot run wifi_llapi --case wifi-llapi-D004-kickstation --dut-fw-ver DUT-B0-403\n\n"
         "Tip:\n"
         "  testpilot list-cases wifi_llapi"
     )

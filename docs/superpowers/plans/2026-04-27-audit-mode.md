@@ -1,5 +1,11 @@
 # Audit Mode Implementation Plan
 
+> **歷史註記（2026-07-28）**：本文件中提到的 `docs/audit-guide.md.legacy.bak`、
+> `docs/COMPREHENSIVE_AUDIT_GUIDE.md`、`docs/AUDIT_GUIDE_INDEX.md` 皆為 core/plugin
+> 拆分前的殘留文件，已於 policy v1.0.15 升級時一併移除（含雇主裝置型號與個人絕對
+> 路徑，於 public repo 觸發 R-21）。本文件保留原始敘述作為當時決策的歷史紀錄。
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build TestPilot 的 audit mode — 一個和 normal `testpilot run` 完全分流的工作模式，把 audit / calibration 工作的 YAML 寫入權限關進 verify-edit gate + pre-commit hook 雙防線，讓 audit-only data 不再有機會混入 case YAML 造成 false-positive Pass。首發落地 wifi_llapi 415 official cases；驗收用例 D366 / D369 在 audit 完成後 verdict 對齊 workbook Fail。

@@ -1,15 +1,15 @@
-<!-- managed-by: hamanpaul/paulsha-conventions@v1.0.12 -->
+<!-- managed-by: hamanpaul/paulsha-conventions@v1.0.15 -->
 <!-- 若修改此檔，同步更新 CLAUDE.md / AGENTS.md / GEMINI.md / .github/copilot-instructions.md 四份 -->
-policy_version: 1.0.12
+policy_version: 1.0.15
 
 # Agent Policy Checklist
 
-本 repo 受 hamanpaul project policy v1.0.12 管轄。
+本 repo 受 hamanpaul project policy v1.0.15 管轄。
 所有 agent 進入 session 時，必須依下列 checklist 行動。
 
 ## 本 repo 的 profile
 - policy_profile: `flat` （見 `.project-policy.yml`）
-- policy_version: `1.0.12`
+- policy_version: `1.0.15`
 
 ## 動工前
 - [ ] 確認當前分支不是 `main`
@@ -85,7 +85,7 @@ review 變更時，除了 R-22 抓得到的懸空引用，另留意**語意陳�
 
 # TestPilot Development Guidelines
 
-policy_version: 1.0.12
+policy_version: 1.0.15
 
 ## Scope
 
@@ -194,36 +194,11 @@ Wifi_llapi reporting guidance:
 7. 若已知 log 行號區間，沿用 `Lxxx-Lyyy` 表示法，避免後續批次漂移成不同風格。
 8. `wifi_llapi` aligned YAML 的 workbook row reference 只保留在 `source.row`；舊的 `wifi-llapi-rXXX-*` alias 視為 stale metadata，live 對齊時應移除，不再作為 row 來源。
 
-## Calibration Continuation Policy
+## Calibration Continuation Policy / Default Lab Baseline Policy
 
-1. 目前 `wifi_llapi` workbook 校正工作必須嚴格採 **single-case mode**：一次只處理一個 official case。
-2. 不可把未解案例再拆成 batch 並行處理，也不可自行建立加速工具／腳本來跳過逐案 evidence 驗證。
-3. sub-agent 只可協助 offline survey、source tracing、code review；最終 live serialwrap 操作與 verdict 仍由主操作者手動收斂。
-4. repo-only handoff 必須落在已提交的文件，而不是 session-local SQL / plan scratchpad。最少要同步：
-   - `docs/audit-todo.md`
-   - `plugins/wifi_llapi/reports/audit-report-*.md` 的最新 checkpoint 區塊
-   - `README.md`
-   - `docs/plan.md`
-5. 每次完成單案校正或確認 blocker 後，repo handoff 文件至少要同步：
-   - 目前 calibrated / remaining counts
-   - active blockers
-   - 最新已提交 case 與 verdict 形狀
-   - 下一個 ready case
-   - 最新驗證指令與結果
-6. **commit / brief status update / targeted tests pass 都不是停點**；只要沒有明確 blocker、lab 失真、或使用者要求暫停，就必須在同一輪直接推進到下一個 ready single case。
-7. 每個 single-case loop 的預設完成定義固定為：offline survey → live 三個 band 驗證/切換 → YAML 重寫 → runtime targeted tests → runtime file / full suite → docs sync → precise stage/commit → 立刻把下一個 ready case 標成 `in_progress`。
-8. 若因 context 壓縮、tool/runtime crash、或 session 中斷而被迫停下，必須先把「最新已提交 case、目前 counts、next ready case、active blocker、最新驗證結果」落回 repo handoff 文件，再視為可接受中斷。
-9. 對使用者的進度回覆應以「不中斷主流程」為原則：除非需要請求決策或回報 blocker，說明完當前 checkpoint 後就要繼續執行下一筆，不得把單次回答本身當成停工理由。
-
-## Default Lab Baseline Policy
-
-1. 預設 baseline 不可使用 open security SSID。
-2. 若 testcase 沒有明確要求特殊安全模式，預設使用：
-   - 5G：`testpilot5G` / `WPA2-Personal` / password `00000000`
-   - 2.4G：`testpilot2G` / `WPA2-Personal` / password `00000000`
-   - 6G：`testpilot6G` / `WPA3-Personal` / `key_mgmt=SAE` / password `00000000`
-3. baseline 因 reboot / session recover 重建後，必須先把最新 SSID / security readback 與已驗證 band link 狀態同步回 repo handoff 文件，再繼續逐案校正。
-4. **BGW720-0410 image 暫時 workaround**：該 image 因 driver commit `00c7a198e8` 使 5G/2.4G 的 WPA2-PSK 4-way handshake 失敗（AP deauth `reason=1`，且 pwhm runtime reconfig 不會把 security apply 進 driver）。`band-baselines.yaml` 的 5g/2.4g profile 暫改為 `WPA3-Personal` / SAE（`sae_pwe=2` 必填，避免 DUT H2E-only 與 STA hunting-and-pecking 撞牆）以建立穩定 baseline；6G 不受影響。此為 image-specific override，image 修復（revert `00c7a198e8`）後須回退第 2 點的 5G/2.4G `WPA2-Personal` 預設（見 CHANGELOG）。
+此兩節屬 `wifi_llapi` plugin 的操作規範（逐案校正流程、實驗室 baseline SSID 與
+image-specific workaround），於 core/plugin 拆分後由 plugin repo 自行維護，core
+不再保留副本；相關內容見 `wifi_llapi` 的 agent convention 檔。
 
 ## Plugin Agent Config Policy
 

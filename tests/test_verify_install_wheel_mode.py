@@ -42,7 +42,7 @@ def test_wheel_mode_warns_on_stray_import():
     rows = _verify_install_wheel_mode(probe={
         "wrapper_ok": True, "core_version": "0.3.0", "plugins": [],
         "serialwrap": True, "skill_packaged": True,
-        "stray_import": "/home/u/.local/lib/python3.12/site-packages/testpilot",
+        "stray_import": "/opt/py/lib/python3.12/site-packages/testpilot",
     })
     assert any("WARN" in msg and "managed" in msg.lower() for _, msg in rows)
 

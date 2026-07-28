@@ -126,4 +126,3 @@ PR 時，主 agent 應改走 `testpilot audit ...` 工作流，而不是直接�
 - 設計文件：`docs/superpowers/specs/2026-04-27-audit-mode-design.md`
 - OpenSpec main spec：`openspec/specs/audit-mode/spec.md`
 - OpenSpec archive：`openspec/changes/archive/2026-04-28-add-audit-mode/`
-- 舊版 calibration guide：`docs/audit-guide.md.legacy.bak`
