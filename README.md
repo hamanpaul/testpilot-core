@@ -1,3 +1,5 @@
+> **Fact:** `testpilot-core` 是 embedded test verdict 的唯一 authority，負責 deterministic test execution、evidence collection 與 pass / fail 判定；Agent intervention 不構成 gate 通過證明。
+
 # TestPilot
 
 > **[English](#english)** ｜ **[繁體中文](#繁體中文)**
