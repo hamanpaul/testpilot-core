@@ -9,6 +9,172 @@ preparation.
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-08-07
+
+### Added
+- `testpilot <PLUGIN_PATH>` 可直接執行磁碟上的 plugin 專案，不需先安裝進 registry（#30）。
+  
+  **兩種 invocation 形式**
+  
+  | 形式 | 解析方式 |
+  |---|---|
+  | `testpilot <PLUGIN_NAME> [ARGS]...` | registry mode——已安裝的 `testpilot.plugins` entry point（既有行為，未變） |
+  | `testpilot <PLUGIN_PATH> [ARGS]...` | path mode——磁碟上的 plugin 專案根目錄（新增） |
+  
+  `PLUGIN_PATH` 指專案根目錄（含 `pyproject.toml` 那層）。專案自己的
+  `[project.entry-points."testpilot.plugins"]` 表是 plugin 名稱與 import 目標的唯一真實來源，
+  因此兩種模式對 plugin 身分的認定一致，只有解析路徑不同。
+  
+  **完整 parity，而非另一條簡化路徑**
+  
+  path mode 跑的是 plugin **自己** 透過 `register_cli` 註冊的 command，因此
+  `testpilot /path/to/p --flag` 與 `testpilot p --flag` 行為完全一致，plugin 專屬選項照常可用。
+  plugin 未註冊同名 command 時才退回核心 run 路徑。
+  
+  這需要一個 loader 層的名稱 override：plugin 自有 command 內部會以**名稱**重新解析自己
+  （`get_orchestrator(ctx, name)` → `load_registered_plugin(name)`，且 `Orchestrator` 自建
+  一個新的 `PluginLoader`）。沒有 override 的話，path mode 會在乾淨環境直接找不到 plugin，
+  或在有安裝的環境**靜默跑到已安裝的那份**——後者比不支援還糟。`PluginLoader.register_override`
+  讓所有 loader 實例對「這個名字是誰」取得一致答案。
+  
+  **「跑到路徑那份」的保證**
+  
+  僅把專案路徑前插 `sys.path` 並不夠：同名發行版若已被 import，其 top-level package 已在
+  `sys.modules`，`import_module` 會直接回快取的那份。因此 path mode 會先驅逐不屬於本專案的
+  同名 top-level module，再 import，並**驗證載入結果確實位於專案根目錄之下**；驗證不過就
+  拒絕執行，而不是靜默測到錯的樹。
+  
+  **Fail-closed 行為**
+  
+  - 路徑不存在 / 不是目錄 / 缺 `pyproject.toml` / 沒有 `testpilot.plugins` entry point：各自給出明確訊息。
+  - 專案宣告多個 plugin：**拒絕而不猜測**，並列出候選名稱，建議改為安裝後以名稱選取。
+  - entry point 值格式錯誤、屬性不存在、不是 `PluginBase` 子類：明確拒絕。
+  - path mode **不繞過** SDK API 版本閘，與 registry mode 共用同一個 `_check_api_compat`。
+  - 已註冊的 plugin 名稱永遠優先於同名資料夾，path mode 不可能遮蔽已安裝的 plugin。
+  
+  **實作**
+  
+  - 新增 `testpilot/core/plugin_project.py`：路徑解析、pyproject entry-point 讀取、
+    專案優先 import 與位置驗證、plugin 實例化。
+  - `testpilot/core/plugin_loader.py`：新增 class 層級的名稱 override（`register_override` /
+    `clear_overrides`），`load()` 優先查詢。
+  - `testpilot/cli.py`：`main` 改用 `PluginPathGroup`，`resolve_command` 在第一個 token 不是
+    已註冊命令、且看起來像路徑時走 path mode。判定條件保守：含路徑分隔符、以 `.`／`~` 開頭、
+    或該名稱確實是既有目錄。實作維持 plugin 零具名（`tests/test_cli_plugin_registration.py` 守門）。
+    override 以 `ctx.call_on_close` 綁在 click context 生命週期上，指令結束（成功或失敗）即清除——
+    process-wide 的 override 若殘留，之後對同名的解析會拿到上一輪的過期實例。
+  
+  **測試與文件**
+  
+  新增 `tests/test_cli_plugin_path_mode.py`（14 個測試），含「同 package 名、已安裝那份已進
+  `sys.modules`」的碰撞情境——這正是不做 module 驅逐就會靜默跑錯樹的那一條。另有 registry mode
+  未回歸、相對路徑、四種 fail-closed 錯誤與 help 內容的覆蓋。
+  
+  README（en/zh 兩段）新增兩種形式的對照表與 path mode 細節；`docs/plugin-dev-guide.md` 補上
+  「開發期免安裝跑法」；R-16 的 `testpilot-help` / `testpilot-update-help` marker 區塊已重生。
+
+### Changed
+- 升級 hamanpaul project policy 至 v1.0.15，並完成 R-21 減敏。
+  
+  **版本升級**
+  
+  - `policy_version` 1.0.12 → 1.0.15（`.project-policy.yml` 與四份 agent convention 檔）。
+  - `workflow_ref` / `policy_engine_ref` 雙 pin 換為 v1.0.15 的
+    `a764806046c410eb4f254ac0b6a8aec8b7559dab`（`policy-check.yml` 與 `release.yml` 兩支）。
+  - 新增 `.project-policy.yml` 的 `preflight.steps`（v1.0.13 的 canonical `preflight-ci`
+    skill 需要）。
+  - `tests/test_release_governance.py` 中寫死的 policy_version 斷言同步更新。
+  
+  **R-21 減敏（本 repo 為 public，v1.0.13 起依 visibility + tier 判定命中等級）**
+  
+  升級後 R-21 由「不適用」變為實際生效並命中 `structural:23 / marker:110`
+  （marker baseline 為少數雇主／內部代號 token；常見 vendor 名稱屬 `public_names` 不列入）。
+  分三類處理：
+  
+  **刪除拆分殘留**
+  - `docs/COMPREHENSIVE_AUDIT_GUIDE.md`、`docs/AUDIT_GUIDE_INDEX.md`、
+    `docs/audit-guide.md.legacy.bak`：pre-audit-mode 舊流程文件，audit doctrine 已由
+    `wifi_llapi` 承接。
+  - `docs/audit-todo.md`、`docs/wifi-baseline-exp.md`：core/plugin 拆分前的舊快照，
+    現行版本由 `wifi_llapi` 維護。
+  - `full_diff.patch`：293KB，於 `60d10c0` 誤 commit 的殘留產物。
+  - 四份 agent 檔的 `Calibration Continuation Policy` 與 `Default Lab Baseline Policy`
+    兩節：屬 plugin 的操作規範（逐案校正流程、實驗室 baseline 與 image-specific
+    workaround），拆分後由 plugin repo 維護；已替換為指向說明。
+  
+  **live code 減敏**
+  - `src/testpilot/cli_support.py`：`run` 子指令的 help 範例中 `--dut-fw-ver` 的裝置型號
+    改為通用佔位值（README 的 cli-help 區塊為頂層 `--help`，不含此行，R-16 不受影響）。
+  - `tests/test_serialwrap_binary.py` / `tests/test_verify_install_wheel_mode.py`：
+    fixture 中的 `/home/<user>/...` 個人路徑改為 `/opt/...`（structural 偵測針對
+    `/home/*/`，換成其他使用者名仍會命中，故改用非 `/home` 路徑）。
+  
+  **歷史紀錄以 allow-list 標示**
+  - `secret_scan.allow` 納入 `docs/superpowers/**`、`openspec/changes/archive/**`、
+    `CHANGELOG.md`。這些是當時決策的歷史紀錄，改寫等同竄改；allow-list 為 policy
+    對「合法引用」設計的機制。live code 與現行 docs 皆已實際減敏，不在此清單內。
+  
+  減敏後 `policy_check`（1.0.15 engine + PR context + `--repo-visibility public`）
+  為 pass 24 / fail 0，**未使用任何 `policy-exempt:*` 豁免 label**。
+  
+  **未納入的 gate 與已知既有問題（揭露，非本 PR 造成）**
+  
+  - `preflight.steps` 只宣告 `tests`，**暫不宣告 openspec gate**：本 repo 現有 4 個 spec
+    （`audit-mode`、`plugin-entry-points-discovery`、`plugin-runner-reporter-separation`、
+    `wifi-llapi-alignment-guardrails`）缺 `#### Scenario:` 區塊而驗證失敗，於未修改的
+    `main` 上結果相同（17 passed / 4 failed）。補齊後再加回。
+  - `tests/test_installer.py::TestOfflineInstall::test_offline_creates_wrapper` 在本機失敗，
+    同樣早於本 PR（未修改 main 上一致失敗、`main` CI 為綠）。根因為安裝腳本比對 bundle
+    的 `cp311` 標籤與執行中 python 版本標籤，本機為 Python 3.12 且無 `python3.11`。
+  - `.gitignore` 的 `.venv/` 改為 `.venv`：帶斜線的 pattern 只匹配目錄，把 `.venv` 做成
+    共用 venv 的 symlink 時不會被忽略，會污染 `git status` 並使 policy gate 打包時拋
+    `AbsoluteLinkError`。
+  
+  **changelog fragment 修正（含一項既有缺陷）**
+  
+  `docs/release-flow.md` 明定 `chore` **不是**合法 fragment type（合法值：`change` /
+  `deprecate` / `feat` / `fix` / `perf` / `refactor` / `remove` / `security`），
+  `policy_check.changelog collate` 會直接拋 `FragmentError` 拒絕執行、擋住整個 release：
+  
+  - 本 fragment 原用 `type: chore`，已改為 `change`（本 PR 引入，已修正）。
+  - `changelog.d/serialwrap-pin-0-2-4.md` **完全沒有 YAML frontmatter**（直接以
+    `### Changed` 開頭），為**早於本 PR 的既有缺陷**——代表 collate 在本 PR 之前就已經
+    失敗、release 路徑已被擋住。已補上 `type: change` / `scope: install` frontmatter，
+    內容維持原樣。修正後實測 `collate` 通過。
+  
+  另本 fragment 原文為說明減敏而直接寫出 marker token 與被替換掉的裝置型號字串，而
+  `changelog.d/**` 不在 `secret_scan.allow` 內；fragment 於 release 時會被 collate 進
+  `CHANGELOG.md`，等同在 release notes 重新命中。已改為不揭露具體 token 的描述。
+- managed-install serialwrap pin 在本版內累計由 `0.2.1` 走到 `0.3.0`（`install-manifest.yaml`）。其中 0.2.1→0.2.4 涵蓋 serialwrap `v0.2.2`~`v0.2.4`（174 commits）：daemon 暴露命令長度上限 `limits`（serialwrap#129）、arbiter recovery 佇列 flush（#128）、autoboot 倒數窗 recovery lease（#114/#140）、realhw 穩定性測試套件、Windows 原生 daemon 與 ssh 反向隧道 CLI。serialwrap 無 SDK API 契約，故維持顯式 `version:` pin。緊接著的 0.2.4→0.3.0 見下一條。
+- managed-install 的 serialwrap pin 由 `0.2.4` 提升至 `0.3.0`，並補上防止再次腐爛的守門測試。
+  
+  **為什麼**
+  
+  serialwrap 的 daemon 早已在現場升到 `0.3.0`（v0.3.0 tag 於 2026-07-31 併入 #158），但兩條安裝路徑的 client pin 都還停在 `0.2.4`：
+  
+  | 路徑 | 位置 | 原值 |
+  |---|---|---|
+  | 線上安裝 | 本檔 `install-manifest.yaml` 的 `serialwrap.version` | `0.2.4` |
+  | 離線 bundle | `wifi_llapi` 的 `scripts/make-bundle.sh` 的 `SERIALWRAP_REF`（`release.yml` 不覆寫，預設即出貨值） | `v0.2.4` |
+  
+  **沒有任何檢查看著這兩個 pin**，所以它們就這樣默默落後了一個 minor 版。
+  
+  這件事的諷刺之處在於：wifi_llapi #234 剛替 `--verify-install` 加上 client/daemon 版本漂移檢查，而 pin 若維持不動，**任何一次全新安裝都會在第一天就觸發那個新加的警告**——工具正確地指出了自己出貨的東西是舊的。
+  
+  **修法**
+  
+  - `install-manifest.yaml` 的 `serialwrap.version` → `0.3.0`，並在註解明載「這是兩個獨立 pin 之一，必須與 wifi_llapi 的 `SERIALWRAP_REF` 一起 bump」。
+  - 新增 `test_serialwrap_pin_is_the_deliberately_shipped_version`：把值鎖住，讓 bump 成為一次有意識的編輯；失敗訊息直接指向另一個 pin，避免只改一邊。
+  
+  wifi_llapi 側的對應修正與同型守門測試在該 repo 的 v0.3.9 release 一併落地。
+  
+  **未變更**
+  
+  `core` 與 plugins 在本 manifest **刻意不釘版本**（由 installer 解析最新 API 相容版），因此 wifi_llapi 的新 release 不需要在此 re-pin；只有無 API 契約的 serialwrap 是釘死的。
+
+### Fixed
+- run-backend 裝置清單的 serialwrap session profile 不再硬編 `prpl-template`：優先讀 testbed 裝置的 `console_profile`（station-layer 選型鍵）、次之 `profile`，空值/缺席一律回退預設（truthy fallback，避免空 profile 產生畸形 session_id）。
+
 ## [0.3.5] - 2026-07-20
 
 ### Added
