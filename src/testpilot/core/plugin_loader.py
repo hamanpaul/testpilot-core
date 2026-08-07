@@ -81,6 +81,11 @@ class PluginLoader:
     # the plugin's own command silently fall back to the installed copy — or
     # fail outright in a clean environment where nothing is installed. Keeping
     # the mapping on the class makes every loader instance agree on identity.
+    #
+    # These deliberately address ``PluginLoader._overrides`` rather than
+    # ``cls._overrides``: a single shared registry IS the invariant. A subclass
+    # that shadowed ``_overrides`` would silently split it in two and reinstate
+    # exactly the divergence this exists to prevent.
     _overrides: dict[str, PluginBase] = {}
 
     @classmethod

@@ -52,10 +52,12 @@ plugin 未註冊同名 command 時才退回核心 run 路徑。
 - `testpilot/cli.py`：`main` 改用 `PluginPathGroup`，`resolve_command` 在第一個 token 不是
   已註冊命令、且看起來像路徑時走 path mode。判定條件保守：含路徑分隔符、以 `.`／`~` 開頭、
   或該名稱確實是既有目錄。實作維持 plugin 零具名（`tests/test_cli_plugin_registration.py` 守門）。
+  override 以 `ctx.call_on_close` 綁在 click context 生命週期上，指令結束（成功或失敗）即清除——
+  process-wide 的 override 若殘留，之後對同名的解析會拿到上一輪的過期實例。
 
 ## 測試與文件
 
-新增 `tests/test_cli_plugin_path_mode.py`（11 個測試），含「同 package 名、已安裝那份已進
+新增 `tests/test_cli_plugin_path_mode.py`（14 個測試），含「同 package 名、已安裝那份已進
 `sys.modules`」的碰撞情境——這正是不做 module 驅逐就會靜默跑錯樹的那一條。另有 registry mode
 未回歸、相對路徑、四種 fail-closed 錯誤與 help 內容的覆蓋。
 

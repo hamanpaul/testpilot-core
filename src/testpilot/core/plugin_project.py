@@ -65,15 +65,18 @@ def read_project_entry_points(project_root: Path) -> dict[str, str]:
     declared = (
         data.get("project", {}).get("entry-points", {}).get(ENTRY_POINT_GROUP, {})
     )
-    entry_points = {
-        name.strip(): value.strip()
-        for name, value in (declared.items() if isinstance(declared, dict) else [])
-        if isinstance(name, str)
-        and name.strip()
-        and not name.startswith("_")
-        and isinstance(value, str)
-        and value.strip()
-    }
+    entry_points: dict[str, str] = {}
+    for raw_name, raw_value in declared.items() if isinstance(declared, dict) else []:
+        if not isinstance(raw_name, str) or not isinstance(raw_value, str):
+            continue
+        # Normalize once, then filter on the normalized form: filtering the raw
+        # key while storing the stripped one let a padded key like " _hidden"
+        # slip past the reserved-name check and land as "_hidden".
+        name = raw_name.strip()
+        value = raw_value.strip()
+        if not name or not value or name.startswith("_"):
+            continue
+        entry_points[name] = value
     if not entry_points:
         raise PluginProjectError(
             f"{project_root} declares no {ENTRY_POINT_GROUP} entry point in "

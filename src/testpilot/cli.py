@@ -1172,7 +1172,7 @@ def _looks_like_plugin_path(token: str) -> bool:
     return Path(token).is_dir()
 
 
-def _plugin_path_command(path: str) -> tuple[str, click.Command]:
+def _plugin_path_command(ctx: click.Context, path: str) -> tuple[str, click.Command]:
     """Load the plugin project at *path* and return its CLI command.
 
     Path mode aims for full parity with registry mode: the plugin's own
@@ -1180,6 +1180,11 @@ def _plugin_path_command(path: str) -> tuple[str, click.Command]:
     ``testpilot <path> --flag`` behaves exactly like ``testpilot <name> --flag``.
     The loaded instance is registered as a loader override first, because the
     plugin's command re-resolves itself by name and must reach *this* copy.
+
+    The override is process-wide, so it is scoped to *ctx* and cleared when the
+    context closes — success or failure. Leaving it registered would let a
+    later resolution of the same name return a stale instance from a previous
+    invocation, which in-process hosts (and the test suite) hit immediately.
     """
     from testpilot.core.plugin_loader import PluginLoader
     from testpilot.core.plugin_project import PluginProjectError, load_plugin_project
@@ -1190,6 +1195,7 @@ def _plugin_path_command(path: str) -> tuple[str, click.Command]:
         raise click.UsageError(str(exc)) from exc
 
     PluginLoader.register_override(name, plugin)
+    ctx.call_on_close(PluginLoader.clear_overrides)
 
     staging = click.Group()
     try:
@@ -1230,7 +1236,7 @@ class PluginPathGroup(click.Group):
         self, ctx: click.Context, args: list[str]
     ) -> tuple[str | None, click.Command | None, list[str]]:
         if args and args[0] not in self.commands and _looks_like_plugin_path(args[0]):
-            name, command = _plugin_path_command(args[0])
+            name, command = _plugin_path_command(ctx, args[0])
             return name, command, args[1:]
         return super().resolve_command(ctx, args)
 

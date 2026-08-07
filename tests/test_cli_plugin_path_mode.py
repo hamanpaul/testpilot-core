@@ -109,9 +109,14 @@ def _write_plugin_project(
 @pytest.fixture(autouse=True)
 def _restore_import_state():
     """Path mode mutates sys.path / sys.modules; keep tests isolated."""
+    from testpilot.core.plugin_loader import PluginLoader
+
     original_path = list(sys.path)
     original_modules = set(sys.modules)
     yield
+    # Path mode also mutates the class-level name overrides; a leaked override
+    # would let one test's plugin answer another test's name lookup.
+    PluginLoader.clear_overrides()
     sys.path[:] = original_path
     for name in set(sys.modules) - original_modules:
         del sys.modules[name]
@@ -315,3 +320,64 @@ def test_cli_py_still_names_no_plugin() -> None:
     src = (REPO / "src/testpilot/cli.py").read_text(encoding="utf-8")
     for name in ("wifi_llapi", "wifi-llapi", "brcm"):
         assert name not in src
+
+
+def test_override_does_not_outlive_the_invocation(tmp_path: Path) -> None:
+    """#30 review: the name override is process-wide and must not leak.
+
+    It exists only so the plugin's own command can resolve itself by name
+    during this invocation. Leaving it registered would make a later
+    resolution of the same name silently return a stale instance from a
+    previous run — in-process CLI invocations (tests, long-running hosts) hit
+    this immediately.
+    """
+    from testpilot.core.plugin_loader import PluginLoader
+
+    project = _write_plugin_project(
+        tmp_path / "proj", package="pathmode_leak", plugin_name="leaky", marker="LEAK"
+    )
+
+    result = CliRunner().invoke(_cli(), [str(project)])
+    assert result.exit_code == 0, result.output
+
+    assert PluginLoader._overrides == {}
+
+
+def test_override_is_cleared_even_when_the_plugin_command_fails(tmp_path: Path) -> None:
+    """A failed run must not leave the override behind either."""
+    from testpilot.core.plugin_loader import PluginLoader
+
+    project = _write_plugin_project(
+        tmp_path / "proj", package="pathmode_boom", plugin_name="boom", marker="BOOM"
+    )
+
+    result = CliRunner().invoke(_cli(), [str(project), "--no-such-option"])
+    assert result.exit_code != 0
+
+    assert PluginLoader._overrides == {}
+
+
+def test_entry_point_name_filter_uses_the_stored_key(tmp_path: Path) -> None:
+    """#30 review: the reserved-name filter must match the key actually stored.
+
+    The underscore check ran against the raw TOML key while the stripped form
+    was stored, so a padded key like `" _hidden"` slipped past the filter and
+    landed as `"_hidden"`.
+    """
+    from testpilot.core.plugin_project import PluginProjectError, read_project_entry_points
+
+    project = tmp_path / "padded"
+    project.mkdir()
+    (project / "pyproject.toml").write_text(
+        '''[project]
+name = "padded"
+version = "0.0.1"
+
+[project.entry-points."testpilot.plugins"]
+" _hidden" = "padded.plugin:Plugin"
+''',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(PluginProjectError, match="testpilot.plugins"):
+        read_project_entry_points(project)
