@@ -92,6 +92,14 @@ implementation detail；若有新 core/schema symbol 要成為穩定契約，必
    `uv pip install -e .`
 5. 驗證：`testpilot list-plugins`，接著 `testpilot list-cases my_plugin`
 
+> **開發期免安裝跑法（path mode，#30）**：步驟 2 的 entry point 一寫好，就可以用
+> `testpilot /path/to/my_plugin`（專案根目錄，即含 `pyproject.toml` 那層）直接執行，
+> 不必先做步驟 4 的安裝。path mode 讀的是專案自己的 entry-point 宣告，跑的是專案內
+> 那份 source——即使環境裡另有同名的已安裝套件也一樣。`list-plugins` / `list-cases`
+> 仍只列出**已安裝**的 plugin，因此步驟 4/5 的驗證流程不變。
+
+
+
 ### 選配 hook（plugin 透過 PluginBase 接入 core）
 
 除上述必要方法外，plugin 可覆寫以下選配 hook，把 plugin 專屬行為透過

@@ -33,7 +33,12 @@ def _parse_api_version(plugin_name: str, version: object, *, role: str) -> tuple
 
 
 def _check_api_compat(name: str, declared: object, api: object) -> None:
-    """Validate plugin-declared SDK API compatibility."""
+    """Validate plugin-declared SDK API compatibility.
+
+    Package-private, but also used by path-mode loading
+    (``testpilot.core.plugin_project``) so resolving a plugin by path cannot
+    sidestep the SDK API version gate.
+    """
     if declared is None:
         raise IncompatiblePluginError(f"plugin {name!r} must declare api_version")
 
@@ -66,6 +71,27 @@ class PluginLoader:
     """動態發現並載入 ``testpilot.plugins`` entry point 宣告的 plugin。"""
 
     ENTRY_POINT_GROUP = "testpilot.plugins"
+
+    # Process-wide name -> instance overrides, populated by path mode (#30).
+    #
+    # Plugin-owned CLI commands re-resolve themselves by name through a *fresh*
+    # loader (``get_orchestrator`` -> ``load_registered_plugin``, and
+    # ``Orchestrator`` builds its own ``PluginLoader``). Without a shared
+    # override, `testpilot <path>` would load the on-disk plugin only to have
+    # the plugin's own command silently fall back to the installed copy — or
+    # fail outright in a clean environment where nothing is installed. Keeping
+    # the mapping on the class makes every loader instance agree on identity.
+    _overrides: dict[str, PluginBase] = {}
+
+    @classmethod
+    def register_override(cls, name: str, plugin: PluginBase) -> None:
+        """Bind *name* to an already-loaded *plugin* for every loader."""
+        PluginLoader._overrides[name] = plugin
+
+    @classmethod
+    def clear_overrides(cls) -> None:
+        """Drop all name overrides (test isolation / repeated invocations)."""
+        PluginLoader._overrides.clear()
 
     @classmethod
     def for_entry_points(cls) -> "PluginLoader":
@@ -120,6 +146,9 @@ class PluginLoader:
 
     def load(self, name: str) -> PluginBase:
         """載入指定 plugin 並回傳其實例。"""
+        override = PluginLoader._overrides.get(name)
+        if override is not None:
+            return override
         if name in self._plugins:
             return self._plugins[name]
 
