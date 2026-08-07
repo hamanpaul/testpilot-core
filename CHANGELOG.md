@@ -14,7 +14,7 @@ preparation.
 ### Added
 - `testpilot <PLUGIN_PATH>` 可直接執行磁碟上的 plugin 專案，不需先安裝進 registry（#30）。
   
-  ## 兩種 invocation 形式
+  **兩種 invocation 形式**
   
   | 形式 | 解析方式 |
   |---|---|
@@ -25,7 +25,7 @@ preparation.
   `[project.entry-points."testpilot.plugins"]` 表是 plugin 名稱與 import 目標的唯一真實來源，
   因此兩種模式對 plugin 身分的認定一致，只有解析路徑不同。
   
-  ## 完整 parity，而非另一條簡化路徑
+  **完整 parity，而非另一條簡化路徑**
   
   path mode 跑的是 plugin **自己** 透過 `register_cli` 註冊的 command，因此
   `testpilot /path/to/p --flag` 與 `testpilot p --flag` 行為完全一致，plugin 專屬選項照常可用。
@@ -37,14 +37,14 @@ preparation.
   或在有安裝的環境**靜默跑到已安裝的那份**——後者比不支援還糟。`PluginLoader.register_override`
   讓所有 loader 實例對「這個名字是誰」取得一致答案。
   
-  ## 「跑到路徑那份」的保證
+  **「跑到路徑那份」的保證**
   
   僅把專案路徑前插 `sys.path` 並不夠：同名發行版若已被 import，其 top-level package 已在
   `sys.modules`，`import_module` 會直接回快取的那份。因此 path mode 會先驅逐不屬於本專案的
   同名 top-level module，再 import，並**驗證載入結果確實位於專案根目錄之下**；驗證不過就
   拒絕執行，而不是靜默測到錯的樹。
   
-  ## Fail-closed 行為
+  **Fail-closed 行為**
   
   - 路徑不存在 / 不是目錄 / 缺 `pyproject.toml` / 沒有 `testpilot.plugins` entry point：各自給出明確訊息。
   - 專案宣告多個 plugin：**拒絕而不猜測**，並列出候選名稱，建議改為安裝後以名稱選取。
@@ -52,7 +52,7 @@ preparation.
   - path mode **不繞過** SDK API 版本閘，與 registry mode 共用同一個 `_check_api_compat`。
   - 已註冊的 plugin 名稱永遠優先於同名資料夾，path mode 不可能遮蔽已安裝的 plugin。
   
-  ## 實作
+  **實作**
   
   - 新增 `testpilot/core/plugin_project.py`：路徑解析、pyproject entry-point 讀取、
     專案優先 import 與位置驗證、plugin 實例化。
@@ -64,7 +64,7 @@ preparation.
     override 以 `ctx.call_on_close` 綁在 click context 生命週期上，指令結束（成功或失敗）即清除——
     process-wide 的 override 若殘留，之後對同名的解析會拿到上一輪的過期實例。
   
-  ## 測試與文件
+  **測試與文件**
   
   新增 `tests/test_cli_plugin_path_mode.py`（14 個測試），含「同 package 名、已安裝那份已進
   `sys.modules`」的碰撞情境——這正是不做 module 驅逐就會靜默跑錯樹的那一條。另有 registry mode
@@ -76,7 +76,7 @@ preparation.
 ### Changed
 - 升級 hamanpaul project policy 至 v1.0.15，並完成 R-21 減敏。
   
-  ## 版本升級
+  **版本升級**
   
   - `policy_version` 1.0.12 → 1.0.15（`.project-policy.yml` 與四份 agent convention 檔）。
   - `workflow_ref` / `policy_engine_ref` 雙 pin 換為 v1.0.15 的
@@ -85,7 +85,7 @@ preparation.
     skill 需要）。
   - `tests/test_release_governance.py` 中寫死的 policy_version 斷言同步更新。
   
-  ## R-21 減敏（本 repo 為 public，v1.0.13 起依 visibility + tier 判定命中等級）
+  **R-21 減敏（本 repo 為 public，v1.0.13 起依 visibility + tier 判定命中等級）**
   
   升級後 R-21 由「不適用」變為實際生效並命中 `structural:23 / marker:110`
   （marker baseline 為少數雇主／內部代號 token；常見 vendor 名稱屬 `public_names` 不列入）。
@@ -117,7 +117,7 @@ preparation.
   減敏後 `policy_check`（1.0.15 engine + PR context + `--repo-visibility public`）
   為 pass 24 / fail 0，**未使用任何 `policy-exempt:*` 豁免 label**。
   
-  ## 未納入的 gate 與已知既有問題（揭露，非本 PR 造成）
+  **未納入的 gate 與已知既有問題（揭露，非本 PR 造成）**
   
   - `preflight.steps` 只宣告 `tests`，**暫不宣告 openspec gate**：本 repo 現有 4 個 spec
     （`audit-mode`、`plugin-entry-points-discovery`、`plugin-runner-reporter-separation`、
@@ -130,7 +130,7 @@ preparation.
     共用 venv 的 symlink 時不會被忽略，會污染 `git status` 並使 policy gate 打包時拋
     `AbsoluteLinkError`。
   
-  ## changelog fragment 修正（含一項既有缺陷）
+  **changelog fragment 修正（含一項既有缺陷）**
   
   `docs/release-flow.md` 明定 `chore` **不是**合法 fragment type（合法值：`change` /
   `deprecate` / `feat` / `fix` / `perf` / `refactor` / `remove` / `security`），
@@ -145,10 +145,10 @@ preparation.
   另本 fragment 原文為說明減敏而直接寫出 marker token 與被替換掉的裝置型號字串，而
   `changelog.d/**` 不在 `secret_scan.allow` 內；fragment 於 release 時會被 collate 進
   `CHANGELOG.md`，等同在 release notes 重新命中。已改為不揭露具體 token 的描述。
-- - managed-install serialwrap pin 由 `0.2.1` 提升至 `0.2.4`（`install-manifest.yaml`）。0.2.1→0.2.4 涵蓋 serialwrap `v0.2.2`~`v0.2.4`（174 commits）：daemon 暴露命令長度上限 `limits`（serialwrap#129）、arbiter recovery 佇列 flush（#128）、autoboot 倒數窗 recovery lease（#114/#140）、realhw 穩定性測試套件、Windows 原生 daemon 與 ssh 反向隧道 CLI。serialwrap 無 SDK API 契約，故維持顯式 `version:` pin，本次為刻意 bump（`main` HEAD 即 `v0.2.4`）。
+- managed-install serialwrap pin 在本版內累計由 `0.2.1` 走到 `0.3.0`（`install-manifest.yaml`）。其中 0.2.1→0.2.4 涵蓋 serialwrap `v0.2.2`~`v0.2.4`（174 commits）：daemon 暴露命令長度上限 `limits`（serialwrap#129）、arbiter recovery 佇列 flush（#128）、autoboot 倒數窗 recovery lease（#114/#140）、realhw 穩定性測試套件、Windows 原生 daemon 與 ssh 反向隧道 CLI。serialwrap 無 SDK API 契約，故維持顯式 `version:` pin。緊接著的 0.2.4→0.3.0 見下一條。
 - managed-install 的 serialwrap pin 由 `0.2.4` 提升至 `0.3.0`，並補上防止再次腐爛的守門測試。
   
-  ## 為什麼
+  **為什麼**
   
   serialwrap 的 daemon 早已在現場升到 `0.3.0`（v0.3.0 tag 於 2026-07-31 併入 #158），但兩條安裝路徑的 client pin 都還停在 `0.2.4`：
   
@@ -161,14 +161,14 @@ preparation.
   
   這件事的諷刺之處在於：wifi_llapi #234 剛替 `--verify-install` 加上 client/daemon 版本漂移檢查，而 pin 若維持不動，**任何一次全新安裝都會在第一天就觸發那個新加的警告**——工具正確地指出了自己出貨的東西是舊的。
   
-  ## 修法
+  **修法**
   
   - `install-manifest.yaml` 的 `serialwrap.version` → `0.3.0`，並在註解明載「這是兩個獨立 pin 之一，必須與 wifi_llapi 的 `SERIALWRAP_REF` 一起 bump」。
   - 新增 `test_serialwrap_pin_is_the_deliberately_shipped_version`：把值鎖住，讓 bump 成為一次有意識的編輯；失敗訊息直接指向另一個 pin，避免只改一邊。
   
   wifi_llapi 側的對應修正與同型守門測試在該 repo 的 v0.3.9 release 一併落地。
   
-  ## 未變更
+  **未變更**
   
   `core` 與 plugins 在本 manifest **刻意不釘版本**（由 installer 解析最新 API 相容版），因此 wifi_llapi 的新 release 不需要在此 re-pin；只有無 API 契約的 serialwrap 是釘死的。
 
