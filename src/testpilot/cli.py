@@ -1158,7 +1158,90 @@ def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> 
     ctx.exit()
 
 
-@click.group(invoke_without_command=True)
+def _looks_like_plugin_path(token: str) -> bool:
+    """Whether *token* should be read as a plugin-project path, not a command.
+
+    Deliberately conservative: a registered command name always wins (checked
+    by the caller), and a bare word is only treated as a path when a directory
+    of that name actually exists in the working directory.
+    """
+    if not token or token.startswith("-"):
+        return False
+    if token.startswith(("~", ".")) or "/" in token or os.sep in token:
+        return True
+    return Path(token).is_dir()
+
+
+def _plugin_path_command(ctx: click.Context, path: str) -> tuple[str, click.Command]:
+    """Load the plugin project at *path* and return its CLI command.
+
+    Path mode aims for full parity with registry mode: the plugin's own
+    ``register_cli`` command (with its own options) is what runs, so
+    ``testpilot <path> --flag`` behaves exactly like ``testpilot <name> --flag``.
+    The loaded instance is registered as a loader override first, because the
+    plugin's command re-resolves itself by name and must reach *this* copy.
+
+    The override is process-wide, so it is scoped to *ctx* and cleared when the
+    context closes — success or failure. Leaving it registered would let a
+    later resolution of the same name return a stale instance from a previous
+    invocation, which in-process hosts (and the test suite) hit immediately.
+    """
+    from testpilot.core.plugin_loader import PluginLoader
+    from testpilot.core.plugin_project import PluginProjectError, load_plugin_project
+
+    try:
+        name, plugin = load_plugin_project(path)
+    except PluginProjectError as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    PluginLoader.register_override(name, plugin)
+    ctx.call_on_close(PluginLoader.clear_overrides)
+
+    staging = click.Group()
+    try:
+        plugin.register_cli(CliRegistrar(staging))
+    except Exception as exc:
+        raise click.UsageError(
+            f"plugin {name!r} failed to register its CLI: {exc}"
+        ) from exc
+
+    command = staging.commands.get(name)
+    if command is not None:
+        return name, command
+
+    # The plugin exposes no command of its own; fall back to the generic run
+    # path so path mode still executes its cases.
+    @click.command(name)
+    @click.option("--case", "case_ids", multiple=True, help="Specific case IDs to run.")
+    @click.option(
+        "--dut-fw-ver",
+        default="DUT-FW-VER",
+        show_default=True,
+        help="DUT firmware version used in report filename.",
+    )
+    @click.pass_context
+    def _fallback_run(
+        ctx: click.Context, case_ids: tuple[str, ...], dut_fw_ver: str
+    ) -> None:
+        """Run this plugin's cases (plugin declares no CLI of its own)."""
+        run_plugin_cases(ctx, name, case_ids, dut_fw_ver)
+
+    return name, _fallback_run
+
+
+class PluginPathGroup(click.Group):
+    """Root group that also accepts a plugin-project path as the command."""
+
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        if args and args[0] not in self.commands and _looks_like_plugin_path(args[0]):
+            name, command = _plugin_path_command(ctx, args[0])
+            return name, command, args[1:]
+        return super().resolve_command(ctx, args)
+
+
+@click.group(invoke_without_command=True, cls=PluginPathGroup)
 @click.option(
     "--version",
     is_eager=True,
@@ -1206,7 +1289,23 @@ def main(
     update_ref: str | None,
     verify_install: bool,
 ) -> None:
-    """TestPilot — plugin-based test automation for embedded devices."""
+    """TestPilot — plugin-based test automation for embedded devices.
+
+    \b
+    A plugin can be selected two ways:
+      testpilot <PLUGIN_NAME> [ARGS]...  registry mode — an installed plugin,
+                                         resolved via testpilot.plugins entry
+                                         points
+      testpilot <PLUGIN_PATH> [ARGS]...  path mode — a plugin project directory
+                                         (the one holding pyproject.toml with a
+                                         testpilot.plugins entry point); runs
+                                         without installing it, e.g.
+                                         testpilot /path/to/plugin
+
+    Both forms dispatch to the same plugin-owned command, so plugin options
+    apply identically. PLUGIN_PATH may be absolute or relative; a registered
+    plugin name always takes precedence over a same-named directory.
+    """
     # Pre-dispatch: --update and --verify-install run before normal routing.
     if update_ref is not None:
         if update_ref not in (None, "main"):

@@ -18,6 +18,40 @@ This README is the canonical install reference. For online install (managed venv
 Use `testpilot list-plugins` to see installed plugins and `testpilot run <plugin>`
 to drive them.
 
+A plugin can be selected two ways:
+
+| Form | Resolution | Use when |
+| --- | --- | --- |
+| `testpilot <PLUGIN_NAME> [ARGS]...` | registry mode — `testpilot.plugins` entry points of the installed environment | the plugin is installed |
+| `testpilot <PLUGIN_PATH> [ARGS]...` | path mode — a plugin project directory on disk | running a checkout that is not (or not yet) installed |
+
+```bash
+testpilot <plugin> --case D001            # registry mode
+testpilot /path/to/my_plugin --case D001  # path mode, same plugin command
+testpilot ../my_plugin                    # relative paths work too
+```
+
+Both forms dispatch to the same plugin-owned command, so plugin-specific options
+behave identically. Path mode details:
+
+- `PLUGIN_PATH` is the **project root** — the directory containing
+  `pyproject.toml` with a `[project.entry-points."testpilot.plugins"]` table.
+  That table is the single source of truth for the plugin's name and import
+  target, so both modes agree on identity.
+- The project must declare exactly one plugin. More than one is refused rather
+  than guessed; install the project and select by name instead.
+- The project copy wins over an installed distribution of the same name, even
+  when that distribution is already imported. If the declared module still
+  resolves outside the requested project, the run is refused rather than
+  silently testing the wrong tree.
+- Path mode does not skip the SDK API-version gate — an incompatible plugin is
+  rejected exactly as in registry mode.
+- A registered plugin name always takes precedence over a same-named directory
+  in the working directory, so path mode can never shadow an installed plugin.
+- A token is read as a path when it contains a separator, starts with `.` or
+  `~`, or names an existing directory. Anything else is treated as a plugin
+  name or subcommand.
+
 ## Version
 
 The canonical project version is `VERSION`; release tags use `vX.Y.Z`.
@@ -192,6 +226,20 @@ Usage: testpilot [OPTIONS] COMMAND [ARGS]...
 
   TestPilot — plugin-based test automation for embedded devices.
 
+  A plugin can be selected two ways:
+    testpilot <PLUGIN_NAME> [ARGS]...  registry mode — an installed plugin,
+                                       resolved via testpilot.plugins entry
+                                       points
+    testpilot <PLUGIN_PATH> [ARGS]...  path mode — a plugin project directory
+                                       (the one holding pyproject.toml with a
+                                       testpilot.plugins entry point); runs
+                                       without installing it, e.g.
+                                       testpilot /path/to/plugin
+
+  Both forms dispatch to the same plugin-owned command, so plugin options
+  apply identically. PLUGIN_PATH may be absolute or relative; a registered
+  plugin name always takes precedence over a same-named directory.
+
 Options:
   --version         Show version and exit.
   -v, --verbose     Enable debug logging.
@@ -216,6 +264,20 @@ Commands:
 Usage: testpilot [OPTIONS] COMMAND [ARGS]...
 
   TestPilot — plugin-based test automation for embedded devices.
+
+  A plugin can be selected two ways:
+    testpilot <PLUGIN_NAME> [ARGS]...  registry mode — an installed plugin,
+                                       resolved via testpilot.plugins entry
+                                       points
+    testpilot <PLUGIN_PATH> [ARGS]...  path mode — a plugin project directory
+                                       (the one holding pyproject.toml with a
+                                       testpilot.plugins entry point); runs
+                                       without installing it, e.g.
+                                       testpilot /path/to/plugin
+
+  Both forms dispatch to the same plugin-owned command, so plugin options
+  apply identically. PLUGIN_PATH may be absolute or relative; a registered
+  plugin name always takes precedence over a same-named directory.
 
 Options:
   --version         Show version and exit.
@@ -448,6 +510,34 @@ testpilot list-plugins
 testpilot list-cases <plugin>
 testpilot run <plugin>
 ```
+
+選擇 plugin 有兩種形式：
+
+| 形式 | 解析方式 | 使用時機 |
+| --- | --- | --- |
+| `testpilot <PLUGIN_NAME> [ARGS]...` | registry mode——目前環境已安裝的 `testpilot.plugins` entry point | plugin 已安裝 |
+| `testpilot <PLUGIN_PATH> [ARGS]...` | path mode——磁碟上的 plugin 專案目錄 | 要跑尚未（或不打算）安裝的 checkout |
+
+```bash
+testpilot <plugin> --case D001            # registry mode
+testpilot /path/to/my_plugin --case D001  # path mode，同一個 plugin 指令
+testpilot ../my_plugin                    # 相對路徑同樣可用
+```
+
+兩種形式都 dispatch 到同一個 plugin 自有指令，因此 plugin 專屬選項行為完全一致。
+path mode 細節：
+
+- `PLUGIN_PATH` 指的是**專案根目錄**——含 `pyproject.toml` 且宣告
+  `[project.entry-points."testpilot.plugins"]` 的那一層。該表是 plugin 名稱與
+  import 目標的唯一真實來源，因此兩種模式對「這是哪個 plugin」的認定一致。
+- 專案必須剛好宣告一個 plugin。宣告多個時直接拒絕而不猜測，請改為安裝後以名稱選取。
+- 專案內那份優先於同名的已安裝套件，**即使該套件已經被 import 過**。若宣告的模組
+  最終仍解析到專案之外，會直接拒絕執行，而不是靜默測到錯的那棵樹。
+- path mode 不會繞過 SDK API 版本閘：不相容的 plugin 與 registry mode 一樣被拒絕。
+- 已註冊的 plugin 名稱永遠優先於工作目錄下的同名資料夾，因此 path mode 不可能遮蔽
+  已安裝的 plugin。
+- 判定為路徑的條件：含路徑分隔符、以 `.` 或 `~` 開頭、或該名稱確實是一個既有目錄。
+  其餘一律視為 plugin 名稱或子命令。
 
 ### Azure OpenAI（BYOK）
 
