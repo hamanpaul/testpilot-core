@@ -75,3 +75,24 @@ serialwrap:
     )
     with pytest.raises((KeyError, ValueError)):
         load_manifest(p)
+
+
+def test_serialwrap_pin_is_the_deliberately_shipped_version():
+    """The online install's serialwrap pin must be bumped deliberately.
+
+    Two independent pins decide which serialwrap an operator ends up with:
+    this one (ONLINE install) and wifi_llapi's ``scripts/make-bundle.sh``
+    ``SERIALWRAP_REF`` (OFFLINE bundle). Nothing checked either, and both
+    silently rotted a full minor version behind the daemon deployed in the
+    field — which is exactly the drift wifi_llapi #234 teaches
+    ``--verify-install`` to warn about.
+
+    Locking the value here means a bump is a conscious edit, and the failure
+    message points at the other pin so they move together.
+    """
+    m = load_manifest(ROOT / "install-manifest.yaml")
+    assert m.serialwrap.version == "0.3.0", (
+        f"manifest pins serialwrap {m.serialwrap.version}; when bumping, update "
+        "wifi_llapi's scripts/make-bundle.sh SERIALWRAP_REF in the same breath "
+        "so the online install and the offline bundle do not diverge."
+    )
