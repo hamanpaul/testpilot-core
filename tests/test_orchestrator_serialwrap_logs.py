@@ -141,7 +141,6 @@ def test_start_run_capture_reraises_body_typeerror() -> None:
 
 def test_serialwrap_backend_setup_run_degrades_when_start_daemon_fails(monkeypatch) -> None:
     monkeypatch.setattr(_serialwrap_log, "daemon_status", lambda: None)
-    monkeypatch.setattr(_serialwrap_log, "clean_wal", lambda *args, **kwargs: None)
 
     def fail_start(*args, **kwargs):
         raise RuntimeError("daemon start failed")
@@ -154,6 +153,85 @@ def test_serialwrap_backend_setup_run_degrades_when_start_daemon_fails(monkeypat
     assert handle.run_id == "run-1"
     assert handle.meta.get("bind_sessions") is False
     assert handle.meta.get("wal_path") is None
+
+
+def test_serialwrap_backend_setup_run_never_rmtrees_wal_when_status_unknown(monkeypatch) -> None:
+    """Issue #36 regression.
+
+    daemon_status() returning None most commonly means the client failed to
+    reach an *already-running* daemon (not that no daemon exists at all).
+    setup_run's degraded-status branch must never delete the WAL directory —
+    only start_daemon() then a best-effort RPC wal_reset() (daemon-owned
+    rotation with archiving), never a local rmtree.
+    """
+    monkeypatch.setattr(_serialwrap_log, "daemon_status", lambda: None)
+
+    rmtree_calls: list[Any] = []
+    monkeypatch.setattr(
+        "shutil.rmtree",
+        lambda *args, **kwargs: rmtree_calls.append((args, kwargs)),
+    )
+
+    start_daemon_calls: list[Any] = []
+    monkeypatch.setattr(
+        _serialwrap_log,
+        "start_daemon",
+        lambda *args, **kwargs: start_daemon_calls.append((args, kwargs)) or {"pid": 1},
+    )
+
+    wal_reset_calls: list[Any] = []
+    monkeypatch.setattr(
+        _serialwrap_log,
+        "wal_reset",
+        lambda: wal_reset_calls.append(True) or {"previous_seq": 0},
+    )
+    monkeypatch.setattr(
+        _serialwrap_log,
+        "get_wal_path",
+        lambda: Path("/tmp/serialwrap/wal/raw.wal.ndjson"),
+    )
+
+    backend = SerialwrapBackend()
+    handle = backend.setup_run("run-1", {})
+
+    assert rmtree_calls == []
+    assert len(start_daemon_calls) == 1
+    assert len(wal_reset_calls) == 1
+    assert handle.run_id == "run-1"
+    assert handle.meta.get("bind_sessions") is True
+    assert handle.meta.get("wal_path") == "/tmp/serialwrap/wal/raw.wal.ndjson"
+
+
+def test_serialwrap_backend_setup_run_survives_wal_reset_failure_after_fresh_start(
+    monkeypatch,
+) -> None:
+    """wal_reset() after a fresh start_daemon() is best-effort: an RPC failure
+    (daemon still settling) must not abort setup_run or drop the RunHandle."""
+    monkeypatch.setattr(_serialwrap_log, "daemon_status", lambda: None)
+    monkeypatch.setattr(
+        "shutil.rmtree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("rmtree must never be called from setup_run")
+        ),
+    )
+    monkeypatch.setattr(_serialwrap_log, "start_daemon", lambda *a, **k: {"pid": 1})
+
+    def failing_wal_reset() -> dict[str, Any]:
+        raise RuntimeError("daemon not ready for wal reset yet")
+
+    monkeypatch.setattr(_serialwrap_log, "wal_reset", failing_wal_reset)
+    monkeypatch.setattr(
+        _serialwrap_log,
+        "get_wal_path",
+        lambda: Path("/tmp/serialwrap/wal/raw.wal.ndjson"),
+    )
+
+    backend = SerialwrapBackend()
+    handle = backend.setup_run("run-1", {})
+
+    assert handle.run_id == "run-1"
+    assert handle.meta.get("bind_sessions") is True
+    assert handle.meta.get("wal_path") == "/tmp/serialwrap/wal/raw.wal.ndjson"
 
 
 def test_serialwrap_backend_mark_position_reads_explicit_wal_tail(

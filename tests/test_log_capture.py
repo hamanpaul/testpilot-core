@@ -213,16 +213,6 @@ class TestDaemonLifecycle:
     def test_stop_daemon_ignores_error(self, mock_run):
         log_capture.stop_daemon()  # should not raise
 
-    def test_clean_wal(self, tmp_path: Path):
-        wal_dir = tmp_path / "wal"
-        wal_dir.mkdir()
-        (wal_dir / "old.ndjson").write_text("data")
-        log_capture.clean_wal(wal_dir)
-        assert not wal_dir.exists()
-
-    def test_clean_wal_missing_dir(self, tmp_path: Path):
-        log_capture.clean_wal(tmp_path / "nonexistent")  # should not raise
-
     @patch("testpilot.runtime._serialwrap_log._run_sw")
     @patch("testpilot.runtime._serialwrap_log.subprocess.Popen")
     def test_setup_sessions(self, mock_popen, mock_run):

@@ -74,9 +74,21 @@ class SerialwrapBackend(RunBackend):
                     status.get("pid"),
                 )
             else:
+                # daemon_status() 回 None 最常見的原因是 client 連不到「其實還活著」的
+                # daemon（而非真的沒有 daemon）。因此這裡不可再對 WAL 目錄做本地
+                # rmtree —— 那會刪掉存活 daemon 仍在寫入的檔案（#36）。start_daemon()
+                # 對已在跑的 daemon 是 no-op/冪等；之後改走 RPC wal_reset()
+                # 做輪替（daemon 自己保留歸檔，安全），且僅為 best-effort。
                 started_fresh = True
-                _serialwrap_log.clean_wal()
                 _serialwrap_log.start_daemon()
+                try:
+                    _serialwrap_log.wal_reset()
+                except Exception:
+                    log.warning(
+                        "serialwrap wal_reset after start_daemon failed; "
+                        "continuing without WAL rotation",
+                        exc_info=True,
+                    )
                 wal_path = _serialwrap_log.get_wal_path()
                 log.info("serialwrap daemon started, wal_path=%s", wal_path)
             return RunHandle(
