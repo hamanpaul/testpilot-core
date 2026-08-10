@@ -305,7 +305,13 @@ class SerialWrapTransport(TransportBase):
         )
         if completed.returncode != 0:
             stderr = (completed.stderr or "").strip()
-            raise RuntimeError(f"serialwrap command failed: {' '.join(args)}: {stderr}")
+            stdout_trimmed = (completed.stdout or "").strip()[:500]
+            suffix = f" | rc={completed.returncode}"
+            if stdout_trimmed:
+                suffix += f" | stdout={stdout_trimmed}"
+            raise RuntimeError(
+                f"serialwrap command failed: {' '.join(args)}: {stderr}{suffix}"
+            )
 
         stdout = (completed.stdout or "").strip()
         if not stdout:
