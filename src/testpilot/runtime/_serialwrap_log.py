@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -15,7 +14,11 @@ from testpilot.serialwrap_binary import resolve_serialwrap_binary
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_WAL_DIR = Path("/tmp/serialwrap/wal")
+# get_wal_path() 的 best-effort 顯示用 fallback（daemon_status() 拿不到
+# wal_path 時才會用到）。這**不是**刪除/清理操作的目標路徑 —— #36 之後
+# WAL 目錄的清理/輪替只能透過 daemon 自己的 RPC `wal reset` 進行，本檔
+# 不再對任何 WAL 路徑做本地 rmtree。
+_WAL_PATH_FALLBACK = Path("/tmp/serialwrap/wal/raw.wal.ndjson")
 
 _configured_bin: str | None = None
 
@@ -93,19 +96,19 @@ def stop_daemon() -> None:
 
 
 def daemon_status() -> dict[str, Any] | None:
-    """Return daemon status dict, or None if daemon is not running."""
+    """Return daemon status dict, or None when status is unavailable.
+
+    ``None`` only means this client could not obtain a status — the daemon
+    may genuinely not be running, **or** it may be alive but unreachable
+    from here (mismatched socket path, permissions, transient failure).
+    Callers must NOT treat ``None`` as proof the daemon is down, and in
+    particular must never use it to justify destructive cleanup of daemon
+    state (that misread is exactly how issue #36 destroyed a live WAL).
+    """
     try:
         return _run_sw(["daemon", "status"], timeout=5.0)
     except Exception:
         return None
-
-
-def clean_wal(wal_dir: Path | None = None) -> None:
-    """Remove old WAL files so next daemon start has a clean slate."""
-    target = wal_dir or DEFAULT_WAL_DIR
-    if target.is_dir():
-        shutil.rmtree(target, ignore_errors=True)
-        logger.info("cleaned WAL directory: %s", target)
 
 
 def wal_reset() -> dict[str, Any]:
@@ -219,11 +222,17 @@ def setup_sessions(
 # ---------------------------------------------------------------------------
 
 def get_wal_path() -> Path:
-    """Return the WAL ndjson file path from daemon status."""
+    """Return the WAL ndjson file path, preferring the daemon-reported one.
+
+    Asks ``daemon status`` first; when that is unavailable (or carries no
+    ``wal_path``), falls back to the historical default location
+    (``_WAL_PATH_FALLBACK``) purely for display/logging purposes — the
+    returned path is NOT guaranteed to be the live daemon's actual WAL.
+    """
     status = daemon_status()
     if status and status.get("wal_path"):
         return Path(status["wal_path"])
-    return DEFAULT_WAL_DIR / "raw.wal.ndjson"
+    return _WAL_PATH_FALLBACK
 
 
 def get_current_seq(wal_path: Path | None = None) -> int | None:
