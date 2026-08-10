@@ -24,5 +24,5 @@ serialwrap:
   # Bump them together or the two install paths ship different clients —
   # wifi_llapi #234 added a client/daemon drift check to --verify-install, and
   # a stale pin here makes a fresh install trip that warning immediately.
-  version: "0.3.0"
+  version: "0.3.1"
   private: false
