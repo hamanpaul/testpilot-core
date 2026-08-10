@@ -43,7 +43,11 @@ def _run_sw(args: list[str], timeout: float = 10.0) -> dict[str, Any]:
     )
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()
-        raise RuntimeError(f"serialwrap failed: {' '.join(args)}: {stderr}")
+        stdout_trimmed = (completed.stdout or "").strip()[:500]
+        suffix = f" | rc={completed.returncode}"
+        if stdout_trimmed:
+            suffix += f" | stdout={stdout_trimmed}"
+        raise RuntimeError(f"serialwrap failed: {' '.join(args)}: {stderr}{suffix}")
     stdout = (completed.stdout or "").strip()
     if not stdout:
         raise RuntimeError(f"serialwrap empty response: {' '.join(args)}")
