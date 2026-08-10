@@ -18,8 +18,18 @@ from testpilot.transport.serialwrap import SerialWrapTransport
 
 
 @pytest.fixture(autouse=True)
-def _set_serialwrap_bin(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SERIALWRAP_BIN", "/tmp/serialwrap")
+def _set_serialwrap_bin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    # Hermetic binary resolution (review): a bare "/tmp/serialwrap" only works
+    # when that path (or a PATH-visible `serialwrap`) happens to exist on the
+    # host — resolve_serialwrap_binary() verifies existence before subprocess
+    # is ever reached. Materialise a fake executable so the test is
+    # self-contained on any machine/CI.
+    fake = tmp_path / "serialwrap"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+    monkeypatch.setenv("SERIALWRAP_BIN", str(fake))
 
 
 # ---------------------------------------------------------------------------
