@@ -91,7 +91,7 @@ def test_serialwrap_pin_is_the_deliberately_shipped_version():
     message points at the other pin so they move together.
     """
     m = load_manifest(ROOT / "install-manifest.yaml")
-    assert m.serialwrap.version == "0.3.0", (
+    assert m.serialwrap.version == "0.3.1", (
         f"manifest pins serialwrap {m.serialwrap.version}; when bumping, update "
         "wifi_llapi's scripts/make-bundle.sh SERIALWRAP_REF in the same breath "
         "so the online install and the offline bundle do not diverge."
