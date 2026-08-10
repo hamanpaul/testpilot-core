@@ -92,7 +92,15 @@ def stop_daemon() -> None:
 
 
 def daemon_status() -> dict[str, Any] | None:
-    """Return daemon status dict, or None if daemon is not running."""
+    """Return daemon status dict, or None when status is unavailable.
+
+    ``None`` only means this client could not obtain a status — the daemon
+    may genuinely not be running, **or** it may be alive but unreachable
+    from here (mismatched socket path, permissions, transient failure).
+    Callers must NOT treat ``None`` as proof the daemon is down, and in
+    particular must never use it to justify destructive cleanup of daemon
+    state (that misread is exactly how issue #36 destroyed a live WAL).
+    """
     try:
         return _run_sw(["daemon", "status"], timeout=5.0)
     except Exception:
@@ -210,7 +218,13 @@ def setup_sessions(
 # ---------------------------------------------------------------------------
 
 def get_wal_path() -> Path:
-    """Return the WAL ndjson file path from daemon status."""
+    """Return the WAL ndjson file path, preferring the daemon-reported one.
+
+    Asks ``daemon status`` first; when that is unavailable (or carries no
+    ``wal_path``), falls back to the historical default location
+    (``_WAL_PATH_FALLBACK``) purely for display/logging purposes — the
+    returned path is NOT guaranteed to be the live daemon's actual WAL.
+    """
     status = daemon_status()
     if status and status.get("wal_path"):
         return Path(status["wal_path"])
