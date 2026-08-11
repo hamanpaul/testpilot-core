@@ -6,7 +6,7 @@
 
 ---
 
-![TestPilot Core architecture overview](docs/assets/testpilot-core-intro.png)
+![TestPilot Core architecture overview](docs/assets/testpilot-core-intro.webp)
 
 ## Install
 
