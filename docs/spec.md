@@ -1,19 +1,21 @@
 # TestPilot 系統規格書
 
-> 版本：v0.1.0-draft（第三次重構規劃基線）
-> 更新日期：2026-07-17
+> 狀態：第三次重構設計基線；現行對外定位與安裝方式以 `README.md` 為準
+> 更新日期：2026-08-11
 > 深度參考已收斂回本文件；詳細研究筆記改為 local-only，不再納入 repo。
 
 ---
 
 ## 1. 系統概述
 
-TestPilot 是一套 plugin-based 嵌入式裝置測試自動化框架，面向 prplOS / OpenWrt 裝置。第三次重構後的系統設計以兩個平面為核心：
+TestPilot Core 是一套 plugin-based test automation and verification framework。公開 SDK 與 Plugin contract 不把 Core 綁定到單一產品 domain；但目前最完整的 field usage、transport integration 與複雜驗證案例仍集中在 prplOS / OpenWrt 等 embedded / real-hardware 場景。因此本文件中的 DUT / STA / Wi-Fi 範例應視為目前主要 reference path，而不是 TestPilot Core 對所有 Plugin 的 domain 限制。
 
-1. **Deterministic verdict kernel**：負責正式測試執行、證據蒐集、pass/fail 判定與報表投影。
+第三次重構後的系統設計以兩個平面為核心：
+
+1. **Deterministic verdict kernel**：負責正式測試生命週期、證據蒐集、retry/timeout、canonical trace/result 與報表投影；domain-specific pass/fail semantics 由 plugin 的 `evaluate()` 定義。
 2. **Copilot SDK control plane**：負責 per-case session foundation、lifecycle hooks、advisory/remediation，以及 `custom_agents`、`skills`、`selective MCP` 等 extension surfaces，並提供操作員導向的自然語言 UX。
 
-`wifi_llapi` 仍是目前最完整的落地路徑；第三次重構的重點不是把 YAML 變成 prompt，也不是把最終 verdict 交給 agent，而是把既有 deterministic hot path 保留下來，再讓 Copilot SDK 吃掉 agent orchestration 的複雜度。core 現已提供 tier-1 deterministic-first、連敗後 opt-in tier-2 one-shot 的 domain-agnostic framework；tier-2 只能規劃 plugin-advertised environment capabilities，plugin 執行後仍由 core 強制 deterministic `verify_env`，且不允許 agent 改 testcase semantics、step 指令、pass criteria 或 verdict。實體 plugin 必須另行實作並啟用 execution plane。
+`wifi_llapi` 是形成第三次重構需求時最完整的 field path，因此本規格仍保留其案例作為設計背景。重構的重點不是把 YAML 變成 prompt，也不是把最終 verdict 交給 agent，而是保留 deterministic hot path，再把 agent orchestration 隔離到 control plane。core 現已提供 tier-1 deterministic-first、連敗後 opt-in tier-2 one-shot 的通用 recovery contract；tier-2 只能規劃 plugin-advertised environment capabilities，plugin 執行後仍由 core 強制 deterministic `verify_env`，且不允許 agent 改 testcase semantics、step 指令、pass criteria 或 canonical verdict。實際 domain capability 與 executor 必須由各 plugin 自行實作並驗證。
 
 目前已落地的 control-plane 子集：
 
@@ -23,6 +25,8 @@ TestPilot 是一套 plugin-based 嵌入式裝置測試自動化框架，面向 p
 - advisory collection，以及 retry 間的 tier-1 deterministic / opt-in tier-2 environment recovery
 
 `custom_agents`、`skills`、`mcp_servers` 等欄位已存在於 request / 規格層，但目前 orchestrator 建 session 時尚未預設自動接線，因此這些部分仍屬 extension surface，而不是完整 current-state hot path。
+
+Plugin 亦可提供 custom runner。Custom runner 是正式 extension path，但會自行承擔較多 execution pipeline 責任，也不會自動取得所有 core-owned analysis / cost-reporting path；因此本文所稱 deterministic kernel 預設指 **core-owned execution path**。
 
 ### Azure-only core cost reporting
 
@@ -46,6 +50,7 @@ zero core calls.
 ### 核心設計原則
 
 - **Kernel 與 Control Plane 分層**：Copilot SDK 處理 agent/control-plane；`plugin.evaluate()` 與正式 rerun 結果仍是最終 verdict 來源。
+- **Plugin 擁有 domain semantics**：Core 定義 lifecycle / SDK / trace contract；case meaning、environment action、pass criteria 與 domain-specific reporter 由 Plugin 提供。
 - **YAML 是 executable spec，不是主要 prompt**：formal case semantics 應由 schema、plugin hook、transport 決定。
 - **Structured evidence 是唯一真相來源**：selection trace、attempt trace、commands、outputs、canonical result 需可追蹤。
 - **報告投影分離**：`xlsx` 只保留對外交付的 `Pass/Fail`；`md/json` 承載 richer diagnostic statuses、root cause、suggestion、remediation history。
@@ -54,6 +59,8 @@ zero core calls.
 ---
 
 ## 2. 目標架構圖
+
+下圖保留目前主要 device-oriented reference path 的 transport 範例；Plugin 可透過公開 SDK 提供其他 domain 所需的 environment / execution integration。
 
 ```mermaid
 graph TB
@@ -74,9 +81,9 @@ graph TB
         cfg["TestbedConfig + CaseSchema"]
         plugin["Plugin hooks\nsetup_env / verify_env\nexecute_step / evaluate / teardown"]
         yaml["YAML Cases"]
-        transport["Transport\nserialwrap / adb / ssh / network"]
+        transport["Transport / RunBackend\nserialwrap / ssh / custom integration"]
         evidence["Structured Evidence\nselection trace / attempts / canonical result"]
-        report["Report Projection\nxlsx / md / json\nhtml (opt-in from json)"]
+        report["Report Projection\nxlsx / md / json\nhtml where supported"]
     end
 
     ui --> sdk
@@ -102,8 +109,8 @@ graph TB
 
 | 平面 | 主要職責 | 不應承擔的責任 |
 |---|---|---|
-| **Copilot SDK control plane** | session/resume/persistence、tool policy hooks、custom agents、skills、operator UX、advisory audit、remediation planning、run summary | 正式 transport 執行、YAML semantics、最終 pass/fail 判定 |
-| **Deterministic verdict kernel** | case discovery/filtering、retry-aware timeout、plugin hook execution、structured evidence、report projection、final verdict | 自由對話式判讀、agent prompt orchestration |
+| **Copilot SDK control plane** | session/resume/persistence、tool policy hooks、custom agents、skills、operator UX、advisory audit、remediation planning、run summary | 正式 test semantics、正式 execution authority、最終 pass/fail 判定 |
+| **Deterministic verdict kernel** | case discovery/filtering、retry-aware timeout、plugin hook execution、structured evidence、report projection、canonical verdict lifecycle | 自由對話式判讀、agent prompt orchestration、domain-specific test meaning |
 
 ---
 
@@ -119,14 +126,14 @@ sequenceDiagram
     participant Evidence as Evidence Store
     participant CP as Copilot SDK Session
 
-    User->>CLI: run wifi_llapi / resume / ask summary
+    User->>CLI: run plugin / resume / ask summary
     CLI->>Orch: run(plugin, cases, policy)
     Orch->>Plugin: setup_env() / verify_env()
     Plugin->>Transport: execute(...)
-    Transport-->>Plugin: stdout/stderr/rc/elapsed
+    Transport-->>Plugin: output / status / timing
     Orch->>Plugin: execute_step() / evaluate()
     Orch->>Evidence: write selection trace + attempts + canonical result
-    Orch->>CLI: xlsx Pass/Fail + trace path
+    Orch->>CLI: report payload + trace path
 
     opt in-run environment recovery path
         Orch->>Plugin: tier-1 deterministic decision/executor
@@ -207,7 +214,7 @@ sequenceDiagram
 |---|---|---|
 | `pre_case` | case attempt 前置檢查 / remediation preflight | 不改 formal case semantics |
 | `post_case` | 收斂 advisory / remediation history / final annotations | 不覆寫 canonical evidence |
-| `pre_step` | step 前攔截與前置校驗 | 不直接代替 transport 執行正式測試 |
+| `pre_step` | step 前攔截與前置校驗 | 不直接代替 Plugin 的正式 test execution |
 | `post_step` | step 後觀測 / 附加結構化資料 | 不改正式 pass/fail 判定 |
 | `on_failure` | advisory / failure snapshot / remediation proposal | 不直接改 YAML、pass criteria、或最終 verdict |
 | `on_retry` | tier-1 execution / threshold 後 tier-2 one-shot | retry-only；catalog/schema/budget + forced `verify_env`，不碰 test semantics/verdict |
@@ -257,12 +264,13 @@ MCP 目前仍只作為 **selective extension surface**，優先順序低於 in-p
 ### 5.1 Kernel 仍保留的責任
 
 - case discovery / case filtering
-- source.row / object / api alignment gate
 - retry-aware timeout 與 fail-and-continue
 - plugin hook execution
-- transport binding
-- canonical result 寫入
-- xlsx / md/json report projection（另支援由 json opt-in 轉出 html）
+- run-backend / transport coordination on the core-owned path
+- canonical trace/result 寫入
+- generic report handoff / projection contracts
+
+Plugin-specific alignment gates（例如特定 source row、object、API mapping）應由各 Plugin 的 validation / prepare path 負責，不應被視為 Core 的通用 domain rule。
 
 ### 5.2 Canonical result
 
@@ -297,19 +305,21 @@ MCP 目前仍只作為 **selective extension surface**，優先順序低於 in-p
 
 | 輸出 | 內容 |
 |---|---|
-| `xlsx` | `Pass` / `Fail` only |
-| `md/json` | `comment` / `diagnostic_status` / `failure_snapshot` / `remediation_history` / timing / log line references；tier-2 固定契約目前在 per-case `agent_trace` 與 run payload |
-| `html` | 由既有 `json` opt-in 轉出的 self-contained diagnostic review artifact |
+| plugin reporter | 各 Plugin 可透過 `create_reporter()` 定義 domain-specific output |
+| core trace / payload | `comment` / `diagnostic_status` / `failure_snapshot` / `remediation_history` / timing / trace references |
+| core agent artifacts | tier-2 audit、agent usage、run analysis（僅支援的 core-owned path） |
+
+既有 field plugins 可能輸出 xlsx / md / json / html；這些格式與版型不是所有 Plugin 都必須提供的通用 Core 契約。
 
 ### 5.4 不可退讓的 kernel 邊界
 
 下列責任不得交給 conversational agent 決定：
 
-- YAML case semantics
+- formal case semantics
 - environment gate semantics
-- transport command execution
-- pass criteria comparison
-- xlsx final verdict projection
+-正式 test execution 的 authority
+- pass criteria comparison / plugin evaluation semantics
+- canonical final verdict
 - 任何越過 tier-1 allowlist 或 tier-2 capability/execution boundary 的動作，尤其修改 YAML、skip case、改 pass criteria 或 verdict
 
 ---
@@ -319,39 +329,42 @@ MCP 目前仍只作為 **selective extension surface**，優先順序低於 in-p
 | Artifact | 目的 | 備註 |
 |---|---|---|
 | `agent-config.yaml` | runner/model order、execution policy、tier-1/tier-2 governance budgets | 不得存放 provider secrets |
-| selection trace | 記錄模型選擇與 fallback | 必須持久化 |
+| selection trace | 記錄模型選擇與 fallback | core-owned path 持久化 |
 | attempt trace | 記錄 timeout / commands / outputs / comments | 每次 retry 都保留 |
-| canonical result | 報表投影與 agent summary 的共同來源 | 不可被 agent 任意覆寫 |
-| xlsx report | 對外交付 | Pass/Fail only |
-| md/json/html report | 內部診斷 / remediation / summary | 三種格式由 wifi_llapi run 自動 emit；`html` 同時可透過 `wifi-llapi json-to-html` post-process |
+| canonical result | 報表與後續 analysis 的共同來源 | 不可被 agent 任意覆寫 |
+| plugin reports | domain-specific deliverables | 格式與內容由 Plugin reporter 定義 |
+| core agent artifacts | agent usage / run analysis / tier-2 audit | optional control-plane artifacts，不構成 verdict authority |
 
 ---
 
 ## 7. 文件與目錄對照
 
 ```text
-testpilot/
+testpilot-core/
 ├── README.md
 ├── AGENTS.md
+├── VERSION
+├── pyproject.toml
 ├── docs/
 │   ├── plan.md
 │   ├── spec.md
 │   ├── todos.md
-│   └── （local-only research notes; not versioned）
+│   └── plugin-dev-guide.md
 ├── src/testpilot/
-│   ├── core/
-│   ├── reporting/
-│   ├── schema/
-│   ├── transport/
-│   └── env/
+│   ├── api/          # public Plugin SDK
+│   ├── core/         # orchestration / lifecycle / recovery
+│   ├── reporting/    # generic reporting contracts/helpers
+│   ├── schema/       # generic case schema helpers
+│   ├── transport/    # transport abstractions
+│   └── runtime/      # run-backend abstraction
 ├── plugins/
-│   └── wifi_llapi/
-│       ├── plugin.py
-│       ├── agent-config.yaml
-│       ├── cases/
-│       └── reports/
+│   └── _template/    # Plugin scaffold; not a domain test suite
+├── examples/
+│   └── sample_echo/  # runnable zero-hardware reference Plugin
 └── tests/
 ```
+
+Domain Plugins 可位於獨立 repository / distribution，透過 `testpilot.plugins` entry point 註冊；Core source 不應具名依賴特定 Plugin。
 
 ---
 
@@ -373,7 +386,7 @@ testpilot/
 ### 8.2 R5：Deterministic kernel 補強
 
 - plugin fallback heuristic 收斂
-- session/device binding 更嚴格
+- session/device binding 更嚴格（device-oriented reference path）
 - canonical result / report projector 完整化
 - control-plane / verdict-plane 邊界測試
 - orchestrator / plugin 結構瘦身與解耦
@@ -384,24 +397,27 @@ testpilot/
 
 ### 9.1 已知風險
 
-- `Orchestrator` 仍是責任過重的中心點
-- `wifi_llapi/plugin.py` 仍含 wording-sensitive fallback path
-- core tier-2 framework 已落地，但實體 plugin 的 capability/executor opt-in 仍須各 plugin 自行完成與驗證
-- Copilot SDK 仍屬 technical preview，導入時需分階段落地
+- `Orchestrator` 仍是責任較重的中心點
+- managed installer / field configuration 仍反映目前 maintainer 的 device-testing stack，尚未等同於通用 Plugin distribution service
+- core tier-2 contract 已落地，但各實體 Plugin 的 capability/executor opt-in 仍須自行完成與驗證
+- custom runner 可繞過部分 core-owned analysis path，文件與 Plugin author 需清楚區分 execution ownership
+- Copilot SDK integration 仍應視為 optional control-plane capability，而不是 deterministic test path 的必要條件
 
 ### 9.2 非目標
 
 - 不把 YAML 當作主要 execution prompt
 - 不讓 agent 直接決定最終 pass/fail
-- 不用 generic MCP shell 取代正式 transport
-- 不為舊 `codex CLI` policy 新增 workaround code
+- 不用 generic MCP shell 取代正式 Plugin / transport execution
+- 不宣稱任意 domain 不需 Plugin integration 即可開箱執行
+- 不把目前的 TestPilot Core 描述成具備集中式資源管理、registry、dashboard 等能力的完整 test platform
 
 ---
 
 ## 10. 參考文件
 
-1. `docs/plan.md`：主計畫與 phase 邊界
-2. `docs/todos.md`：唯一待辦看板
-3. 本文件與 `docs/plan.md`：第三次重構的 repo 內收斂基線
-4. `README.md`：對外說明與當前/目標方向摘要
-5. `AGENTS.md`：專案級 agent/model/policy 規則
+1. `README.md`：對外定位、目前支援方式與安裝說明
+2. `docs/plugin-dev-guide.md`：Plugin SDK 開發契約
+3. `docs/plan.md`：第三次重構主計畫與 phase 邊界
+4. `docs/todos.md`：repo 待辦看板
+5. 本文件：第三次重構設計基線與 current-state 邊界註記
+6. `AGENTS.md`：專案級 agent/model/policy 規則
