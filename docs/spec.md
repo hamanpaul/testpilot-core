@@ -317,7 +317,7 @@ Plugin-specific alignment gates（例如特定 source row、object、API mapping
 
 - formal case semantics
 - environment gate semantics
--正式 test execution 的 authority
+- 正式 test execution 的 authority
 - pass criteria comparison / plugin evaluation semantics
 - canonical final verdict
 - 任何越過 tier-1 allowlist 或 tier-2 capability/execution boundary 的動作，尤其修改 YAML、skip case、改 pass criteria 或 verdict
