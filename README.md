@@ -6,7 +6,7 @@
 
 ---
 
-![TestPilot Core architecture overview](docs/assets/testpilot-core-intro.png)
+![TestPilot Core architecture overview](docs/assets/testpilot-core-intro.svg)
 
 ## Install
 
@@ -177,7 +177,6 @@ TESTPILOT_INSTALL_TOKEN=<fine-grained read-only PAT> bash scripts/install.sh
 ```bash
 # Build on a networked machine:
 bash scripts/build-bundle.sh
-
 # Install on the offline machine (verifies SHA256SUMS, installs with --no-index):
 bash scripts/install.sh --offline testpilot-bundle-<ver>-linux-<arch>-cp<XY>.tar.gz
 ```
