@@ -826,7 +826,7 @@ def _wheel_cache_path() -> Path:
     ``scripts/install.sh`` preserves the wheels it installs here so that the
     ``testpilot --update`` rollback can reinstall the last-good set with
     ``--no-index`` / ``--find-links`` — it must NEVER reach a public index
-    (dependency-confusion hazard for the private ``testpilot-core``/plugins).
+    (dependency-confusion hazard for private plugin distributions).
     """
     return _get_managed_venv().parent / ".wheel-cache"
 
@@ -1289,7 +1289,7 @@ def main(
     update_ref: str | None,
     verify_install: bool,
 ) -> None:
-    """TestPilot — plugin-based test automation for embedded devices.
+    """TestPilot — plugin-based test automation and verification framework.
 
     \b
     A plugin can be selected two ways:

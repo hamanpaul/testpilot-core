@@ -16,14 +16,14 @@ class IncompatiblePluginError(Exception):
 
 
 class PluginBase(ABC):
-    """各測試類型 plugin 繼承此基底類別。
+    """Base contract implemented by TestPilot plugins.
 
-    Plugin 負責：
-    1. 發現並載入 cases/*.yaml
-    2. 依 case 描述佈建測試環境
-    3. 執行測試步驟
-    4. 評估通過條件
-    5. 清理環境
+    A plugin owns project-specific test semantics:
+    1. discover and load test cases
+    2. prepare and verify the test environment
+    3. execute test steps
+    4. evaluate domain-specific pass/fail conditions
+    5. clean up project-owned resources
     """
 
     api_version: str | None = None
@@ -53,7 +53,7 @@ class PluginBase(ABC):
         """掃描 cases/ 目錄，回傳所有 test case 描述（已解析的 YAML dict）。"""
 
     def setup_env(self, case: dict[str, Any], topology: Any) -> bool:
-        """依 case 描述佈建測試環境（DUT/STA/EndpointPC）。
+        """Prepare the environment required by this test case.
 
         預設實作直接回傳 True（不需佈建）。子類別可覆寫。
 
@@ -63,7 +63,7 @@ class PluginBase(ABC):
         return True
 
     def verify_env(self, case: dict[str, Any], topology: Any) -> bool:
-        """環境自檢：驗證連線、服務就緒。
+        """環境自檢：驗證測試所需的前置條件是否就緒。
 
         預設實作直接回傳 True（不需驗證）。子類別可覆寫。
 

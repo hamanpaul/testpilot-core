@@ -1,7 +1,7 @@
 [project]
 name = "testpilot-core"
 dynamic = ["version"]
-description = "Plugin-based test automation framework for embedded device verification"
+description = "Plugin-based test automation and verification framework"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
