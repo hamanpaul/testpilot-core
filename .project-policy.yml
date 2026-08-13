@@ -1,7 +1,7 @@
 version: 1
 project: testpilot
 policy_profile: flat
-policy_version: "1.0.15"
+policy_version: "1.0.17"
 preflight:
   steps:
     # 註：openspec gate 暫不宣告——本 repo 現有 4 個 spec（audit-mode、
@@ -43,4 +43,4 @@ policy_check:
   repository: hamanpaul/paulsha-conventions
   config: .project-policy.yml
   pin_required: true
-  workflow_ref: hamanpaul/paulsha-conventions/.github/workflows/reusable-policy-check.yml@a764806046c410eb4f254ac0b6a8aec8b7559dab
+  workflow_ref: hamanpaul/paulsha-conventions/.github/workflows/reusable-policy-check.yml@9e7fabbf0b5eea9ad933fa6798764b723934a0b7
