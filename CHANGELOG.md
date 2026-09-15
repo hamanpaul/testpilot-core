@@ -9,6 +9,10 @@ preparation.
 
 ## [Unreleased]
 
+### Documentation
+- 新增 `docs/architecture/` 的來源固定架構事實、Archify JSON 與原生互動 HTML；涵蓋 Core / Plugin 控制權、custom runner、重試間修復、Transport / RunBackend 與報表產物，並加入 README 入口。
+- 新增固定工具版本的 architecture CI：核對 facts/IR、逐位元重建 HTML，並以 Chrome 驗證檔案開啟、桌面尺寸與互動功能。
+
 ## [0.3.7] - 2026-08-11
 
 ### Fixed

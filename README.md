@@ -76,6 +76,10 @@ The core wheel does not ship a domain test suite. Public references currently in
 
 ### Architecture
 
+[Interactive architecture diagram](docs/architecture/architecture.html) · [Source-pinned facts](docs/architecture/facts.json) · [Archify JSON](docs/architecture/architecture.json)
+
+Download the HTML and open it locally for interaction. Read `facts.json` before revising the architecture; HTML/IR are derived views of its pinned source revision.
+
 The default core-owned execution path is split into two concerns:
 
 - **Deterministic verdict kernel** — lifecycle execution, evidence collection, retry/timeout handling, canonical trace/result production, and report handoff. The domain-specific pass/fail semantics still come from the plugin's `evaluate()` implementation.
@@ -373,6 +377,10 @@ Core wheel 本身不包含 domain test suite。目前公開 reference 包含：
 - [`serialwrap_reliability`](https://github.com/hamanpaul/serialwrap/tree/main/reliability)：位於公開 `serialwrap` repo 的實機 TestPilot integration，用於 serialwrap reliability workflow；它與 Core 分開維護。
 
 ### 架構
+
+[互動式架構圖](docs/architecture/architecture.html) · [架構事實](docs/architecture/facts.json) · [Archify JSON](docs/architecture/architecture.json)
+
+下載 HTML 後以瀏覽器開啟即可互動。後續 Agent 更新架構前，先讀 `facts.json` 並比較其固定來源版本；HTML / Archify JSON 為衍生視圖。分支中的 facts 是候選，合併到 main 才是共同基準。
 
 預設的 core-owned execution path 可以拆成兩個主要 concern：
 
