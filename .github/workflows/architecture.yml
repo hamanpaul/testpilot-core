@@ -1,0 +1,172 @@
+name: Architecture Diagram
+
+on:
+  pull_request:
+    paths:
+      - docs/architecture/**
+      - .github/workflows/architecture.yml
+  push:
+    branches: [main]
+    paths:
+      - docs/architecture/**
+      - .github/workflows/architecture.yml
+
+permissions:
+  contents: read
+
+jobs:
+  architecture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check out the exact upstream Archify engine
+        uses: actions/checkout@v4
+        with:
+          repository: tt-a1i/archify
+          ref: a07fa1d5b2a10cbea110c5a2be2817397a301cdc
+          path: .architecture-tools/archify
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare browser review dependencies
+        run: |
+          python -m pip install playwright==1.62.0
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk
+          command -v google-chrome
+
+      - name: Verify fact evidence and exact projection
+        run: |
+          python - <<'PYTHON'
+          import hashlib, json, subprocess
+          from pathlib import Path
+          root = Path('docs/architecture')
+          facts = json.loads((root / 'facts.json').read_text())
+          ir = json.loads((root / 'architecture.json').read_text())
+          revision = facts['repository']['revision']
+          assert ir['meta']['repository']['revision'] == revision
+          assert ir['meta']['repository']['url'] == facts['repository']['url']
+          def check_evidence(value):
+              if isinstance(value, dict):
+                  if 'excerpt_sha256' in value:
+                      path = value['path']
+                      assert not path.startswith('docs/architecture/')
+                      blob = subprocess.check_output(['git', 'show', f'{revision}:{path}'])
+                      lines = blob.splitlines(keepends=True)
+                      assert 1 <= value['line'] <= value['end_line'] <= len(lines)
+                      excerpt = b''.join(lines[value['line'] - 1:value['end_line']])
+                      assert hashlib.sha256(excerpt).hexdigest() == value['excerpt_sha256']
+                  for child in value.values(): check_evidence(child)
+              elif isinstance(value, list):
+                  for child in value: check_evidence(child)
+          check_evidence(facts)
+          def project(row, keys): return {key: row[key] for key in keys if key in row}
+          def indexed(rows):
+              assert len({row['id'] for row in rows}) == len(rows)
+              return {row['id']: row for row in rows}
+          actual = indexed(ir['components'])
+          expected = indexed(facts['components'])
+          assert actual.keys() == expected.keys()
+          for key, row in expected.items():
+              fields = ('id', 'type', 'label', 'sublabel', 'tag')
+              assert project(actual[key], fields) == project(row, fields)
+              assert actual[key]['sources'] == [project(a, ('path', 'line', 'end_line')) for a in row['evidence'][:3]]
+          fields = ('id', 'from', 'to', 'label', 'variant')
+          assert indexed([project(e, fields) for e in ir['connections']]) == indexed([project(e, fields) for e in facts['relations']])
+          assert ir.get('boundaries', []) == [project(b, ('kind', 'label', 'wraps')) for b in facts['boundaries']]
+          print('Fact evidence and native projection match:', revision)
+          PYTHON
+
+      - name: Validate and reproduce the checked-in HTML
+        run: |
+          node .architecture-tools/archify/archify/bin/archify.mjs validate architecture \
+            docs/architecture/architecture.json --quality showcase --repo-root . --json
+          node .architecture-tools/archify/archify/bin/archify.mjs deliver architecture \
+            docs/architecture/architecture.json "$RUNNER_TEMP/architecture.html" \
+            --quality showcase --repo-root . --json > "$RUNNER_TEMP/architecture-delivery.json"
+          cmp docs/architecture/architecture.html "$RUNNER_TEMP/architecture.html"
+
+      - name: Inspect the real HTML in Chrome
+        run: |
+          export ARCHIFY_CHROME="$(command -v google-chrome)"
+          node .architecture-tools/archify/archify/bin/archify.mjs visual-check \
+            docs/architecture/architecture.html --json
+          python - <<'PYTHON'
+          import hashlib, json, os
+          from pathlib import Path
+          from playwright.sync_api import sync_playwright
+          html = Path('docs/architecture/architecture.html').resolve()
+          ir = json.loads(html.with_suffix('.json').read_text())
+          out = Path(os.environ['RUNNER_TEMP']) / 'architecture-browser'
+          out.mkdir(exist_ok=True)
+          errors, requests, sizes = [], [], []
+          with sync_playwright() as pw:
+              browser = pw.chromium.launch(executable_path=os.environ['ARCHIFY_CHROME'])
+              page = browser.new_page(viewport={'width':1440, 'height':900})
+              page.on('pageerror', lambda error: errors.append(str(error)))
+              page.on('request', lambda request: requests.append(request.url) if request.url.startswith(('http:', 'https:')) else None)
+              page.goto(html.as_uri(), wait_until='load')
+              svg = page.locator('.diagram-container svg').first
+              assert svg.is_visible()
+              nodes = svg.locator('g[data-node-id]')
+              expected = {node['id'] for node in ir['components']}
+              assert set(nodes.evaluate_all('(ns) => ns.map(n => n.dataset.nodeId)')) == expected
+              assert nodes.count() == len(expected)
+              assert all(node.is_visible() for node in nodes.all())
+              edges = svg.locator('path[data-edge-id]').evaluate_all('(es) => es.map(e => ({id:e.dataset.edgeId,d:e.getAttribute("d"),marker:e.getAttribute("marker-end")}))')
+              assert {edge['id'] for edge in edges} == {edge['id'] for edge in ir['connections']}
+              assert len(edges) == len(ir['connections'])
+              assert all(edge['d'] and edge['marker'] for edge in edges)
+              for width, height in [(1440,900),(1600,1000),(1920,1080),(2048,1320),(390,844)]:
+                  page.set_viewport_size({'width':width, 'height':height})
+                  page.wait_for_timeout(300)
+                  size = page.evaluate('({width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,scrollHeight:document.documentElement.scrollHeight})')
+                  assert size['scrollWidth'] <= width, size
+                  assert width < 1440 or size['scrollHeight'] <= height, size
+                  sizes.append(size)
+                  page.screenshot(path=str(out / f'diagram-{width}.png'), full_page=True)
+              page.set_viewport_size({'width':1440, 'height':900})
+              svg.locator('g[data-node-id="run-controller"]').click()
+              assert page.locator('#focus-chip').is_visible()
+              links = page.locator('#focus-evidence-links a')
+              assert links.count() > 0
+              assert ir['meta']['repository']['revision'] in links.first.get_attribute('href')
+              page.locator('#btn-reach-downstream').click()
+              assert page.locator('#btn-reach-downstream').get_attribute('aria-pressed') == 'true'
+              page.locator('#btn-focus-clear').click()
+              page.locator('#btn-node-finder').click()
+              page.locator('#node-finder-input').fill('run-controller')
+              assert page.locator('#node-finder-results').is_visible()
+              page.locator('#node-finder-close').click()
+              before = page.locator('html').get_attribute('data-theme')
+              page.locator('#btn-theme').click()
+              assert page.locator('html').get_attribute('data-theme') != before
+              page.screenshot(path=str(out / 'diagram-dark.png'), full_page=True)
+              assert not errors and not requests, (errors, requests)
+              receipt = dict(ok=True, html_sha256=hashlib.sha256(html.read_bytes()).hexdigest(), browser=browser.version, transport='file', file_navigation=True, nodes=nodes.count(), directional_svg_paths=len(edges), viewports=sizes, browser_errors=errors, http_requests=requests)
+              (out / 'browser-review.json').write_text(json.dumps(receipt, indent=2))
+              print(json.dumps(receipt, indent=2))
+              browser.close()
+          PYTHON
+
+      - name: Upload receipts and screenshots for visual inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-review-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            docs/architecture/architecture.visual-check.*
+            docs/architecture/architecture.*.png
+            ${{ runner.temp }}/architecture-delivery.json
+            ${{ runner.temp }}/architecture-browser/

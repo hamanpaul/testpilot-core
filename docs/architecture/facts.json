@@ -1,0 +1,717 @@
+{
+  "schema_version": 1,
+  "document_type": "architecture-facts",
+  "repository": {
+    "url": "https://github.com/hamanpaul/testpilot-core",
+    "revision": "5172ee97e4f623963ec2a37c6c6c81a62568e803"
+  },
+  "scope": {
+    "name": "TestPilot Core 高階執行架構",
+    "includes": [
+      "CLI / 公開 SDK 與 plugin 載入",
+      "core-owned run、case、attempt、step 的控制權",
+      "custom runner 分支、skeleton 條件",
+      "可選 Azure 輔助、retry 間環境修復",
+      "命令 Transport、RunBackend、report 與檔案產物"
+    ],
+    "excludes": [
+      "外部 domain plugin 的內部實作與 workbook 語意",
+      "audit / install / update 管理流程",
+      "部署拓撲與實機驗收",
+      "歷史 roadmap 與未接入的 extension surfaces"
+    ]
+  },
+  "components": [
+    {
+      "id": "agent-assistance",
+      "label": "Azure Agent 輔助",
+      "type": "cloud",
+      "sublabel": "Copilot SDK / BYOK",
+      "responsibility": "可選的 tool-denied one-shot：case 規劃、Tier-2 計畫、run-end 分析；使用 Azure BYOK，無 key/失效時跳過 agent。Core provider/session 失敗開 circuit；模型不執行測試或決定 verdict。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/azure_auth.py",
+          "line": 80,
+          "end_line": 110,
+          "excerpt_sha256": "228f4a0bee25bcabacd8404b283a1b58fd04c0b43ccc70afd420d149aeec2244",
+          "claim": "無 key 停用；只建立 Azure provider。"
+        },
+        {
+          "path": "src/testpilot/core/copilot_session.py",
+          "line": 365,
+          "end_line": 389,
+          "excerpt_sha256": "c9a890c99c67542900fd5f04b1f05c760720ebdace69f6d97efce49fba0ae58a",
+          "claim": "one-shot 強制 deny tools 與 permission。"
+        },
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 360,
+          "end_line": 438,
+          "excerpt_sha256": "532a9dcf0158c78de2aeb1ee95866cfcd6e15cc3251549f20271becaad48ba42",
+          "claim": "one-shot 驗證、usage ledger、SDK 與 circuit breaker。"
+        }
+      ]
+    },
+    {
+      "id": "case-engine",
+      "label": "Case 執行引擎",
+      "type": "backend",
+      "sublabel": "case → attempt → step",
+      "responsibility": "ExecutionEngine 管理單 case 的重試、timeout 與 hooks。每個 attempt 重新執行 setup/verify/steps/evaluate，finally teardown；沒有強制模型呼叫，也沒有獨立 WorkflowRun/Phase/Card/Job 實體。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 147,
+          "end_line": 230,
+          "excerpt_sha256": "ae5da8d065626a44b50995340ba6f54d16cfe0c7764b3305daf2a403820105ad",
+          "claim": "單次 attempt 由 core 呼叫 setup_env、verify_env、execute_step 與 evaluate。"
+        },
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 232,
+          "end_line": 266,
+          "excerpt_sha256": "a4f8343dacda8feffbfc896924674ab2a82ec92fbdb03a00c74476747333bc19",
+          "claim": "finally 呼叫 teardown；輸出單次 verdict 與 failure snapshot。"
+        },
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 314,
+          "end_line": 398,
+          "excerpt_sha256": "6c648f147083329fce1a91eb23ed1dd3e0cfe4f0d71d04788e7453d5115c5596",
+          "claim": "每個 case 有有界 attempts；on_retry 只在後續 attempt 前，成功或預算耗盡即停止。"
+        }
+      ]
+    },
+    {
+      "id": "custom-runner",
+      "label": "Custom Runner",
+      "type": "backend",
+      "sublabel": "可選的完整執行分支",
+      "responsibility": "plugin.create_runner() 可接管完整 run；core 標記此分支 cost report unsupported，不能假定沿用 core retry/analysis。sample_echo 即採此分支。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "examples/sample_echo/src/testpilot_sample_echo/plugin.py",
+          "line": 62,
+          "end_line": 65,
+          "excerpt_sha256": "d1e62e6ad3505f0b35809f29f80d111b0b2e1fa49eab8117676c40a82610cf44",
+          "claim": "sample_echo 提供 EchoRunner。"
+        },
+        {
+          "path": "examples/sample_echo/src/testpilot_sample_echo/plugin.py",
+          "line": 99,
+          "end_line": 116,
+          "excerpt_sha256": "fa90db63f436812b1a45be5b82121e0ea92007477a5f2c59b67b4de47669b991",
+          "claim": "EchoRunner 逐案 run_pipeline 後自行彙整 verdict。"
+        },
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 674,
+          "end_line": 695,
+          "excerpt_sha256": "60836f4b0e37d877c2d26b7ec55cd68c9795c744336ce161058fd5e1a27281e8",
+          "claim": "呼叫 runner.run，附上 custom_runner 的 unsupported_execution_path。"
+        }
+      ]
+    },
+    {
+      "id": "domain-plugin",
+      "label": "Domain Plugin",
+      "type": "backend",
+      "sublabel": "步驟、環境、evaluate()",
+      "responsibility": "PluginBase 定義 domain hooks；具體 plugin 擁有 case discovery、環境與步驟實作及 verdict 語意。此節點描述契約角色，不代表 core 內建 Wi-Fi suite。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "examples/sample_echo/src/testpilot_sample_echo/plugin.py",
+          "line": 23,
+          "end_line": 60,
+          "excerpt_sha256": "9771bca63715a1e02f54e9044792930da6db9678ac9ec5ff19b3d97bf25b7ef9",
+          "claim": "sample_echo 實作 case 載入、execute_step 與 evaluate。"
+        },
+        {
+          "path": "src/testpilot/core/plugin_base.py",
+          "line": 18,
+          "end_line": 94,
+          "excerpt_sha256": "23c876eab1d431914bbbc90c983cca2fb1ebff86c0c599166cce224c8bec0947",
+          "claim": "PluginBase 的 discovery、環境、步驟、evaluate 與 teardown 契約。"
+        },
+        {
+          "path": "src/testpilot/core/plugin_base.py",
+          "line": 224,
+          "end_line": 233,
+          "excerpt_sha256": "6198bd6f126adb488e07d7ca85f7c2595a510038ba057d4cf58bc480000fc3f5",
+          "claim": "預設 prepare_run 回傳 PreparedRun。"
+        }
+      ]
+    },
+    {
+      "id": "entry",
+      "label": "CLI / Python API",
+      "type": "frontend",
+      "sublabel": "命令列與程式入口",
+      "responsibility": "CLI 及 run_one_case 進入 Orchestrator；SDK 由 testpilot.api 匯出。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/api/__init__.py",
+          "line": 1,
+          "end_line": 35,
+          "excerpt_sha256": "5b3230d7198046eef0f3eeb2df0cf9e76e5a410e3911c4e0321900c8c8a16d19",
+          "claim": "公開 SDK re-exports 與 CLI helper。"
+        },
+        {
+          "path": "src/testpilot/cli_support.py",
+          "line": 50,
+          "end_line": 76,
+          "excerpt_sha256": "008e3f9cc6c8db89ef46b27eb8ec3168348ec36956f10e3544befd4a9afb9a77",
+          "claim": "CLI 建立 Orchestrator 並呼叫 run。"
+        },
+        {
+          "path": "src/testpilot/core/api_entry.py",
+          "line": 43,
+          "end_line": 47,
+          "excerpt_sha256": "8b38689303eddb4a0b7ac5d684c2bed2dee19e5366ac59def835769d1043e444",
+          "claim": "公開 run_one_case 使用相同 Orchestrator。"
+        }
+      ]
+    },
+    {
+      "id": "plugin-loader",
+      "label": "Plugin 載入器",
+      "type": "backend",
+      "sublabel": "entry point / 路徑模式",
+      "responsibility": "載入 testpilot.plugins，拒絕不相容 SDK；路徑模式使用共享名稱 override。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/plugin_loader.py",
+          "line": 35,
+          "end_line": 51,
+          "excerpt_sha256": "413123382b2debf144656a5010cc3af0bd336d0220a4058eea3d80479dc07232",
+          "claim": "相同 major 且 host minor 足夠才接受。"
+        },
+        {
+          "path": "src/testpilot/core/plugin_loader.py",
+          "line": 75,
+          "end_line": 99,
+          "excerpt_sha256": "4e95cd01ac19f7352f4795a49703b28654e0c40608c9dc8a70cdf70c01025906",
+          "claim": "process-wide override 保持路徑模式的 plugin 身分。"
+        },
+        {
+          "path": "src/testpilot/core/plugin_loader.py",
+          "line": 141,
+          "end_line": 175,
+          "excerpt_sha256": "d99816070d48a1e0c359948984ba13999e81d6afa3b2542ca394161c43089dd8",
+          "claim": "發現 entry points、驗證類別與 SDK API，再實例化 plugin。"
+        }
+      ]
+    },
+    {
+      "id": "recovery",
+      "label": "Hooks / 環境修復",
+      "type": "backend",
+      "sublabel": "重試間 Tier-1 / Tier-2",
+      "responsibility": "HookDispatcher 連接 RuntimeRemediationCoordinator；Tier-1 使用 plugin deterministic 環境修復，Tier-2 僅 opt-in 且達失敗門檻與 budgets 後請求計畫。執行仍交 plugin，並強制 verify_env 與語意不變檢查。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 263,
+          "end_line": 277,
+          "excerpt_sha256": "469dab4ec8d4285707cbb648e81681eb6392891d339a83b85a4d56476a69d9f8",
+          "claim": "將 remediation handlers 註冊到 ExecutionEngine hooks。"
+        },
+        {
+          "path": "src/testpilot/core/remediation.py",
+          "line": 645,
+          "end_line": 662,
+          "excerpt_sha256": "95f7152ab8792ce40a5e69143f5026d0f9ea58378faf7fd5115471517a3e4d99",
+          "claim": "Tier-2 trigger 與 invocation budget。"
+        },
+        {
+          "path": "src/testpilot/core/remediation.py",
+          "line": 947,
+          "end_line": 1013,
+          "excerpt_sha256": "1a072673e9fa7b350f6ab518ab1ab9dc8daea020cc6c33ff2e8f39162ca79a3f",
+          "claim": "plugin 執行修復，禁止改測試語意並強制 verify_env。"
+        }
+      ]
+    },
+    {
+      "id": "reporting",
+      "label": "結果報表",
+      "type": "backend",
+      "sublabel": "Plugin reporter / Core cost",
+      "responsibility": "core loop 在 verdict 收斂後呼叫 plugin reporter.build_reports(RunResult)，另寫 core usage 與 analysis；報表是輸出投影，未取得 verdict 決策權。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 452,
+          "end_line": 480,
+          "excerpt_sha256": "3716c855b7ce4087b7b02c122d1831389d3abec262a0c4a0b5b1d307b2eb2659",
+          "claim": "run-end analysis 後交 RunResult 給 plugin reporter。"
+        },
+        {
+          "path": "src/testpilot/reporting/reporter.py",
+          "line": 254,
+          "end_line": 277,
+          "excerpt_sha256": "06e03c894f2057acc1ff99d7c6b7f6786bac86f42407d691929d0e644bbaa220",
+          "claim": "MarkdownReporter 寫入報表。"
+        },
+        {
+          "path": "src/testpilot/reporting/usage_reporter.py",
+          "line": 103,
+          "end_line": 112,
+          "excerpt_sha256": "f841c6d1daf6a5dd502ed19e1da723ebf6a534e8d40417adf50ce6237deada4a",
+          "claim": "Core cost/usage/analysis 檔案寫入。"
+        }
+      ]
+    },
+    {
+      "id": "run-artifacts",
+      "label": "Run 產物",
+      "type": "database",
+      "sublabel": "trace / log / report",
+      "responsibility": "檔案輸出，不是資料庫服務：reports/<RID> 中保存 case trace、解碼 log 及 core cost/analysis；plugin report 格式由 plugin 提供。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 222,
+          "end_line": 249,
+          "excerpt_sha256": "2a0654be7809e90850b5d2752ebadaf813aedeeee0046a7dfd054825c89635e7",
+          "claim": "依 plugin/RID 建立 reports 與 agent_trace 目錄。"
+        },
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 314,
+          "end_line": 329,
+          "excerpt_sha256": "2da2402d36fae319e48780f35fe312e2e54140ca32b5fdf9fdbabb904ba4b91a",
+          "claim": "寫出每案 trace。"
+        },
+        {
+          "path": "src/testpilot/reporting/usage_reporter.py",
+          "line": 103,
+          "end_line": 112,
+          "excerpt_sha256": "f841c6d1daf6a5dd502ed19e1da723ebf6a534e8d40417adf50ce6237deada4a",
+          "claim": "寫出 usage 與 analysis artifacts。"
+        }
+      ]
+    },
+    {
+      "id": "run-backend",
+      "label": "RunBackend",
+      "type": "backend",
+      "sublabel": "serialwrap 日誌與 seq 區間",
+      "responsibility": "管理 run 層級 capture/session/seq/log export；預設 SerialwrapBackend，與單步命令 Transport 分開。direct_tty 目前為 stub。setup/export 可能 best-effort 降級，沒有 log 不等於已驗證實機。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/runtime/factory.py",
+          "line": 19,
+          "end_line": 41,
+          "excerpt_sha256": "fbf8bb473627b1b56e2765f58b932ca444ee71808d73cfef9e62fb0eb3eee1ca",
+          "claim": "預設 serialwrap；direct_tty/ttyusb 路由至 stub。"
+        },
+        {
+          "path": "src/testpilot/runtime/serialwrap_backend.py",
+          "line": 80,
+          "end_line": 121,
+          "excerpt_sha256": "3c56134f7d4982c7f0b8799a51466c2906e4eef43fd13c070c2396769576e502",
+          "claim": "管理 daemon/session/WAL 位置並處理不可用狀態。"
+        },
+        {
+          "path": "src/testpilot/runtime/serialwrap_backend.py",
+          "line": 123,
+          "end_line": 154,
+          "excerpt_sha256": "4cfe73b9e77193fafdacc47d6fbdffd6ae87bb54e3039b36e1771cc8fc45dc25",
+          "claim": "按 seq 匯出解碼 DUT/STA log。"
+        }
+      ]
+    },
+    {
+      "id": "run-controller",
+      "label": "Run 控制器",
+      "type": "backend",
+      "sublabel": "Orchestrator / run_loop",
+      "responsibility": "選擇執行分支；core loop 準備 cases、建立 run、依序執行與收斂 RunResult。沒有 runner 與 build_reports 時走 skeleton，不執行測試。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 744,
+          "end_line": 772,
+          "excerpt_sha256": "5bd6960745486fcc50c615c15665acf305509af64b6e6f4593a7b072aca099e2",
+          "claim": "Orchestrator 依序選 custom runner、skeleton 或 core run loop。"
+        },
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 217,
+          "end_line": 247,
+          "excerpt_sha256": "ee5e0c0bcf30421bfba2547a41f3a71cf2a71e13234c856eedaca2ecc14bbc0f",
+          "claim": "prepare_run 產生 cases/artifacts，建立 RID、capture 與執行策略。"
+        },
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 331,
+          "end_line": 393,
+          "excerpt_sha256": "0f993ab352f87c5e366f238b900957dc98b17d68fb182ac97f83a763e3c7feb1",
+          "claim": "收集 CaseRunRecord，匯出 log 並組成 RunResult。"
+        }
+      ]
+    },
+    {
+      "id": "transport",
+      "label": "命令 Transport",
+      "type": "backend",
+      "sublabel": "serialwrap / SSH / ADB 等",
+      "responsibility": "提供裝置命令傳輸介面及實作，由 plugin 選用；sample_echo 使用 StubTransport，不接實機。network transport 實際透過本機 subprocess runner 執行。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "examples/sample_echo/src/testpilot_sample_echo/plugin.py",
+          "line": 38,
+          "end_line": 52,
+          "excerpt_sha256": "ea220785c8c15464ce01b4ae08c832061e8ba67f5f4ba62199548e92e411a5e9",
+          "claim": "sample_echo 以 StubTransport 執行命令。"
+        },
+        {
+          "path": "src/testpilot/transport/factory.py",
+          "line": 14,
+          "end_line": 29,
+          "excerpt_sha256": "f822a8d0f09a6671ee7b64457964741c1b7e6c6e94d9cb41ec153d2e0107fd86",
+          "claim": "依 kind 建立 serialwrap/adb/ssh/network/stub。"
+        },
+        {
+          "path": "src/testpilot/transport/network.py",
+          "line": 12,
+          "end_line": 25,
+          "excerpt_sha256": "237185365c167a804050a2aac216e562ae36720e0c090801d8e4224b618c3704",
+          "claim": "NetworkTransport 使用本機 shell runner。"
+        }
+      ]
+    }
+  ],
+  "boundaries": [],
+  "relations": [
+    {
+      "id": "backend-artifacts",
+      "from": "run-backend",
+      "to": "run-artifacts",
+      "label": "匯出 seq 日誌",
+      "variant": "default",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/runtime/serialwrap_backend.py",
+          "line": 123,
+          "end_line": 151,
+          "excerpt_sha256": "079932a34fc86c8daa5a17aa36a96a71e58a43995b57eb3ba37b476b966c12cd",
+          "claim": "WAL 匯出後寫入 artifact_dir。"
+        }
+      ]
+    },
+    {
+      "id": "engine-plugin",
+      "from": "case-engine",
+      "to": "domain-plugin",
+      "label": "呼叫步驟與判定",
+      "variant": "emphasis",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 147,
+          "end_line": 230,
+          "excerpt_sha256": "ae5da8d065626a44b50995340ba6f54d16cfe0c7764b3305daf2a403820105ad",
+          "claim": "單次 attempt 由 core 呼叫 setup_env、verify_env、execute_step 與 evaluate。"
+        }
+      ]
+    },
+    {
+      "id": "engine-recovery",
+      "from": "case-engine",
+      "to": "recovery",
+      "label": "on_retry：嘗試間修復",
+      "variant": "dashed",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 314,
+          "end_line": 355,
+          "excerpt_sha256": "6c1393177c4c07efaa96d2c07e3507201759768c22a66032f948c64f8f99e7f5",
+          "claim": "於後續 attempt 前執行 hook，必要時停止 case。"
+        }
+      ]
+    },
+    {
+      "id": "entry-run",
+      "from": "entry",
+      "to": "run-controller",
+      "label": "啟動 run",
+      "variant": "emphasis",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/cli_support.py",
+          "line": 50,
+          "end_line": 76,
+          "excerpt_sha256": "008e3f9cc6c8db89ef46b27eb8ec3168348ec36956f10e3544befd4a9afb9a77",
+          "claim": "CLI 建立 Orchestrator 並呼叫 run。"
+        },
+        {
+          "path": "src/testpilot/core/api_entry.py",
+          "line": 43,
+          "end_line": 47,
+          "excerpt_sha256": "8b38689303eddb4a0b7ac5d684c2bed2dee19e5366ac59def835769d1043e444",
+          "claim": "公開 run_one_case 使用相同 Orchestrator。"
+        }
+      ]
+    },
+    {
+      "id": "plugin-transport",
+      "from": "domain-plugin",
+      "to": "transport",
+      "label": "選用命令傳輸",
+      "variant": "default",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "examples/sample_echo/src/testpilot_sample_echo/plugin.py",
+          "line": 38,
+          "end_line": 52,
+          "excerpt_sha256": "ea220785c8c15464ce01b4ae08c832061e8ba67f5f4ba62199548e92e411a5e9",
+          "claim": "sample_echo 在 execute_step 使用 StubTransport；不代表所有 plugin 必須使用。"
+        }
+      ]
+    },
+    {
+      "id": "recovery-agent",
+      "from": "recovery",
+      "to": "agent-assistance",
+      "label": "opt-in：Tier-2 計畫",
+      "variant": "dashed",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 245,
+          "end_line": 269,
+          "excerpt_sha256": "7c2c07f43fc915c012ff1ad223538c9ba798ded6b173a5e0c6f22cbc305df696",
+          "claim": "requester 接到 core tool-denied one-shot。"
+        },
+        {
+          "path": "src/testpilot/core/remediation.py",
+          "line": 902,
+          "end_line": 925,
+          "excerpt_sha256": "4631a28da75648d59561840007586076fe1472ea190140377268e6a9269761ef",
+          "claim": "使用 requester 取得計畫並驗 schema。"
+        }
+      ]
+    },
+    {
+      "id": "recovery-plugin",
+      "from": "recovery",
+      "to": "domain-plugin",
+      "label": "修復後 verify_env",
+      "variant": "dashed",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/remediation.py",
+          "line": 947,
+          "end_line": 1013,
+          "excerpt_sha256": "1a072673e9fa7b350f6ab518ab1ab9dc8daea020cc6c33ff2e8f39162ca79a3f",
+          "claim": "plugin 執行修復後 deterministic gate。"
+        }
+      ]
+    },
+    {
+      "id": "reports-artifacts",
+      "from": "reporting",
+      "to": "run-artifacts",
+      "label": "寫入報表",
+      "variant": "default",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/reporting/usage_reporter.py",
+          "line": 103,
+          "end_line": 112,
+          "excerpt_sha256": "f841c6d1daf6a5dd502ed19e1da723ebf6a534e8d40417adf50ce6237deada4a",
+          "claim": "寫出 cost 與 analysis。"
+        }
+      ]
+    },
+    {
+      "id": "run-agent",
+      "from": "run-controller",
+      "to": "agent-assistance",
+      "label": "可選：規劃與分析",
+      "variant": "dashed",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 275,
+          "end_line": 283,
+          "excerpt_sha256": "7d0280baef42efc25b9553d881c7e408d0a319fa1b471aac96858a1d652c502c",
+          "claim": "case 前取得規劃建議。"
+        },
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 452,
+          "end_line": 468,
+          "excerpt_sha256": "e0d5d8b9a8defdc6cd89dc30c5a606d3326686e598b30c520a4b3052789ba7e2",
+          "claim": "verdict 完成後進行 run 分析。"
+        }
+      ]
+    },
+    {
+      "id": "run-capture",
+      "from": "run-controller",
+      "to": "run-backend",
+      "label": "管理 capture",
+      "variant": "default",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/runtime/orchestrator_run_backend_compat.py",
+          "line": 96,
+          "end_line": 108,
+          "excerpt_sha256": "08ca8ca86c560ce12dbf21061a56bff64ce7b38cafddcba81d1e198ced66c44c",
+          "claim": "建立 run handle 並綁定 sessions。"
+        }
+      ]
+    },
+    {
+      "id": "run-case",
+      "from": "run-controller",
+      "to": "case-engine",
+      "label": "core 分支：逐案執行",
+      "variant": "emphasis",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 261,
+          "end_line": 305,
+          "excerpt_sha256": "88eafa5ee110409bf85b65d4a88cf2afbf85f6e8e87dea8a9a7369b5ac17b3ac",
+          "claim": "Core 逐案選 runner、取得規劃建議並呼叫 execute_with_retry。"
+        }
+      ]
+    },
+    {
+      "id": "run-custom",
+      "from": "run-controller",
+      "to": "custom-runner",
+      "label": "有 runner：委派",
+      "variant": "dashed",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 744,
+          "end_line": 772,
+          "excerpt_sha256": "5bd6960745486fcc50c615c15665acf305509af64b6e6f4593a7b072aca099e2",
+          "claim": "Orchestrator 依序選 custom runner、skeleton 或 core run loop。"
+        }
+      ]
+    },
+    {
+      "id": "run-load",
+      "from": "run-controller",
+      "to": "plugin-loader",
+      "label": "載入與驗 SDK",
+      "variant": "default",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 744,
+          "end_line": 745,
+          "excerpt_sha256": "f46ab2d97f08970692c1ca3ddc73f77825c364967142a70fe430c972420824a5",
+          "claim": "run 使用 loader 載入 plugin。"
+        }
+      ]
+    },
+    {
+      "id": "run-reports",
+      "from": "run-controller",
+      "to": "reporting",
+      "label": "交付 RunResult",
+      "variant": "default",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 464,
+          "end_line": 480,
+          "excerpt_sha256": "fce28d486998d514eae8a6fd58925e8b77c9c98b7769a2299efce760135ff851",
+          "claim": "完成後分析並交給 plugin reporter。"
+        }
+      ]
+    }
+  ],
+  "unknowns": [
+    {
+      "id": "external-plugin-runtime",
+      "question": "使用者實際安裝哪些 domain plugins、版本與 reporter？",
+      "impact": "只畫本 repo 的公開契約，不能據此證明外部 plugin 或實驗室行為。"
+    },
+    {
+      "id": "live-device-evidence",
+      "question": "目標 testbed 的 serialwrap、裝置連線與 log 完整性是否通過實機驗收？",
+      "impact": "此圖為原始碼架構基準，未宣稱硬體 E2E 通過。"
+    }
+  ],
+  "conflicts": [
+    {
+      "id": "default-reporter-description",
+      "subject": "PluginBase.create_reporter 的預設行為描述",
+      "claims": [
+        {
+          "claim": "docstring 宣稱 None 使用 orchestrator default。",
+          "evidence": [
+            {
+              "path": "src/testpilot/core/plugin_base.py",
+              "line": 201,
+              "end_line": 207,
+              "excerpt_sha256": "8a139d7ecfb2cb93fa610ec7fb47f61155dba40d7936d23bacc74586ed133ea9",
+              "claim": "create_reporter docstring 與 return None。"
+            }
+          ]
+        },
+        {
+          "claim": "實作在沒有 runner 且 reporter 缺 build_reports 時進入 skeleton。",
+          "evidence": [
+            {
+              "path": "src/testpilot/core/orchestrator.py",
+              "line": 744,
+              "end_line": 772,
+              "excerpt_sha256": "5bd6960745486fcc50c615c15665acf305509af64b6e6f4593a7b072aca099e2",
+              "claim": "Orchestrator 依序選 custom runner、skeleton 或 core run loop。"
+            }
+          ]
+        }
+      ],
+      "resolution": {
+        "state": "resolved",
+        "decision": "架構依 executable Orchestrator.run 表示 skeleton 條件；保留 docstring 陳舊紀錄，未修改執行碼。",
+        "evidence": [
+          {
+            "path": "src/testpilot/core/orchestrator.py",
+            "line": 744,
+            "end_line": 772,
+            "excerpt_sha256": "5bd6960745486fcc50c615c15665acf305509af64b6e6f4593a7b072aca099e2",
+            "claim": "Orchestrator 依序選 custom runner、skeleton 或 core run loop。"
+          }
+        ]
+      }
+    }
+  ]
+}
