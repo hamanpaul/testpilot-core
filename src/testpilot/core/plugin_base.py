@@ -267,9 +267,11 @@ class PluginBase(ABC):
                     commands.append(cmd)
                 result = self.execute_step(case, step_data, topology)
                 step_results[step_id] = result
-                out = str(result.get("output", "")).strip()
-                if out:
-                    outputs.append(out)
+                # Keep outputs index-aligned with commands: a step that produced
+                # no text (e.g. a station verb with no key=value lines) still
+                # occupies its slot, otherwise every later output shifts up by
+                # one in agent_trace and evidence gets attributed to the wrong step.
+                outputs.append(str(result.get("output", "")).strip())
                 if not result.get("success", False):
                     comment = f"step failed: {step_id}"
                     break
