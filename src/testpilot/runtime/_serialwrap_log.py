@@ -6,6 +6,7 @@ import base64
 import json
 import logging
 import subprocess
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -41,8 +42,10 @@ def _resolve_bin() -> str:
 def _run_sw(args: list[str], timeout: float = 10.0) -> dict[str, Any]:
     """Run a serialwrap CLI command and return parsed JSON response."""
     cmd = [_resolve_bin(), *args]
+    # serialwrap always emits UTF-8; never fall back to the host locale (#51).
     completed = subprocess.run(
-        cmd, capture_output=True, text=True, check=False, timeout=timeout,
+        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+        check=False, timeout=timeout,
     )
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()
@@ -130,11 +133,34 @@ def _list_devices() -> list[dict[str, Any]]:
     return payload.get("devices", [])
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _normalize_com_name(value: str) -> str:
+    """``COM5`` / ``\\\\.\\COM5`` / ``com5`` → ``COM5`` (#50).
+
+    On Windows serialwrap reports ``real_path`` as ``\\\\.\\COMn`` while a testbed
+    normally spells ``serial_port: COMn``; ``Path.resolve()`` turns the bare name
+    into ``<cwd>\\COMn`` so the two never compared equal.
+    """
+    name = value.strip().replace("/", "\\")
+    if name.startswith("\\\\.\\"):
+        name = name[4:]
+    return name.upper()
+
+
 def _match_device_by_id(
     devices: list[dict[str, Any]],
     serial_port: str,
 ) -> str | None:
     """Find device_by_id for a given serial port path (e.g. /dev/ttyUSB0)."""
+    if _is_windows():
+        wanted = _normalize_com_name(serial_port)
+        for dev in devices:
+            if _normalize_com_name(str(dev.get("real_path", ""))) == wanted:
+                return str(dev.get("by_id", ""))
+        return None
     rp = Path(serial_port).resolve()
     for dev in devices:
         dev_rp = Path(dev.get("real_path", "")).resolve()
@@ -185,6 +211,7 @@ def setup_sessions(
             [_resolve_bin(), "session", "bind",
              "--selector", session_id, "--device-by-id", by_id],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            encoding="utf-8", errors="replace",
         )
         bind_procs.append((session_id, alias, by_id, proc))
 

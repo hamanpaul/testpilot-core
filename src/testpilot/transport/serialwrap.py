@@ -300,6 +300,8 @@ class SerialWrapTransport(TransportBase):
             self._build_cli(args),
             capture_output=True,
             text=True,
+            encoding="utf-8",  # serialwrap output is UTF-8 regardless of host locale (#51)
+            errors="replace",
             check=False,
             timeout=timeout,
         )

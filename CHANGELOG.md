@@ -9,6 +9,16 @@ preparation.
 
 ## [Unreleased]
 
+### Fixed
+- Windows 可攜性（serialwrap client glue）：
+  - `runtime/_serialwrap_log.py::_match_device_by_id` 改以 COM 名正規化比對（`COM5` /
+    `\\.\COM5` / `com5` → `COM5`）；原本 `Path.resolve()` 會把裸 `COM5` 解析成 `<cwd>\COM5`，
+    永遠對不到 serialwrap 回報的 `\\.\COM5`，只能靠 index fallback 碰運氣（#50）。POSIX 維持
+    `resolve()` 比對不變。
+  - `_run_sw`、`setup_sessions` 的 `session bind` `Popen`、`transport/serialwrap.py::_run_json`
+    一律 `encoding="utf-8", errors="replace"`；serialwrap 輸出固定 UTF-8，cp950 等 locale 預設
+    編碼會在 reader thread 拋 `UnicodeDecodeError`（#51）。
+
 ### Documentation
 - 新增 `docs/architecture/` 的來源固定架構事實、Archify JSON 與原生互動 HTML；涵蓋 Core / Plugin 控制權、custom runner、重試間修復、Transport / RunBackend 與報表產物，並加入 README 入口。
 - 新增固定工具版本的 architecture CI：核對 facts/IR、逐位元重建 HTML，並以 Chrome 驗證檔案開啟、桌面尺寸與互動功能。

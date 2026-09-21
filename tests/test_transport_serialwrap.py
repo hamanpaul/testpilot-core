@@ -38,6 +38,8 @@ def test_connect_resolves_by_alias(monkeypatch: pytest.MonkeyPatch) -> None:
         text: bool,
         check: bool,
         timeout: float | None,
+        encoding: str | None = None,
+        errors: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         assert capture_output is True
         assert text is True
@@ -76,8 +78,10 @@ def test_connect_attaches_when_session_is_attached(monkeypatch: pytest.MonkeyPat
         text: bool,
         check: bool,
         timeout: float | None,
+        encoding: str | None = None,
+        errors: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text, check, timeout
+        del capture_output, text, check, timeout, encoding, errors
         op = tuple(args[1:3])
 
         if op == ("session", "list"):
@@ -130,6 +134,8 @@ def test_connect_uses_configured_session_timeouts(monkeypatch: pytest.MonkeyPatc
         text: bool,
         check: bool,
         timeout: float | None,
+        encoding: str | None = None,
+        errors: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         del capture_output, text, check
         op = tuple(args[1:3])
@@ -193,8 +199,10 @@ def test_connect_retries_after_transient_list_failure(monkeypatch: pytest.Monkey
         text: bool,
         check: bool,
         timeout: float | None,
+        encoding: str | None = None,
+        errors: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text, check, timeout
+        del capture_output, text, check, timeout, encoding, errors
         op = tuple(args[1:3])
 
         if op == ("session", "list"):
@@ -240,6 +248,8 @@ def test_connect_resolves_by_serial_port(monkeypatch: pytest.MonkeyPatch) -> Non
         text: bool,
         check: bool,
         timeout: float | None,
+        encoding: str | None = None,
+        errors: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         assert args[1:3] == ["session", "list"]
         return _cp(
@@ -283,8 +293,10 @@ def test_execute_submit_poll_and_command_status(monkeypatch: pytest.MonkeyPatch)
         text: bool,
         check: bool,
         timeout: float | None,
+        encoding: str | None = None,
+        errors: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text, check, timeout
+        del capture_output, text, check, timeout, encoding, errors
         op = tuple(args[1:3])
 
         if op == ("session", "list"):
@@ -381,8 +393,10 @@ def test_execute_returns_empty_stdout_when_command_stdout_is_empty(
         text: bool,
         check: bool,
         timeout: float | None,
+        encoding: str | None = None,
+        errors: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text, check, timeout
+        del capture_output, text, check, timeout, encoding, errors
         op = tuple(args[1:3])
 
         if op == ("session", "list"):
@@ -455,8 +469,10 @@ def test_execute_treats_interactive_status_as_terminal_success(
         text: bool,
         check: bool,
         timeout: float | None,
+        encoding: str | None = None,
+        errors: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text, check, timeout
+        del capture_output, text, check, timeout, encoding, errors
         op = tuple(args[1:3])
 
         if op == ("session", "list"):
@@ -533,8 +549,10 @@ def test_execute_retries_submit_after_session_not_ready(monkeypatch: pytest.Monk
         text: bool,
         check: bool,
         timeout: float | None,
+        encoding: str | None = None,
+        errors: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text, check, timeout
+        del capture_output, text, check, timeout, encoding, errors
         op = tuple(args[1:3])
 
         if op == ("session", "list"):
@@ -634,8 +652,10 @@ def test_execute_timeout_attaches_and_returns_recovery_action(
         text: bool,
         check: bool,
         timeout: float | None,
+        encoding: str | None = None,
+        errors: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text, check, timeout
+        del capture_output, text, check, timeout, encoding, errors
         op = tuple(args[1:3])
 
         if op == ("session", "list"):
@@ -717,8 +737,10 @@ def test_execute_normalizes_legacy_mode_alias(monkeypatch: pytest.MonkeyPatch) -
         text: bool,
         check: bool,
         timeout: float | None,
+        encoding: str | None = None,
+        errors: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        del capture_output, text, check, timeout
+        del capture_output, text, check, timeout, encoding, errors
         op = tuple(args[1:3])
 
         if op == ("session", "list"):
