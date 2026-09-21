@@ -126,7 +126,7 @@ def test_version_output_branch_format() -> None:
         result = runner.invoke(main, ["--version"])
 
     assert result.exit_code == 0
-    assert re.search(r"TestPilot 0\.3\.7 \(main@abcdef1\)", result.output)
+    assert re.search(r"TestPilot 0.3.8 \(main@abcdef1\)", result.output)
 
 
 def test_version_git_commands_use_source_checkout_cwd() -> None:
@@ -187,7 +187,7 @@ def test_version_output_tag_format() -> None:
         result = runner.invoke(main, ["--version"])
 
     assert result.exit_code == 0
-    assert re.search(r"TestPilot 0\.3\.7 \(v0\.3\.7@2f7caf8\)", result.output)
+    assert re.search(r"TestPilot 0.3.8 \(v0.3.8@2f7caf8\)", result.output)
 
 
 def test_version_output_detached_head_format() -> None:
@@ -208,7 +208,7 @@ def test_version_output_detached_head_format() -> None:
         result = runner.invoke(main, ["--version"])
 
     assert result.exit_code == 0
-    assert re.search(r"TestPilot 0\.3\.7 \(commit@deadbee\)", result.output)
+    assert re.search(r"TestPilot 0.3.8 \(commit@deadbee\)", result.output)
 
 
 def test_version_output_when_git_absent() -> None:
@@ -225,7 +225,7 @@ def test_version_output_when_git_absent() -> None:
         result = runner.invoke(main, ["--version"])
 
     assert result.exit_code == 0
-    assert re.search(r"TestPilot 0\.3\.7 \(commit@unknown\)", result.output)
+    assert re.search(r"TestPilot 0.3.8 \(commit@unknown\)", result.output)
 
 
 def test_version_lists_discovered_plugins(monkeypatch) -> None:
