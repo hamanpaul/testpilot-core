@@ -40,7 +40,7 @@ def _set_serialwrap_bin(
 def test_run_sw_error_includes_stdout_when_stderr_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_run(cmd, capture_output, text, check, timeout):  # noqa: ANN001
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=2,
@@ -61,7 +61,7 @@ def test_run_sw_error_includes_stdout_when_stderr_empty(
 def test_run_sw_error_keeps_stderr_prefix_when_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fake_run(cmd, capture_output, text, check, timeout):  # noqa: ANN001
+    def fake_run(cmd, **kwargs):  # noqa: ANN001
         return subprocess.CompletedProcess(
             args=cmd,
             returncode=1,
@@ -96,7 +96,7 @@ def test_run_json_error_includes_stdout_when_stderr_empty(
 ) -> None:
     transport = _make_transport(monkeypatch)
 
-    def fake_run(args, capture_output, text, check, timeout):  # noqa: ANN001
+    def fake_run(args, capture_output, text, check, timeout, encoding=None, errors=None):  # noqa: ANN001
         return subprocess.CompletedProcess(
             args=args,
             returncode=2,
@@ -119,7 +119,7 @@ def test_run_json_error_keeps_stderr_prefix_when_present(
 ) -> None:
     transport = _make_transport(monkeypatch)
 
-    def fake_run(args, capture_output, text, check, timeout):  # noqa: ANN001
+    def fake_run(args, capture_output, text, check, timeout, encoding=None, errors=None):  # noqa: ANN001
         return subprocess.CompletedProcess(
             args=args,
             returncode=1,
