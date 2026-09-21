@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from testpilot.core.testbed_bootstrap import stage_plugin_testbed
+from testpilot.core.testbed_bootstrap import stage_plugin_testbed, staged_marker
 
 
 def _make_plugin(plugin_dir: Path, body: str) -> None:
@@ -22,7 +22,7 @@ def test_stage_copies_plugin_example_into_configs(tmp_path: Path) -> None:
     result = stage_plugin_testbed(plugin_dir, "wifi_llapi", configs_dir)
 
     assert result == configs_dir / "testbed.yaml"
-    assert result.read_text(encoding="utf-8") == "testbed:\n  name: wifi-bench\n"
+    assert result.read_text(encoding="utf-8") == staged_marker("wifi_llapi") + "testbed:\n  name: wifi-bench\n"
 
 
 def test_stage_overwrites_existing_configs_testbed(tmp_path: Path) -> None:
@@ -34,7 +34,7 @@ def test_stage_overwrites_existing_configs_testbed(tmp_path: Path) -> None:
 
     stage_plugin_testbed(plugin_dir, "wifi_llapi", configs_dir)
 
-    assert (configs_dir / "testbed.yaml").read_text(encoding="utf-8") == "testbed:\n  name: fresh\n"
+    assert (configs_dir / "testbed.yaml").read_text(encoding="utf-8") == staged_marker("wifi_llapi") + "testbed:\n  name: fresh\n"
 
 
 def test_stage_isolates_between_plugins(tmp_path: Path) -> None:
@@ -46,10 +46,10 @@ def test_stage_isolates_between_plugins(tmp_path: Path) -> None:
     _make_plugin(plugin_b_dir, "testbed:\n  name: brcm\n")
 
     stage_plugin_testbed(plugin_a_dir, "wifi_llapi", configs_dir)
-    assert (configs_dir / "testbed.yaml").read_text(encoding="utf-8") == "testbed:\n  name: wifi\n"
+    assert (configs_dir / "testbed.yaml").read_text(encoding="utf-8") == staged_marker("wifi_llapi") + "testbed:\n  name: wifi\n"
 
     stage_plugin_testbed(plugin_b_dir, "brcm_fw_upgrade", configs_dir)
-    assert (configs_dir / "testbed.yaml").read_text(encoding="utf-8") == "testbed:\n  name: brcm\n"
+    assert (configs_dir / "testbed.yaml").read_text(encoding="utf-8") == staged_marker("brcm_fw_upgrade") + "testbed:\n  name: brcm\n"
 
 
 def test_stage_creates_configs_dir_if_missing(tmp_path: Path) -> None:
@@ -81,3 +81,24 @@ def test_stage_raises_when_plugin_example_missing(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError) as exc:
         stage_plugin_testbed(plugin_dir, "wifi_llapi", configs_dir)
     assert "testbed.yaml.example" in str(exc.value)
+
+
+def test_stage_keeps_operator_edits_for_same_plugin(tmp_path: Path) -> None:
+    """Bench-specific edits (LAN addresses, station_driver) must survive re-runs of the same plugin."""
+    plugin_dir = tmp_path / "plugin-assets" / "wifi_llapi"
+    configs_dir = tmp_path / "configs"
+    configs_dir.mkdir()
+    _make_plugin(plugin_dir, "testbed:\n  variables:\n    STA_IP: 192.168.1.3\n")
+
+    staged = stage_plugin_testbed(plugin_dir, "wifi_llapi", configs_dir)
+    edited = staged.read_text(encoding="utf-8").replace("192.168.1.3", "192.168.1.250")
+    staged.write_text(edited, encoding="utf-8")
+
+    stage_plugin_testbed(plugin_dir, "wifi_llapi", configs_dir)
+    assert "192.168.1.250" in staged.read_text(encoding="utf-8")
+
+    # switching plugins still re-stages; coming back re-stages from the template (edits gone).
+    other_dir = tmp_path / "other-assets" / "brcm_fw_upgrade"
+    _make_plugin(other_dir, "testbed:\n  name: brcm\n")
+    stage_plugin_testbed(other_dir, "brcm_fw_upgrade", configs_dir)
+    assert "192.168.1.250" not in staged.read_text(encoding="utf-8")

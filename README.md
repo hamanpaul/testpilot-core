@@ -158,7 +158,7 @@ testpilot list-cases <plugin>
 testpilot run <plugin>
 ```
 
-> When a plugin context is resolved through the generic core path, the CLI stages that plugin's `testbed.yaml.example` into `configs/testbed.yaml`. The current implementation overwrites the effective file when switching plugin contexts; treat the plugin template as the source used for staging and keep project-specific configuration under version control in the plugin project rather than assuming the staged file is persistent.
+> When a plugin context is resolved through the generic core path, the CLI stages that plugin's `testbed.yaml.example` into `configs/testbed.yaml`. The staged file starts with a `# testpilot: staged from plugin '<name>'` marker line; while that marker matches the active plugin, operator edits to `configs/testbed.yaml` (bench-specific `variables`, `station_driver`, …) are kept across runs. The file is re-staged from the template only when it is missing, when the plugin context changes, or when it carries no marker (pre-marker staging).
 
 ### Managed Install and Update
 
@@ -454,7 +454,7 @@ testpilot list-cases <plugin>
 testpilot run <plugin>
 ```
 
-> 經 generic core path 解析 Plugin context 時，CLI 目前會把該 Plugin 的 `testbed.yaml.example` stage 到 `configs/testbed.yaml`；切換 Plugin 時會覆寫 effective file。不要把 staged file 當成永久設定來源，專案需要保存的環境設定應留在自己的 Plugin 專案中。
+> 經 generic core path 解析 Plugin context 時，CLI 會把該 Plugin 的 `testbed.yaml.example` stage 到 `configs/testbed.yaml`。staged 檔第一行帶 `# testpilot: staged from plugin '<name>'` 標記；標記與當前 Plugin 相符時，operator 對 `configs/testbed.yaml` 的編輯（bench 專屬 `variables`、`station_driver` 等）會跨 run 保留；只有缺檔、切換 Plugin、或舊版無標記檔才會重新從模板 staging。
 
 ### Managed Install 與 Update
 
