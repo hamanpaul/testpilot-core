@@ -9,6 +9,32 @@ preparation.
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-09-21
+
+### Changed
+- 調整 TestPilot Core 的公開定位與說明：README、package metadata、CLI help 與 SDK docstring 改以「plugin-based test automation and verification framework」描述，不再把 Core 限定為 embedded-only；同時保留目前主要實績仍集中於 embedded / real-hardware verification、其他 domain 需要自行開發與驗證 Plugin integration 的限制。並同步修正 release-flow 中已過時的 static-version / metadata-only release 敘述，使其對齊現行 dynamic version、GitHub Release wheel 與 managed-install 行為。
+- 同步 hamanpaul project policy 1.0.15 → 1.0.17。
+  
+  - `policy_version` 1.0.15 → 1.0.17（`.project-policy.yml` 與四份 agent convention 檔）。
+  - `workflow_ref` / `policy_engine_ref` 雙 pin 換為 v1.0.17 的
+    `9e7fabbf0b5eea9ad933fa6798764b723934a0b7`（`policy-check.yml` 與 `release.yml` 兩支，
+    `uses:` 尾註 `# v1.0.17`）。
+  - `tests/test_release_governance.py` 中寫死的 policy_version / managed-by 斷言同步更新。
+  
+  1.0.16／1.0.17 對下游 repo 未新增或變更任何規則，僅上游引擎自身的 distribution
+  identity、runtime bundle 與 release workflow 修正，故本次為純版本同步。1.0.16 引入
+  的引擎版本 gate（執行中引擎版本與 repo 宣告的 `policy_version` 不符即 fail-loud）
+  是本次同步的實益：pin SHA 與 `policy_version` 已同 PR 原子更新，本機
+  `policy_check` 預檢可與 CI 判定一致。
+- README 架構總覽圖改用 WebP（`docs/assets/testpilot-core-intro.webp`，quality 90），檔案由 1.89 MB 降到 0.29 MB（-84%），縮短 README 首圖載入時間；圖片內容與尺寸（1672x941）不變。
+
+### Fixed
+- Windows 可攜性（serialwrap client glue，#50 / #51）：
+  - `runtime/_serialwrap_log.py::_match_device_by_id` 改以 COM 名正規化比對（`COM5` / `\\.\COM5` / `com5` → `COM5`）；原本 `Path.resolve()` 會把裸 `COM5` 解析成 `<cwd>\COM5`，永遠對不到 serialwrap 回報的 `\\.\COM5`，只能靠 index fallback 碰運氣。POSIX 維持 `resolve()` 比對不變。
+  - `_run_sw`、`setup_sessions` 的 `session bind` `Popen`、`transport/serialwrap.py::_run_json` 一律 `encoding="utf-8", errors="replace"`；serialwrap 輸出固定 UTF-8，cp950 等 locale 預設編碼會在 reader thread 拋 `UnicodeDecodeError`。
+- 修正 README 架構總覽圖無法顯示的問題：`docs/assets/testpilot-core-intro.svg` 內嵌的 webp data URI 被截斷（RIFF header 宣告 174,676 bytes，實際只有 14,838 bytes，任何解碼器都無法還原），改以更新後的 `docs/assets/testpilot-core-intro.png`（2026-08-11 版，內容已對齊 framework positioning 說法）取代，並移除該壞掉的 svg。
+- `stage_plugin_testbed()` 不再每次執行都用 plugin 的 `testbed.yaml.example` 覆蓋 `configs/testbed.yaml`：staged 檔案第一行帶 `# testpilot: staged from plugin '<name>'` 標記，同一 plugin 再跑時保留 operator 的編輯（bench 專屬 `variables`、`station_driver` 等），只有缺檔、換 plugin 或舊版無標記檔才重新 staging。先前的無條件覆蓋讓 README 所說「Edit `configs/testbed.yaml` to match your lab」實際上不成立（2026-09-17 EIT bench：改好的 `STA_IP`/`DUT_LAN_IP` 每次被模板值蓋掉，流量刺激打到錯的主機）。
+
 ### Documentation
 - 新增 `docs/architecture/` 的來源固定架構事實、Archify JSON 與原生互動 HTML；涵蓋 Core / Plugin 控制權、custom runner、重試間修復、Transport / RunBackend 與報表產物，並加入 README 入口。
 - 新增固定工具版本的 architecture CI：核對 facts/IR、逐位元重建 HTML，並以 Chrome 驗證檔案開啟、桌面尺寸與互動功能。
