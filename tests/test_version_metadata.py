@@ -95,10 +95,10 @@ def test_version_file_matches_runtime() -> None:
 
 
 def test_all_versions_are_0_3_6() -> None:
-    """Release target: VERSION, pyproject.toml, and __init__.py must all be 0.3.7."""
-    assert _version_file_version() == "0.3.7"
-    assert _pyproject_version() == "0.3.7"
-    assert _runtime_version() == "0.3.7"
+    """Release target: VERSION, pyproject.toml, and __init__.py must all be 0.3.8."""
+    assert _version_file_version() == "0.3.8"
+    assert _pyproject_version() == "0.3.8"
+    assert _runtime_version() == "0.3.8"
 
 
 # --- Task 1.1: source-ref-aware testpilot --version ---
@@ -175,7 +175,7 @@ def test_version_output_tag_format() -> None:
             _R.stdout = ""
         elif "describe" in cmd and "--tags" in cmd:
             _R.returncode = 0
-            _R.stdout = "v0.3.7\n"
+            _R.stdout = "v0.3.8\n"
         elif "rev-parse" in cmd and "--short" in cmd:
             _R.stdout = "2f7caf8\n"
         else:
@@ -282,5 +282,5 @@ def test_version_plugin_failures_are_isolated(monkeypatch) -> None:
     result = CliRunner().invoke(main, ["--version"])
 
     assert result.exit_code == 0
-    assert result.output.startswith("TestPilot 0.3.7 (")
+    assert result.output.startswith("TestPilot 0.3.8 (")
     assert "plugin broken unknown (api unknown)" in result.output
