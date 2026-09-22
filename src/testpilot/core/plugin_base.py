@@ -263,14 +263,14 @@ class PluginBase(ABC):
                 step_data = dict(step) if isinstance(step, dict) else {"id": "step", "command": str(step)}
                 step_id = str(step_data.get("id", "step"))
                 cmd = stringify_step_command(step_data.get("command"))
-                if cmd:
-                    commands.append(cmd)
+                # Keep commands/outputs index-aligned per step: a step with no
+                # command text or no output (e.g. a station verb with no key=value
+                # lines) still occupies its slot in BOTH lists, otherwise every
+                # later entry shifts up by one and evidence gets attributed to
+                # the wrong step (2026-09-17 EIT bench D259/D402 trace misread).
+                commands.append(cmd)
                 result = self.execute_step(case, step_data, topology)
                 step_results[step_id] = result
-                # Keep outputs index-aligned with commands: a step that produced
-                # no text (e.g. a station verb with no key=value lines) still
-                # occupies its slot, otherwise every later output shifts up by
-                # one in agent_trace and evidence gets attributed to the wrong step.
                 outputs.append(str(result.get("output", "")).strip())
                 if not result.get("success", False):
                     comment = f"step failed: {step_id}"

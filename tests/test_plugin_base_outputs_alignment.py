@@ -46,3 +46,45 @@ def test_run_pipeline_keeps_empty_step_output_slot():
     result = plugin.run_pipeline(case, topology=None)
     assert result["commands"] == [s["command"] for s in case["steps"]]
     assert result["outputs"] == ["", "IperfSrv5g=up", "RxTime5g=0"]
+
+
+def test_run_pipeline_keeps_empty_command_slot_too():
+    """A step with no command text still occupies its commands[] slot (Copilot review on #49)."""
+    plugin = _AlignPlugin()
+    case = {
+        "id": "c2",
+        "steps": [
+            {"id": "bad_step", "fake_output": "x=1"},
+            {"id": "ok", "command": "echo ok", "fake_output": "ok=1"},
+        ],
+    }
+    result = plugin.run_pipeline(case, topology=None)
+    assert result["commands"] == ["", "echo ok"]
+    assert result["outputs"] == ["x=1", "ok=1"]
+    assert len(result["commands"]) == len(result["outputs"])
+
+
+def test_execution_engine_attempt_trace_keeps_slots_aligned(tmp_path):
+    """ExecutionEngine.execute_case_once (the agent_trace producer) keeps one slot per
+    executed step in both commands[] and outputs[]."""
+    from testpilot.core.execution_engine import ExecutionEngine
+
+    plugin = _AlignPlugin()
+    case = {
+        "id": "c3",
+        "steps": [
+            {"id": "s1", "command": "sta-verb sta_set_ip --band 5g --ip 1.2.3.4", "fake_output": ""},
+            {"id": "s2", "command": "iperf3 -s -D -1", "fake_output": "IperfSrv5g=up"},
+            {"id": "s3", "fake_output": "RxTime5g=0"},
+        ],
+    }
+    engine = ExecutionEngine(config=object())
+    outcome = engine.execute_case_once(
+        plugin,
+        case,
+        attempt_index=1,
+        attempt_timeout_seconds=30.0,
+        runner={"provider": "stub", "model": "test"},
+    )
+    assert outcome["commands"] == [case["steps"][0]["command"], case["steps"][1]["command"], ""]
+    assert outcome["outputs"] == ["", "IperfSrv5g=up", "RxTime5g=0"]

@@ -199,12 +199,12 @@ class ExecutionEngine:
 
                     result = plugin.execute_step(runtime_case, step_payload, topology=self.config)
                     step_results[step_id] = result
+                    # One slot per executed step in BOTH lists (empty string when a
+                    # step has no command text / no output) so agent_trace
+                    # attempts[].commands[i] always pairs with outputs[i].
                     executed_command = str(result.get("command", "")).strip() or command
-                    if executed_command:
-                        commands.append(executed_command)
-                    out = str(result.get("output", "")).strip()
-                    if out:
-                        outputs.append(out)
+                    commands.append(executed_command)
+                    outputs.append(str(result.get("output", "")).strip())
 
                     # post_step hook
                     self.hooks.dispatch(
