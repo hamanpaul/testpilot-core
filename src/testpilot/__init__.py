@@ -1,3 +1,3 @@
 """TestPilot — plugin-based test automation and verification framework."""
 
-__version__ = "0.3.8"
+__version__ = "0.3.9"
