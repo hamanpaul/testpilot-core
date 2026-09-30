@@ -4,6 +4,8 @@
 
 > **[English](#english)** ｜ **[繁體中文](#繁體中文)**
 
+> `wifi_llapi` has moved to GitLab. / `wifi_llapi` 已轉入 GitLab。
+
 ---
 
 ![TestPilot Core architecture overview](docs/assets/testpilot-core-intro.webp)
