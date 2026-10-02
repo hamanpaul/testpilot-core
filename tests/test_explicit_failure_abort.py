@@ -6,6 +6,7 @@ import pytest
 
 from testpilot.core.execution_engine import ExecutionEngine
 from testpilot.core.hook_policy import HookDispatcher, HookPolicyConfig
+from testpilot.core.remediation import RuntimeRemediationCoordinator
 
 
 @pytest.mark.parametrize("phase", ["setup", "verify", "step", "evaluate"])
@@ -292,6 +293,93 @@ def test_disabled_failure_hooks_preserve_validated_terminal_snapshot() -> None:
     assert result.failure_snapshot == snapshot
     assert result.attempts[0]["failure_snapshot"] == snapshot
     assert plugin.teardowns == 0
+
+
+@pytest.mark.parametrize(
+    "failure_identity",
+    [
+        {"case_id": "D001", "attempt_index": 1},
+        {"case_id": "D002", "attempt_index": 0},
+    ],
+)
+def test_mismatched_failure_snapshot_is_removed_before_remediation_hooks(
+    failure_identity: dict[str, Any],
+) -> None:
+    class Plugin:
+        setups: list[int] = []
+        teardown_calls = 0
+        decisions: list[tuple[str, str]] = []
+        executed: list[str] = []
+
+        def setup_env(self, case: dict[str, Any], **_kwargs: Any) -> bool:
+            attempt = int(case["_attempt_index"])
+            self.setups.append(attempt)
+            case["_last_failure"] = {
+                **failure_identity,
+                "phase": "setup_env",
+                "category": "environment",
+                "reason_code": "serial_session_not_ready",
+                "abort_run": True,
+                "abort_reason": "stale_abort",
+                "skip_teardown": True,
+            }
+            return False
+
+        def build_remediation_decision(
+            self,
+            case: dict[str, Any],
+            failure_snapshot: Any,
+            _topology: Any,
+            **_kwargs: Any,
+        ) -> dict[str, Any] | None:
+            reason = str(getattr(failure_snapshot, "reason_code", ""))
+            self.decisions.append((str(case.get("id", "")), reason))
+            if reason != "serial_session_not_ready":
+                return None
+            return {
+                "case_id": str(case["id"]),
+                "attempt_index": int(case.get("_attempt_index", 1)),
+                "summary": "stale recovery must not run",
+                "actions": [{"executor_key": "serial_session_recover", "device": "DUT"}],
+            }
+
+        def execute_remediation(self, _case: dict[str, Any], decision: Any, _topology: Any) -> dict[str, Any]:
+            self.executed.extend(action.executor_key for action in decision.actions)
+            return {"success": True, "verify_after": True, "comment": "ran stale recovery"}
+
+        def teardown(self, *_args: Any, **_kwargs: Any) -> None:
+            self.teardown_calls += 1
+
+    plugin = Plugin()
+    hooks = HookDispatcher(
+        HookPolicyConfig(enabled_hooks={"pre_case", "on_failure", "on_retry"}, fail_open=False)
+    )
+    coordinator = RuntimeRemediationCoordinator(
+        plugin=plugin,
+        topology=object(),
+        policy={"enabled": True, "allowed_actions": ["serial_session_recover"]},
+    )
+    hooks.register("pre_case", coordinator.handle_pre_case)
+    hooks.register("on_failure", coordinator.handle_on_failure)
+    hooks.register("on_retry", coordinator.handle_on_retry)
+
+    result = ExecutionEngine({}, hooks).execute_with_retry(
+        plugin=plugin,
+        case={"id": "D002", "steps": []},
+        runner={},
+        execution_policy={
+            "retry": {"max_attempts": 2},
+            "failure_policy": "retry_then_fail_and_continue",
+        },
+    )
+
+    assert result.abort_run is False
+    assert result.attempts_used == 2
+    assert plugin.setups == [1, 2]
+    assert plugin.decisions == [("D002", ""), ("D002", "")]
+    assert plugin.executed == []
+    # Mismatched skip_teardown is also ignored; the core runs ordinary cleanup.
+    assert plugin.teardown_calls == 2
 
 
 @pytest.mark.parametrize("phase", ["setup", "verify", "step", "evaluate"])

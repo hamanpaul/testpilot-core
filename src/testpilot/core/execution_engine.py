@@ -267,6 +267,13 @@ class ExecutionEngine:
         failure_snapshot = self._current_failure_snapshot(runtime_case)
         if failure_snapshot is not None:
             payload["failure_snapshot"] = dict(failure_snapshot)
+        else:
+            # Do not let a stale or malformed plugin snapshot influence
+            # coordinator decisions through the case argument. Keep the
+            # runtime case itself intact for result handling.
+            hook_case = dict(runtime_case)
+            hook_case.pop("_last_failure", None)
+            payload["case"] = hook_case
         if step_payload is not None:
             payload["step"] = dict(step_payload)
         if result is not None:
