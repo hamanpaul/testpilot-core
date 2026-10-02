@@ -10,6 +10,7 @@ Focuses on:
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
 import sys
 import textwrap
@@ -29,12 +30,16 @@ class _FakeEntryPoint:
         *,
         dist_name: str = "testpilot",
         dist_root: Path | None = None,
+        dist_files: list[Path] | None = None,
+        direct_url: str | None = None,
     ) -> None:
         self.name = name
         self.value = value
         self.dist = SimpleNamespace(name=dist_name, metadata={"Name": dist_name})
+        self.dist.files = dist_files
+        self.dist.read_text = lambda filename: direct_url if filename == "direct_url.json" else None
         if dist_root is not None:
-            self.dist.locate_file = lambda _path: dist_root
+            self.dist.locate_file = lambda path: dist_root / path if str(path) else dist_root
 
     def load(self):
         module_name, _, attr_name = self.value.partition(":")
@@ -93,6 +98,7 @@ def _write_install_health_plugin(
         f"{module_name}:Plugin",
         dist_name="health-fixture",
         dist_root=tmp_path,
+        dist_files=[Path(f"{module_name}.py")],
     )
 
 
@@ -501,8 +507,135 @@ class TestManagedCheckoutReport:
 
         assert exc_info.value.code == 1
         output = " ".join(str(call) for call in mock_console.print.call_args_list)
-        assert "outside its distribution" in output
+        assert "module ownership could not be verified" in output
         assert "OK ambient copy must not satisfy installed health" not in output
+
+    @pytest.mark.parametrize("record_files", [[], None], ids=["empty-record", "record-unavailable"])
+    def test_wheel_health_rejects_module_owned_by_another_distribution(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        record_files: list[Path] | None,
+    ) -> None:
+        """Shared site-packages containment does not prove per-distribution ownership."""
+        module_name = "wheel_health_wrong_distribution_plugin"
+        shared_site_packages = tmp_path / "site-packages"
+        shared_site_packages.mkdir()
+        entry_point = _write_install_health_plugin(
+            shared_site_packages,
+            module_name,
+            ok=True,
+            message="OK wrong-owner module",
+        )
+        # The module exists in site-packages but is not listed in this entry
+        # point distribution's RECORD; another wheel owns it.
+        entry_point.dist.files = record_files
+        monkeypatch.syspath_prepend(str(shared_site_packages))
+        monkeypatch.setattr(
+            "testpilot.cli.importlib.metadata.entry_points",
+            lambda *, group: [entry_point],
+        )
+        monkeypatch.setattr("testpilot.cli._probe_wheel_install", _healthy_wheel_probe)
+        mock_console = MagicMock()
+
+        with patch(
+            "testpilot.cli._get_managed_src", return_value=tmp_path / "no-checkout"
+        ):
+            with patch("testpilot.cli.console", mock_console):
+                with pytest.raises(SystemExit) as exc_info:
+                    _handle_verify_install()
+
+        assert exc_info.value.code == 1
+        output = " ".join(str(call) for call in mock_console.print.call_args_list)
+        assert "module ownership could not be verified" in output
+        assert "OK wrong-owner module" not in output
+
+    def test_wheel_health_rejects_editable_source_outside_declared_project(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Editable mode must use its PEP 610 source root, not shared site-packages."""
+        module_name = "wheel_health_wrong_editable_source_plugin"
+        shared_site_packages = tmp_path / "site-packages"
+        shared_site_packages.mkdir()
+        entry_point = _write_install_health_plugin(
+            shared_site_packages,
+            module_name,
+            ok=True,
+            message="OK wrong editable source",
+        )
+        editable_project = tmp_path / "editable-project"
+        editable_project.mkdir()
+        entry_point.dist.files = None
+        entry_point.dist.read_text = lambda filename: (
+            json.dumps(
+                {"url": editable_project.as_uri(), "dir_info": {"editable": True}}
+            )
+            if filename == "direct_url.json"
+            else None
+        )
+        monkeypatch.syspath_prepend(str(shared_site_packages))
+        monkeypatch.setattr(
+            "testpilot.cli.importlib.metadata.entry_points",
+            lambda *, group: [entry_point],
+        )
+        monkeypatch.setattr("testpilot.cli._probe_wheel_install", _healthy_wheel_probe)
+        mock_console = MagicMock()
+
+        with patch(
+            "testpilot.cli._get_managed_src", return_value=tmp_path / "no-checkout"
+        ):
+            with patch("testpilot.cli.console", mock_console):
+                with pytest.raises(SystemExit) as exc_info:
+                    _handle_verify_install()
+
+        assert exc_info.value.code == 1
+        output = " ".join(str(call) for call in mock_console.print.call_args_list)
+        assert "module ownership could not be verified" in output
+        assert "OK wrong editable source" not in output
+
+    def test_wheel_health_accepts_editable_module_from_declared_project_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """PEP 610 editable installs are verified against their declared source root."""
+        module_name = "wheel_health_verified_editable_plugin"
+        shared_site_packages = tmp_path / "site-packages"
+        shared_site_packages.mkdir()
+        editable_project = tmp_path / "editable-project"
+        editable_project.mkdir()
+        entry_point = _write_install_health_plugin(
+            editable_project,
+            module_name,
+            ok=True,
+            message="OK editable plugin health",
+        )
+        entry_point.dist.locate_file = (
+            lambda path: shared_site_packages / path if str(path) else shared_site_packages
+        )
+        entry_point.dist.files = None
+        entry_point.dist.read_text = lambda filename: (
+            json.dumps(
+                {"url": editable_project.as_uri(), "dir_info": {"editable": True}}
+            )
+            if filename == "direct_url.json"
+            else None
+        )
+        monkeypatch.syspath_prepend(str(editable_project))
+        monkeypatch.setattr(
+            "testpilot.cli.importlib.metadata.entry_points",
+            lambda *, group: [entry_point],
+        )
+        monkeypatch.setattr("testpilot.cli._probe_wheel_install", _healthy_wheel_probe)
+        mock_console = MagicMock()
+
+        with patch(
+            "testpilot.cli._get_managed_src", return_value=tmp_path / "no-checkout"
+        ):
+            with patch("testpilot.cli.console", mock_console):
+                _handle_verify_install()
+
+        output = " ".join(str(call) for call in mock_console.print.call_args_list)
+        assert "OK editable plugin health" in output
+        assert "verify-install: all checks passed" in output
 
     def test_wheel_verify_fails_closed_when_declared_plugin_health_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import importlib.metadata
 import importlib.resources
+import json
 import logging
 import os
 import re
@@ -13,6 +14,8 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import click
 from dataclasses import dataclass
@@ -366,7 +369,7 @@ def _entry_point_module_prefixes(entry_point: object) -> tuple[str, ...]:
 
 
 def _entry_point_import_root(entry_point: object) -> Path | None:
-    """Return the distribution root that owns an installed entry point."""
+    """Return the import search root exposed by an installed distribution."""
     distribution = getattr(entry_point, "dist", None)
     locate_file = getattr(distribution, "locate_file", None)
     if not callable(locate_file):
@@ -377,23 +380,78 @@ def _entry_point_import_root(entry_point: object) -> Path | None:
         return None
 
 
-def _plugin_module_is_under_root(plugin: object, import_root: Path) -> bool:
-    """Confirm the imported plugin implementation came from its selected root."""
-    module = sys.modules.get(getattr(plugin.__class__, "__module__", ""))
-    if module is None:
+def _entry_point_module_origin(entry_point: object) -> Path | None:
+    """Return the resolved source file for the module declared by the entry point."""
+    declared_module = str(getattr(entry_point, "value", "")).partition(":")[0].strip()
+    if not declared_module:
+        return None
+    module = sys.modules.get(declared_module)
+    origin = getattr(module, "__file__", None) if module is not None else None
+    if not origin:
+        return None
+    try:
+        return Path(origin).resolve()
+    except Exception:
+        return None
+
+
+def _path_is_under_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except Exception:
         return False
-    root = import_root.resolve()
-    origins = [getattr(module, "__file__", None)]
-    origins.extend(getattr(module, "__path__", ()) or ())
-    for origin in origins:
-        if not origin:
-            continue
-        try:
-            Path(origin).resolve().relative_to(root)
+
+
+def _editable_distribution_root(distribution: object) -> Path | None:
+    """Return a local PEP 610 source root only for an explicitly editable install."""
+    read_text = getattr(distribution, "read_text", None)
+    if not callable(read_text):
+        return None
+    try:
+        direct_url_text = read_text("direct_url.json")
+        direct_url = json.loads(direct_url_text) if isinstance(direct_url_text, str) else {}
+        if direct_url.get("dir_info", {}).get("editable") is not True:
+            return None
+        parsed = urlparse(direct_url.get("url", ""))
+        if parsed.scheme != "file" or parsed.netloc not in ("", "localhost"):
+            return None
+        source_root = Path(url2pathname(parsed.path)).resolve()
+        return source_root if source_root.is_dir() else None
+    except Exception:
+        return None
+
+
+def _plugin_module_is_owned_by_entry_point(
+    entry_point: object, *, import_root: Path | None = None
+) -> bool:
+    """Verify module origin by checkout root, wheel RECORD, or editable source root."""
+    origin = _entry_point_module_origin(entry_point)
+    if origin is None:
+        return False
+    if import_root is not None:
+        return _path_is_under_root(origin, import_root)
+
+    distribution = getattr(entry_point, "dist", None)
+    locate_file = getattr(distribution, "locate_file", None)
+    try:
+        record_files = getattr(distribution, "files", None)
+        if record_files is not None:
+            record_files = list(record_files)
+    except Exception:
+        record_files = None
+    if record_files is not None and callable(locate_file):
+        owned_paths: set[Path] = set()
+        for record_file in record_files:
+            try:
+                owned_paths.add(Path(locate_file(record_file)).resolve())
+            except Exception:
+                continue
+        if origin in owned_paths:
             return True
-        except (OSError, ValueError, TypeError):
-            continue
-    return False
+
+    editable_root = _editable_distribution_root(distribution)
+    return editable_root is not None and _path_is_under_root(origin, editable_root)
 
 
 def _check_plugin_health_entry_points(
@@ -458,11 +516,13 @@ def _check_plugin_health_entry_points(
         try:
             importlib.invalidate_caches()
             plugin = loader.load(name)
-            if not _plugin_module_is_under_root(plugin, preferred_root):
+            if not _plugin_module_is_owned_by_entry_point(
+                entry_point, import_root=import_root
+            ):
                 checks.append(
                     (
                         False,
-                        f"FAIL plugin_health {name}: plugin module loaded outside its distribution",
+                        f"FAIL plugin_health {name}: module ownership could not be verified",
                     )
                 )
                 continue
