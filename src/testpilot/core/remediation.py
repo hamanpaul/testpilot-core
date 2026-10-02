@@ -641,6 +641,11 @@ class RuntimeRemediationCoordinator:
             }
             state["pending_decision"] = None
             data["remediation_trace_entry"] = trace_entry.to_dict()
+            if execution.get("abort_run") is True:
+                data["abort_run"] = True
+                data["abort_reason"] = execution["abort_reason"]
+                self._project_state(state, data)
+                return HookResult(proceed=False, advice=execution["abort_reason"])
 
         if (
             self.tier2_enabled
@@ -803,6 +808,8 @@ class RuntimeRemediationCoordinator:
         )
         return {
             "success": bool(result_map.get("success", False)),
+            "abort_run": result_map.get("abort_run") is True,
+            "abort_reason": str(sanitize_tier2_value(result_map.get("abort_reason") or "remediation_readiness_failed")),
             "verify_after": verify_after,
             "comment": str(result_map.get("comment", "") or ""),
             "actions": [

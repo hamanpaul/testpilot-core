@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
+import json
 import logging
 from pathlib import Path
 import time
@@ -200,6 +201,8 @@ def _build_case_trace_payload(
             "attempts_used": retry_result.attempts_used,
             "comment": retry_result.comment,
             "diagnostic_status": retry_result.diagnostic_status,
+            "abort_run": bool(getattr(retry_result, "abort_run", False)),
+            "abort_reason": str(getattr(retry_result, "abort_reason", "")),
         },
         "diagnostic_status": retry_result.diagnostic_status,
         "remediation_history": retry_result.remediation_history or [],
@@ -346,6 +349,20 @@ def run(
                     case_id=case_id,
                 )
             )
+            if getattr(retry_result, "abort_run", False) is True:
+                # Later cases were never executed and must not acquire verdicts.
+                abort_summary = {
+                    "case_id": case_id,
+                    "reason": retry_result.abort_reason,
+                    "executed_case_count": len(case_records),
+                    "requested_case_count": len(cases),
+                    "unexecuted_case_ids": [str(item.get("id", "?")) for item in cases[case_ordinal:]],
+                }
+                prepared_artifacts["run_abort"] = abort_summary
+                (artifact_dir / "run-abort.json").write_text(
+                    json.dumps(abort_summary, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                break
     except Exception as exc:
         loop_error = exc
 
@@ -480,6 +497,9 @@ def run(
     # pointers are attached only after plugin reporting has completed.
     run_result.artifacts["core_agent_analysis"] = run_analysis.to_dict()
     if isinstance(payload, dict):
+        if "run_abort" in run_result.artifacts:
+            payload["status"] = "aborted"
+            payload["run_abort"] = dict(run_result.artifacts["run_abort"])
         payload.setdefault(
             "agent_session_degraded",
             getattr(

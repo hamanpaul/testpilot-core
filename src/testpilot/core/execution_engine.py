@@ -31,6 +31,8 @@ class RetryResult:
     failure_snapshot: dict[str, Any] | None = None
     tier2_audit: list[dict[str, Any]] | None = None
     agent_recovered: bool = False
+    abort_run: bool = False
+    abort_reason: str = ""
 
 
 class ExecutionEngine:
@@ -296,6 +298,8 @@ class ExecutionEngine:
         remediation_history: list[dict[str, Any]] = []
         tier2_audit: list[dict[str, Any]] = []
         agent_recovered = False
+        abort_run = False
+        abort_reason = ""
 
         # pre_case hook
         pre_case_payload = {
@@ -347,6 +351,12 @@ class ExecutionEngine:
                 retry_failure = retry_payload.get("failure_snapshot")
                 if isinstance(retry_failure, dict):
                     final_failure_snapshot = dict(retry_failure)
+                if retry_payload.get("abort_run") is True:
+                    abort_run = True
+                    abort_reason = str(retry_payload.get("abort_reason") or "remediation_readiness_failed")
+                    final_verdict = False
+                    final_comment = retry_hook_result.advice or abort_reason
+                    break
                 if not retry_hook_result.proceed:
                     final_verdict = False
                     final_comment = (
@@ -469,6 +479,8 @@ class ExecutionEngine:
             failure_snapshot=final_failure_snapshot,
             tier2_audit=tier2_audit,
             agent_recovered=agent_recovered,
+            abort_run=abort_run,
+            abort_reason=abort_reason,
         )
 
     @staticmethod
