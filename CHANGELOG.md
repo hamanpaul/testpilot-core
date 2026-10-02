@@ -13,6 +13,8 @@ preparation.
 
 - Abort before retry or cleanup when serial command acceptance/execution is unknown or explicitly non-replayable; preserve structured command evidence in attempt traces and avoid automatic attach after an accepted-command status timeout.
 
+- Honor identity-matched plugin terminal failure snapshots at any attempt, with an explicit opt-in to suppress unsafe teardown; merge structured transport uncertainty across failure results, exceptions, hook payloads, and current-attempt metadata without letting benign projections erase it.
+
 - Attach operator-bound logical serialwrap selectors without rebinding them by physical port enumeration; reject missing or ambiguous explicit identities before session writes.
 
 - Stop the sequential run after an explicit unrecovered-environment remediation abort, preserving the failed attempt and listing unexecuted cases in an abort artifact.

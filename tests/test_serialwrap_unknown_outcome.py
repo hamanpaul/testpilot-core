@@ -47,7 +47,11 @@ def test_unknown_outcome_stops_retry_and_cleanup(where, evidence):
         def setup_env(self, case, **kw):
             self.setups += 1
             if where == "setup":
-                case["_last_failure"] = {"metadata": evidence}
+                case["_last_failure"] = {
+                    "case_id": case["id"],
+                    "attempt_index": case["_attempt_index"],
+                    "metadata": evidence,
+                }
                 return False
             return True
         def verify_env(self, *a, **k):
