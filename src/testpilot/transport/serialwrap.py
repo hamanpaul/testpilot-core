@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import subprocess
 import time
@@ -158,6 +159,72 @@ class SerialWrapTransport(TransportBase):
 
         return self._submit_and_poll(command, timeout)
 
+    def estimate_execute_time_budget_s(self, command: str, timeout: float) -> float:
+        """Estimate the timeout-derived wall budget for one ``execute`` call.
+
+        The estimate follows the same threshold, newline/chunk staging, stage
+        timeout, and final-command timeout as :meth:`execute`. Each submitted
+        transaction is budgeted for its submit CLI timeout, status-poll
+        deadline, one final status RPC that may cross that deadline, and one
+        configured poll interval. A submit and the final status RPC may each
+        incur one known-safe ``SESSION_NOT_READY`` attach and retry; unknown,
+        accepted, partial, ambiguous, or otherwise non-replayable receipts are
+        never retried. OS subprocess start/termination/reap and scheduler
+        latency are outside this timeout-derived estimate.
+
+        This pure estimate is intended for callers that must fit a whole
+        transport call into a larger deadline.  It does not submit commands or
+        require an attached session.
+        """
+        if not isinstance(command, str):
+            raise TypeError("command must be a string")
+        try:
+            timeout_s = max(float(timeout), 0.1)
+            poll_interval_s = float(self._poll_interval)
+            attach_timeout_s = float(self._session_attach_timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "timeout, poll interval, and session attach timeout must be numeric"
+            ) from exc
+        if not math.isfinite(timeout_s):
+            raise ValueError("timeout must be finite")
+        if not math.isfinite(poll_interval_s) or poll_interval_s < 0:
+            raise ValueError("poll interval must be finite and non-negative")
+        if not math.isfinite(attach_timeout_s) or attach_timeout_s < 0:
+            raise ValueError("session attach timeout must be finite and non-negative")
+
+        def transaction_budget(transaction_timeout_s: float) -> float:
+            submit_cli_timeout_s = transaction_timeout_s + 2.0
+            status_cli_timeout_s = min(transaction_timeout_s + 1.0, 5.0)
+            # `_run_json(cmd submit)` gets t+2. `_poll_status` has a fresh
+            # t+1 deadline, can sleep once past it, and then may run one last
+            # status CLI call whose timeout is min(t+1, 5). Either that final
+            # status request or the submit may receive one known-safe
+            # SESSION_NOT_READY response and incur one attach plus one retry.
+            return (
+                submit_cli_timeout_s
+                + transaction_timeout_s
+                + 1.0
+                + poll_interval_s
+                + status_cli_timeout_s
+                + attach_timeout_s
+                + submit_cli_timeout_s
+                + attach_timeout_s
+                + status_cli_timeout_s
+            )
+
+        if len(command) <= _MAX_SERIAL_LINE_LENGTH:
+            return transaction_budget(timeout_s)
+
+        stage_transactions = sum(
+            len(self._sq_chunks(line)) for line in command.split("\n")
+        )
+        setup_timeout_s = min(timeout_s, 10.0)
+        return (
+            stage_transactions * transaction_budget(setup_timeout_s)
+            + transaction_budget(timeout_s)
+        )
+
     # ------------------------------------------------------------------
     # Long-command handler: stage to temp script, execute via ``sh``
     # ------------------------------------------------------------------
@@ -185,7 +252,14 @@ class SerialWrapTransport(TransportBase):
                     f"printf '{fmt}' '{chunk}' {redir} {_TEMPSCRIPT}",
                     setup_timeout,
                 )
-                if staged.get("returncode") != 0 or staged.get("partial") or staged.get("non_replayable"):
+                staged_outcome = str(staged.get("outcome") or "").strip().lower()
+                if (
+                    staged.get("returncode") != 0
+                    or staged.get("partial")
+                    or staged.get("non_replayable")
+                    or staged.get("ambiguous") is True
+                    or staged_outcome in {"accepted", "unknown", "ambiguous"}
+                ):
                     # Never execute a partially written script or repeat an
                     # ambiguous write. Retain the original broker evidence.
                     return staged
@@ -318,7 +392,13 @@ class SerialWrapTransport(TransportBase):
         cmd.extend(args)
         return cmd
 
-    def _run_json(self, args: list[str], timeout: float | None = None) -> dict[str, Any]:
+    def _run_json(
+        self,
+        args: list[str],
+        timeout: float | None = None,
+        *,
+        _attach_retry_count: int = 0,
+    ) -> dict[str, Any]:
         try:
             completed = subprocess.run(
                 self._build_cli(args),
@@ -369,9 +449,16 @@ class SerialWrapTransport(TransportBase):
         if not isinstance(payload, dict):
             raise RuntimeError(f"serialwrap response must be JSON object: {stdout!r}")
         if payload.get("ok") is False:
-            if self._should_retry_with_attach(args, payload):
+            if (
+                _attach_retry_count < 1
+                and self._should_retry_with_attach(args, payload)
+            ):
                 self._attach_session()
-                return self._run_json(args, timeout=timeout)
+                return self._run_json(
+                    args,
+                    timeout=timeout,
+                    _attach_retry_count=_attach_retry_count + 1,
+                )
             raise SerialWrapCommandError(f"serialwrap command not ok: {' '.join(args)}: {stdout}", payload)
         return payload
 
@@ -406,11 +493,14 @@ class SerialWrapTransport(TransportBase):
         return payload
 
     def _should_retry_with_attach(self, args: list[str], payload: dict[str, Any]) -> bool:
+        outcome = str(payload.get("outcome") or "").strip().lower()
         if (
             payload.get("non_replayable") is True
             or payload.get("partial") is True
-            or str(payload.get("outcome") or "").lower() in {"unknown", "ambiguous"}
+            or payload.get("ambiguous") is True
+            or outcome in {"accepted", "unknown", "ambiguous"}
             or payload.get("cmd_id")
+            or payload.get("retryable") is False
         ):
             return False
         if len(args) >= 2 and args[:2] == ["session", "attach"]:

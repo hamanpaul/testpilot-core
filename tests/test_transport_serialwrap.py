@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from testpilot.serialwrap_binary import SERIALWRAP_BIN_ENV
-from testpilot.transport.serialwrap import SerialWrapTransport
+from testpilot.transport.serialwrap import SerialWrapCommandError, SerialWrapTransport
 
 
 def _cp(args: list[str], payload: dict[str, Any], returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -638,6 +638,89 @@ def test_execute_retries_submit_after_session_not_ready(monkeypatch: pytest.Monk
     assert state["submit_calls"] == 2
 
 
+def test_repeated_session_not_ready_has_one_attach_retry_and_preserves_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = {"submit_calls": 0, "attach_calls": 0}
+    retry_error = {
+        "ok": False,
+        "error_code": "SESSION_NOT_READY",
+        "retryable": True,
+        "message": "session still settling",
+    }
+
+    def fake_run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if args[1:3] == ["cmd", "submit"]:
+            state["submit_calls"] += 1
+            return _cp(args, retry_error)
+        raise AssertionError(f"unexpected subprocess call: {args}")
+
+    transport = SerialWrapTransport.__new__(SerialWrapTransport)
+    transport._binary = "/tmp/serialwrap"
+    transport._socket = None
+    transport._selector = "COM0"
+
+    def fake_attach() -> dict[str, Any]:
+        state["attach_calls"] += 1
+        return {"ok": True, "session": {"state": "READY"}}
+
+    transport._attach_session = fake_attach
+    monkeypatch.setattr("testpilot.transport.serialwrap.subprocess.run", fake_run)
+
+    with pytest.raises(SerialWrapCommandError) as caught:
+        transport._run_json(["cmd", "submit", "--selector", "COM0"], timeout=3.0)
+
+    assert caught.value.result == retry_error
+    assert state == {"submit_calls": 2, "attach_calls": 1}
+
+
+@pytest.mark.parametrize(
+    "safety_fields",
+    [
+        {"outcome": "accepted", "retryable": True},
+        {"outcome": "unknown", "retryable": True},
+        {"ambiguous": True, "retryable": True},
+        {"partial": True, "retryable": True},
+        {"cmd_id": "cmd-accepted", "retryable": True},
+        {"non_replayable": True, "retryable": True},
+        {"retryable": False},
+    ],
+)
+def test_session_not_ready_safety_evidence_blocks_attach_retry(
+    safety_fields: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    error_payload = {
+        "ok": False,
+        "error_code": "SESSION_NOT_READY",
+        **safety_fields,
+    }
+    state = {"submit_calls": 0, "attach_calls": 0}
+
+    def fake_run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        state["submit_calls"] += 1
+        return _cp(args, error_payload)
+
+    transport = SerialWrapTransport.__new__(SerialWrapTransport)
+    transport._binary = "/tmp/serialwrap"
+    transport._socket = None
+    transport._selector = "COM0"
+
+    def fake_attach() -> dict[str, Any]:
+        state["attach_calls"] += 1
+        return {"ok": True, "session": {"state": "READY"}}
+
+    transport._attach_session = fake_attach
+    monkeypatch.setattr("testpilot.transport.serialwrap.subprocess.run", fake_run)
+
+    with pytest.raises(SerialWrapCommandError) as caught:
+        transport._run_json(["cmd", "submit", "--selector", "COM0"], timeout=3.0)
+
+    assert caught.value.result == error_payload
+    assert state == {"submit_calls": 1, "attach_calls": 0}
+
+
 def test_execute_timeout_preserves_unknown_outcome_without_attach(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -890,3 +973,115 @@ def test_execute_via_tempscript_stages_chunks(monkeypatch: pytest.MonkeyPatch) -
     # All printf commands must be under the serial limit
     for cmd in submitted[:-1]:
         assert len(cmd) <= _MAX_SERIAL_LINE_LENGTH, f"too long: {len(cmd)}"
+
+
+@pytest.mark.parametrize(
+    "unsafe_fields",
+    [
+        {"outcome": "accepted"},
+        {"outcome": "unknown"},
+        {"outcome": "ambiguous"},
+        {"ambiguous": True},
+    ],
+)
+def test_execute_via_tempscript_stops_after_unsafe_staging_result(
+    unsafe_fields: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    submitted: list[str] = []
+    result = {"returncode": 0, "stdout": "", "stderr": "", **unsafe_fields}
+
+    def fake_submit(self, command: str, timeout: float = 30.0) -> dict[str, Any]:
+        del self, timeout
+        submitted.append(command)
+        return result
+
+    monkeypatch.setattr(SerialWrapTransport, "_submit_and_poll", fake_submit)
+    transport = SerialWrapTransport.__new__(SerialWrapTransport)
+    transport._connected = True
+    transport._selector = "COM0"
+
+    actual = transport.execute("x" * 130, timeout=10.0)
+
+    assert actual is result
+    assert len(submitted) == 1
+    assert submitted[0].startswith("printf '%s")
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_stage_transactions"),
+    [
+        ("x" * 120, 0),
+        ("x" * 121, 2),
+        (
+            "pid=$(pgrep -f '/tmp/wl1_hapd.conf' 2>/dev/null | head -n1); "
+            'if [ -n "$pid" ]; then kill -HUP "$pid" 2>/dev/null || true; fi',
+            2,
+        ),
+        ("a" * 60 + "\n" + "b" * 60 + "\n" + "c" * 5, 3),
+        ("'" * 130, 7),
+    ],
+)
+def test_estimated_execute_budget_matches_submit_transactions(
+    command: str,
+    expected_stage_transactions: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    submitted_timeouts: list[float] = []
+
+    def fake_submit(self, command, timeout=30.0):
+        submitted_timeouts.append(timeout)
+        return {"returncode": 0, "stdout": "", "stderr": "", "partial": False}
+
+    monkeypatch.setattr(SerialWrapTransport, "_submit_and_poll", fake_submit)
+    transport = SerialWrapTransport.__new__(SerialWrapTransport)
+    transport._connected = True
+    transport._selector = "COM0"
+    transport._poll_interval = 0.25
+    transport._session_attach_timeout = 10.0
+
+    estimate = transport.estimate_execute_time_budget_s(command, timeout=30.0)
+    result = transport.execute(command, timeout=30.0)
+
+    assert result["returncode"] == 0
+    assert len(submitted_timeouts) == expected_stage_transactions + 1
+    assert submitted_timeouts[:-1] == [10.0] * expected_stage_transactions
+    assert submitted_timeouts[-1] == 30.0
+
+    def transaction_budget(timeout: float) -> float:
+        submit_timeout = timeout + 2.0
+        status_timeout = min(timeout + 1.0, 5.0)
+        return (
+            submit_timeout
+            + timeout
+            + 1.0
+            + 0.25
+            + status_timeout
+            + 10.0
+            + submit_timeout
+            + 10.0
+            + status_timeout
+        )
+
+    assert estimate == pytest.approx(
+        sum(transaction_budget(timeout) for timeout in submitted_timeouts)
+    )
+
+
+def test_estimated_execute_budget_includes_bounded_session_recovery() -> None:
+    transport = SerialWrapTransport.__new__(SerialWrapTransport)
+    transport._poll_interval = 0.25
+    transport._session_attach_timeout = 10.0
+
+    timeout = 5.0
+    estimate = transport.estimate_execute_time_budget_s("echo ok", timeout=timeout)
+    submit_timeout = timeout + 2.0
+    status_timeout = min(timeout + 1.0, 5.0)
+    base = submit_timeout + timeout + 1.0 + 0.25 + status_timeout
+    recovery = (
+        transport._session_attach_timeout
+        + submit_timeout
+        + transport._session_attach_timeout
+        + status_timeout
+    )
+
+    assert estimate == pytest.approx(base + recovery)

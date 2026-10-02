@@ -21,6 +21,8 @@ preparation.
 
 - Preserve serialwrap broker rejection and terminal-command safety metadata for plugin readiness policies; stop long-command staging after a failed or ambiguous script write.
 
+- Expose a side-effect-free serialwrap execute-budget estimator for every staged-script transaction, including one bounded known-safe session attach/retry per submit and final status RPC; stop staged writes and retries when structured accepted/unknown/partial/ambiguous evidence makes the outcome unsafe.
+
 ## [0.3.9] - 2026-09-22
 
 ### Fixed
