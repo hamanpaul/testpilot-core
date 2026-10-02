@@ -8,7 +8,13 @@ The complete pytest suite passed **840 passed, 1 skipped in 31.57s** with the wo
 
 An earlier run used a PATH that omitted the operator CLI directory. It failed with 28 failures and 2 errors (810 passed, 1 skipped), including missing serialwrap and uv binaries. Correcting PATH resolved the full suite; the earlier run is not acceptance evidence.
 
-## Live boundary
+## 2026-10-03 installed-module ownership follow-up
+
+The combined core source is now frozen at `b05faed` after integrating reviewed commits `6dc314e` and `60ecedd`. Wheel health verification checks both the entry-point shim and the Plugin class implementation against distribution RECORD membership or the editable installation's PEP 610 source root. A shim owned by the distribution cannot authorize a class imported from an unowned module. The regression also verifies imported implementation modules are removed after checking. These are module-origin checks, not content-hash validation of every installed dependency.
+
+The complete combined suite passed **845 passed, 1 skipped in 24.76s**, using the same immutable plugin wheel input and matching Python 3.11/PATH/source binding as above. Policy check: **25 pass, 0 fail, 1 pre-existing R-22 advisory**. The independent exact-commit review found no blocking findings within the assigned ownership/root-binding/isolated-verification scope. Live EIT acceptance of this final core remains pending.
+
+## Live candidate boundary
 
 The EIT interim candidate uses core `0f358be4` and plugin `a3ec1d45`, before the root-binding/API 1.3 integration. Its explicit serialwrap 0.3.0 client matches the existing 0.3.0 daemon. Installed-wheel `--verify-install` executes the plugin hook and reports all checks passed with no warnings when SERIALWRAP_BIN points to that existing CLI. An earlier omitted-binary invocation produced warnings and is not proof of daemon health. These checks did not restart the daemon or establish candidate UART compatibility beyond the current pinned client.
 
