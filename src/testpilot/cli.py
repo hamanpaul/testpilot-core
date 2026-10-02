@@ -360,12 +360,16 @@ def _managed_plugin_entry_points(managed_src: Path) -> list[object]:
     ]
 
 
-def _entry_point_module_prefixes(entry_point: object) -> tuple[str, ...]:
-    module_name = str(getattr(entry_point, "value", "")).partition(":")[0].strip()
+def _module_name_prefixes(module_name: str) -> tuple[str, ...]:
     if not module_name:
         return ()
     parts = module_name.split(".")
     return tuple(".".join(parts[:index]) for index in range(1, len(parts) + 1))
+
+
+def _entry_point_module_prefixes(entry_point: object) -> tuple[str, ...]:
+    module_name = str(getattr(entry_point, "value", "")).partition(":")[0].strip()
+    return _module_name_prefixes(module_name)
 
 
 def _entry_point_import_root(entry_point: object) -> Path | None:
@@ -380,19 +384,25 @@ def _entry_point_import_root(entry_point: object) -> Path | None:
         return None
 
 
-def _entry_point_module_origin(entry_point: object) -> Path | None:
-    """Return the resolved source file for the module declared by the entry point."""
+def _plugin_module_origins(plugin: object, entry_point: object) -> tuple[Path, ...] | None:
+    """Return source files for the declared entry point and its Plugin class."""
     declared_module = str(getattr(entry_point, "value", "")).partition(":")[0].strip()
-    if not declared_module:
+    class_module = str(getattr(plugin.__class__, "__module__", "")).strip()
+    module_names = tuple(dict.fromkeys(name for name in (declared_module, class_module) if name))
+    if not module_names:
         return None
-    module = sys.modules.get(declared_module)
-    origin = getattr(module, "__file__", None) if module is not None else None
-    if not origin:
-        return None
-    try:
-        return Path(origin).resolve()
-    except Exception:
-        return None
+
+    origins: list[Path] = []
+    for module_name in module_names:
+        module = sys.modules.get(module_name)
+        origin = getattr(module, "__file__", None) if module is not None else None
+        if not origin:
+            return None
+        try:
+            origins.append(Path(origin).resolve())
+        except Exception:
+            return None
+    return tuple(dict.fromkeys(origins))
 
 
 def _path_is_under_root(path: Path, root: Path) -> bool:
@@ -423,14 +433,14 @@ def _editable_distribution_root(distribution: object) -> Path | None:
 
 
 def _plugin_module_is_owned_by_entry_point(
-    entry_point: object, *, import_root: Path | None = None
+    plugin: object, entry_point: object, *, import_root: Path | None = None
 ) -> bool:
-    """Verify module origin by checkout root, wheel RECORD, or editable source root."""
-    origin = _entry_point_module_origin(entry_point)
-    if origin is None:
+    """Verify shim and Plugin class origins by checkout, RECORD, or editable root."""
+    origins = _plugin_module_origins(plugin, entry_point)
+    if not origins:
         return False
     if import_root is not None:
-        return _path_is_under_root(origin, import_root)
+        return all(_path_is_under_root(origin, import_root) for origin in origins)
 
     distribution = getattr(entry_point, "dist", None)
     locate_file = getattr(distribution, "locate_file", None)
@@ -447,11 +457,13 @@ def _plugin_module_is_owned_by_entry_point(
                 owned_paths.add(Path(locate_file(record_file)).resolve())
             except Exception:
                 continue
-        if origin in owned_paths:
+        if all(origin in owned_paths for origin in origins):
             return True
 
     editable_root = _editable_distribution_root(distribution)
-    return editable_root is not None and _path_is_under_root(origin, editable_root)
+    return editable_root is not None and all(
+        _path_is_under_root(origin, editable_root) for origin in origins
+    )
 
 
 def _check_plugin_health_entry_points(
@@ -498,9 +510,10 @@ def _check_plugin_health_entry_points(
             continue
 
         prefixes = _entry_point_module_prefixes(entry_point)
+        module_snapshot = dict(sys.modules)
         saved_modules = {
             loaded_name: module
-            for loaded_name, module in list(sys.modules.items())
+            for loaded_name, module in module_snapshot.items()
             if any(
                 loaded_name == prefix or loaded_name.startswith(f"{prefix}.")
                 for prefix in prefixes
@@ -511,13 +524,29 @@ def _check_plugin_health_entry_points(
         sys.path[:] = [root_entry] + [path for path in saved_path if path != root_entry]
         for loaded_name in saved_modules:
             sys.modules.pop(loaded_name, None)
+        cleanup_prefixes = list(prefixes)
         missing_override = object()
         saved_override = PluginLoader._overrides.pop(name, missing_override)
         try:
             importlib.invalidate_caches()
             plugin = loader.load(name)
+            implementation_module = str(getattr(plugin.__class__, "__module__", "")).strip()
+            implementation_prefixes = _module_name_prefixes(implementation_module)
+            cleanup_prefixes.extend(
+                prefix for prefix in implementation_prefixes if prefix not in cleanup_prefixes
+            )
+            saved_modules.update(
+                {
+                    loaded_name: module
+                    for loaded_name, module in module_snapshot.items()
+                    if any(
+                        loaded_name == prefix or loaded_name.startswith(f"{prefix}.")
+                        for prefix in implementation_prefixes
+                    )
+                }
+            )
             if not _plugin_module_is_owned_by_entry_point(
-                entry_point, import_root=import_root
+                plugin, entry_point, import_root=import_root
             ):
                 checks.append(
                     (
@@ -558,7 +587,7 @@ def _check_plugin_health_entry_points(
             for loaded_name in list(sys.modules):
                 if any(
                     loaded_name == prefix or loaded_name.startswith(f"{prefix}.")
-                    for prefix in prefixes
+                    for prefix in cleanup_prefixes
                 ):
                     sys.modules.pop(loaded_name, None)
             sys.modules.update(saved_modules)

@@ -114,7 +114,7 @@ implementation detail；若有新 core/schema symbol 要成為穩定契約，必
 | `create_reporter()` | 回傳 plugin 專屬 reporter（`IReporter`） | `None`（用 orchestrator 預設） |
 | `register_cli(registrar)` | 透過 `CliRegistrar` 註冊 installed plugin 自己的 Click 命令/群組 | no-op |
 | `bind_project_root(project_root)` | 接收本次執行選定的 operator project root，供 run-start preflight 或其 artifact 使用 | no-op |
-| `verify_install()` | 回傳 plugin-owned install health 診斷；checkout/wheel `testpilot --verify-install` 與更新後回滾閘都會執行（更新後由新 managed venv 的 isolated process 驗證）。Wheel 模組需由所屬 distribution 的 RECORD 證明；editable install 需由 PEP 610 local source URL 證明；無法驗證時會阻擋驗證。`False`、例外、格式錯誤診斷也會阻擋驗證，`WARN` 維持提醒 | `[]` |
+| `verify_install()` | 回傳 plugin-owned install health 診斷；checkout/wheel `testpilot --verify-install` 與更新後回滾閘都會執行（更新後由新 managed venv 的 isolated process 驗證）。Wheel 的 entry-point 模組與 `Plugin` class 實作模組都需由所屬 distribution 的 RECORD 證明；editable install 需由 PEP 610 local source URL 證明；無法驗證時會阻擋驗證。`False`、例外、格式錯誤診斷也會阻擋驗證，`WARN` 維持提醒 | `[]` |
 | `build_remediation_decision(case, failure_snapshot, topology, ...)` | tier-1 deterministic failure→safe-env action mapping | `None` |
 | `execute_remediation(case, decision, topology)` | 執行 tier-1 allowlist action；只可修 environment | fail-closed unsupported result |
 | `build_tier2_remediation_context(case, failure_snapshot, topology, ...)` | 提供已去敏、有限長度的 failure/log context、env capability catalog 與 deterministic `verify_env` 定義；core 負責 prompt/LLM/schema | `None`（tier-2 disabled） |

@@ -637,6 +637,50 @@ class TestManagedCheckoutReport:
         assert "OK editable plugin health" in output
         assert "verify-install: all checks passed" in output
 
+    def test_wheel_health_rejects_foreign_reexported_plugin_class(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Owning the entry-point shim alone does not own a re-exported Plugin class."""
+        shared_site_packages = tmp_path / "site-packages"
+        shared_site_packages.mkdir()
+        _write_install_health_plugin(
+            shared_site_packages,
+            "wheel_health_foreign_impl_plugin",
+            ok=True,
+            message="OK foreign implementation must not run",
+        )
+        shim_name = "wheel_health_owned_shim"
+        (shared_site_packages / f"{shim_name}.py").write_text(
+            "from wheel_health_foreign_impl_plugin import Plugin\n", encoding="utf-8"
+        )
+        entry_point = _FakeEntryPoint(
+            "health_fixture",
+            f"{shim_name}:Plugin",
+            dist_name="health-fixture",
+            dist_root=shared_site_packages,
+            dist_files=[Path(f"{shim_name}.py")],
+        )
+        monkeypatch.syspath_prepend(str(shared_site_packages))
+        monkeypatch.setattr(
+            "testpilot.cli.importlib.metadata.entry_points",
+            lambda *, group: [entry_point],
+        )
+        monkeypatch.setattr("testpilot.cli._probe_wheel_install", _healthy_wheel_probe)
+        mock_console = MagicMock()
+
+        with patch(
+            "testpilot.cli._get_managed_src", return_value=tmp_path / "no-checkout"
+        ):
+            with patch("testpilot.cli.console", mock_console):
+                with pytest.raises(SystemExit) as exc_info:
+                    _handle_verify_install()
+
+        assert exc_info.value.code == 1
+        output = " ".join(str(call) for call in mock_console.print.call_args_list)
+        assert "module ownership could not be verified" in output
+        assert "OK foreign implementation must not run" not in output
+        assert "wheel_health_foreign_impl_plugin" not in sys.modules
+
     def test_wheel_verify_fails_closed_when_declared_plugin_health_raises(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
