@@ -69,6 +69,7 @@ class OrchestratorRunBackendCompat:
                 devices.append(
                     {
                         "com": selector,
+                        "selector": selector,
                         "alias": alias,
                         # testbed 可用 console_profile（station-layer）或 profile 指定
                         # serialwrap session profile；未指定維持 prpl-template。

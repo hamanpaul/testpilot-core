@@ -175,18 +175,41 @@ def setup_sessions(
     bind_timeout: float = 60.0,
     settle_delay: float = 3.0,
 ) -> None:
-    """Bind sessions and set aliases for DUT/STA devices.
+    """Attach explicitly selected sessions or bind legacy devices, then set aliases.
 
     Each device dict should have:
       - profile: str (e.g. "prpl-template")
       - com: str (e.g. "COM0")
       - alias: str (e.g. "dut")
       - serial_port: str (e.g. "/dev/ttyUSB0") — used to auto-discover device_by_id
+      - selector: str (optional) — an existing, operator-bound session identity;
+        when supplied, serial_port and enumeration order cannot rebind it
 
-    ``session bind`` blocks until the device reaches READY. We launch all
-    binds concurrently and wait up to *bind_timeout* seconds.
+    Explicit selectors are all validated before any attach/bind. Attach and
+    legacy bind operations run concurrently with a shared *bind_timeout*.
     """
-    hw_devices = _list_devices()
+    # Validate every explicit selector before starting any attach/bind. Logical
+    # identities must never be reassigned by ttyUSB order or a stale fallback.
+    selected: dict[str, dict[str, Any]] = {}
+    explicit = [str(dev["selector"]) for dev in devices if dev.get("selector")]
+    if explicit:
+        payload = _run_sw(["session", "list"])
+        sessions = payload.get("sessions")
+        if payload.get("ok") is False or not isinstance(sessions, list):
+            raise RuntimeError("cannot verify explicit serialwrap selectors; session list failed")
+        identities: set[str] = set()
+        for selector in explicit:
+            matches = [s for s in sessions if isinstance(s, dict) and selector in
+                       {s.get("session_id"), s.get("com"), s.get("alias")}]
+            if len(matches) != 1 or not matches[0].get("device_by_id"):
+                raise RuntimeError(f"serialwrap selector {selector} must be explicitly bound by the operator")
+            session = matches[0]
+            identity = str(session.get("session_id") or selector)
+            if identity in identities:
+                raise RuntimeError(f"duplicate serialwrap selector identity: {selector}")
+            identities.add(identity)
+            selected[selector] = session
+    hw_devices = _list_devices() if len(explicit) != len(devices) else []
 
     # Phase 1: launch all bind processes concurrently
     bind_procs: list[tuple[str, str, str, subprocess.Popen[str]]] = []
@@ -197,8 +220,15 @@ def setup_sessions(
         serial_port = dev.get("serial_port", "")
         session_id = f"{profile}:{com}"
 
-        by_id = _match_device_by_id(hw_devices, serial_port) if serial_port else None
-        if not by_id:
+        selector = str(dev.get("selector") or "")
+        if selector:
+            session = selected[selector]
+            session_id = str(session.get("session_id") or selector)
+            by_id = str(session["device_by_id"])
+            command = [_resolve_bin(), "session", "attach", "--selector", session_id]
+        else:
+            by_id = _match_device_by_id(hw_devices, serial_port) if serial_port else None
+        if not by_id and not selector:
             idx = int(com.replace("COM", "")) if com.startswith("COM") else 0
             if idx < len(hw_devices):
                 by_id = hw_devices[idx].get("by_id", "")
@@ -207,9 +237,11 @@ def setup_sessions(
             logger.warning("no device_by_id found for %s (%s), skipping bind", com, serial_port)
             continue
 
+        if not selector:
+            command = [_resolve_bin(), "session", "bind", "--selector", session_id, "--device-by-id", by_id]
+
         proc = subprocess.Popen(
-            [_resolve_bin(), "session", "bind",
-             "--selector", session_id, "--device-by-id", by_id],
+            command,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             encoding="utf-8", errors="replace",
         )

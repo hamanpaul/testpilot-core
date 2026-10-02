@@ -11,6 +11,8 @@ preparation.
 
 ### Fixed
 
+- Attach operator-bound logical serialwrap selectors without rebinding them by physical port enumeration; reject missing or ambiguous explicit identities before session writes.
+
 - Stop the sequential run after an explicit unrecovered-environment remediation abort, preserving the failed attempt and listing unexecuted cases in an abort artifact.
 
 - Preserve serialwrap broker rejection and terminal-command safety metadata for plugin readiness policies; stop long-command staging after a failed or ambiguous script write.
