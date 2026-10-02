@@ -264,6 +264,9 @@ class ExecutionEngine:
             "phase": phase,
             "comment": comment,
         }
+        failure_snapshot = self._current_failure_snapshot(runtime_case)
+        if failure_snapshot is not None:
+            payload["failure_snapshot"] = dict(failure_snapshot)
         if step_payload is not None:
             payload["step"] = dict(step_payload)
         if result is not None:

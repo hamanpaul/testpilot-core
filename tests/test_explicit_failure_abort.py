@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from testpilot.core.execution_engine import ExecutionEngine
+from testpilot.core.hook_policy import HookDispatcher, HookPolicyConfig
 
 
 @pytest.mark.parametrize("phase", ["setup", "verify", "step", "evaluate"])
@@ -249,6 +250,48 @@ def test_stale_or_mismatched_failure_metadata_cannot_abort_or_suppress_cleanup(
     assert result.abort_reason == ""
     assert result.attempts[0]["transport_result"] == {}
     assert plugin.teardowns == 1
+
+
+def test_disabled_failure_hooks_preserve_validated_terminal_snapshot() -> None:
+    snapshot = {
+        "case_id": "D001",
+        "attempt_index": 1,
+        "phase": "setup_env",
+        "category": "environment",
+        "reason_code": "dut_serial_wedged",
+        "abort_run": True,
+        "abort_reason": "dut_serial_wedged",
+        "skip_teardown": True,
+        "metadata": {
+            "serial_health": {"classification": "dut_serial_wedged", "state": "ATTACHED"},
+        },
+    }
+
+    class Plugin:
+        teardowns = 0
+
+        def setup_env(self, case: dict[str, Any], **_kwargs: Any) -> bool:
+            case["_last_failure"] = dict(snapshot)
+            return False
+
+        def teardown(self, *_args: Any, **_kwargs: Any) -> None:
+            self.teardowns += 1
+
+    plugin = Plugin()
+    hooks = HookDispatcher(HookPolicyConfig(enabled_hooks=set()))
+    result = ExecutionEngine({}, hooks).execute_with_retry(
+        plugin=plugin,
+        case={"id": "D001", "steps": []},
+        runner={},
+        execution_policy={"retry": {"max_attempts": 1}},
+    )
+
+    assert result.abort_run is True
+    assert result.abort_reason == "dut_serial_wedged"
+    assert result.diagnostic_status == "FailEnv"
+    assert result.failure_snapshot == snapshot
+    assert result.attempts[0]["failure_snapshot"] == snapshot
+    assert plugin.teardowns == 0
 
 
 @pytest.mark.parametrize("phase", ["setup", "verify", "step", "evaluate"])
