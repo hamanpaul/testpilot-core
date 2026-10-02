@@ -33,6 +33,7 @@ _PRINTF_OVERHEAD = 39
 
 # Preserve broker safety and readiness evidence at the transport boundary.
 _BROKER_RESULT_FIELDS = (
+    "outcome", "ambiguous",
     "error_code", "message", "hint", "retry_after_s", "recommended_action",
     "non_replayable", "retryable", "input_integrity", "tx_bytes",
     "sent_chars", "acked_chars", "newline_sent", "session_recovered",
@@ -240,67 +241,64 @@ class SerialWrapTransport(TransportBase):
     def _submit_and_poll(self, command: str, timeout: float = 30.0) -> dict[str, Any]:
         timeout_s = max(float(timeout), 0.1)
         start = time.monotonic()
-        submit_payload = self._run_json(
-            [
-                "cmd",
-                "submit",
-                "--selector",
-                self._selector,
-                "--cmd",
-                command,
-                "--source",
-                self._source,
-                "--mode",
-                self._mode,
-                "--priority",
-                str(self._priority),
-                "--cmd-timeout",
-                f"{timeout_s:.3f}",
-            ],
-            timeout=timeout_s + 2.0,
-        )
+        submit_args = [
+            "cmd", "submit", "--selector", self._selector,
+            "--cmd", command, "--source", self._source,
+            "--mode", self._mode, "--priority", str(self._priority),
+            "--cmd-timeout", f"{timeout_s:.3f}",
+        ]
+        try:
+            submit_payload = self._run_json(submit_args, timeout=timeout_s + 2.0)
+        except SerialWrapCommandError as exc:
+            code = exc.result.get("error_code")
+            if (
+                exc.result.get("ok") is False
+                and isinstance(code, str) and code and code != "TIMEOUT"
+                and not exc.result.get("cmd_id")
+            ):
+                raise
+            evidence = dict(exc.result)
+            evidence.update(outcome="unknown", non_replayable=True, retryable=False)
+            raise SerialWrapCommandError("serialwrap submit outcome is unknown", evidence) from exc
+        except (RuntimeError, OSError) as exc:
+            raise SerialWrapCommandError(
+                "serialwrap submit response unavailable; command acceptance is unknown",
+                {"error_code": "COMMAND_OUTCOME_UNKNOWN", "outcome": "unknown",
+                 "non_replayable": True, "retryable": False},
+            ) from exc
 
         cmd_id = submit_payload.get("cmd_id")
         if not isinstance(cmd_id, str) or not cmd_id:
-            raise RuntimeError("serialwrap cmd submit response missing cmd_id")
+            raise SerialWrapCommandError(
+                "serialwrap cmd submit response missing cmd_id; acceptance is unknown",
+                {"error_code": "COMMAND_OUTCOME_UNKNOWN", "outcome": "unknown",
+                 "non_replayable": True, "retryable": False},
+            )
 
         try:
             status_payload = self._poll_status(cmd_id, timeout_s)
-        except TimeoutError as exc:
-            recovery_action = None
-            try:
-                self._attach_session()
-            except Exception:
-                recovery_action = None
-            else:
-                recovery_action = "ATTACH"
+        except Exception as exc:
+            # Submission was accepted. A failed status read cannot prove the
+            # command stopped, so do not inject attach/recovery bytes or replay.
             return {
-                "returncode": 124,
-                "stdout": "",
-                "stderr": str(exc),
-                "elapsed": time.monotonic() - start,
-                "cmd_id": cmd_id,
-                "status": "timeout",
-                "partial": False,
-                "execution_mode": self._mode,
-                "background_capture_id": None,
-                "interactive_session_id": None,
-                "recovery_action": recovery_action,
+                "returncode": 124, "stdout": "", "stderr": str(exc),
+                "elapsed": time.monotonic() - start, "cmd_id": cmd_id,
+                "status": "timeout", "partial": True, "outcome": "unknown",
+                "error_code": "COMMAND_OUTCOME_UNKNOWN",
+                "non_replayable": True, "retryable": False,
+                "execution_mode": self._mode, "background_capture_id": None,
+                "interactive_session_id": None, "recovery_action": None,
             }
 
         command_status = status_payload.get("command", {})
         stdout = str(command_status.get("stdout", "") or "").strip()
         returncode = self._status_to_returncode(
-            str(command_status.get("status", "")),
-            command_status.get("error_code"),
+            str(command_status.get("status", "")), command_status.get("error_code"),
         )
         stderr = self._build_stderr(command_status)
-        return {
-            "returncode": returncode,
-            "stdout": stdout,
-            "stderr": stderr,
-            "elapsed": time.monotonic() - start,
-            "cmd_id": cmd_id,
+        result = {
+            "returncode": returncode, "stdout": stdout, "stderr": stderr,
+            "elapsed": time.monotonic() - start, "cmd_id": cmd_id,
             "status": command_status.get("status"),
             "partial": bool(command_status.get("partial", False)),
             "execution_mode": command_status.get("execution_mode"),
@@ -309,6 +307,9 @@ class SerialWrapTransport(TransportBase):
             "recovery_action": command_status.get("recovery_action"),
             **{key: command_status[key] for key in _BROKER_RESULT_FIELDS if key in command_status},
         }
+        if str(command_status.get("status", "")).lower() == "timeout":
+            result.update(outcome="unknown", non_replayable=True, retryable=False)
+        return result
 
     def _build_cli(self, args: list[str]) -> list[str]:
         cmd = [self._binary]
@@ -318,15 +319,24 @@ class SerialWrapTransport(TransportBase):
         return cmd
 
     def _run_json(self, args: list[str], timeout: float | None = None) -> dict[str, Any]:
-        completed = subprocess.run(
-            self._build_cli(args),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",  # serialwrap output is UTF-8 regardless of host locale (#51)
-            errors="replace",
-            check=False,
-            timeout=timeout,
-        )
+        try:
+            completed = subprocess.run(
+                self._build_cli(args),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",  # serialwrap output is UTF-8 regardless of host locale (#51)
+                errors="replace",
+                check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            if args[:2] != ["cmd", "submit"]:
+                raise
+            raise SerialWrapCommandError(
+                "serialwrap submit CLI timed out; command acceptance is unknown",
+                {"error_code": "COMMAND_OUTCOME_UNKNOWN", "outcome": "unknown",
+                 "non_replayable": True, "retryable": False, "partial": True},
+            ) from exc
         stdout = (completed.stdout or "").strip()
         payload = None
         if stdout:
@@ -396,6 +406,13 @@ class SerialWrapTransport(TransportBase):
         return payload
 
     def _should_retry_with_attach(self, args: list[str], payload: dict[str, Any]) -> bool:
+        if (
+            payload.get("non_replayable") is True
+            or payload.get("partial") is True
+            or str(payload.get("outcome") or "").lower() in {"unknown", "ambiguous"}
+            or payload.get("cmd_id")
+        ):
+            return False
         if len(args) >= 2 and args[:2] == ["session", "attach"]:
             return False
         if not self._selector:
@@ -510,6 +527,8 @@ class SerialWrapTransport(TransportBase):
                 timeout=min(timeout + 1.0, 5.0),
             )
             command_payload = last_payload.get("command", {})
+            if not isinstance(command_payload, dict):
+                raise RuntimeError("serialwrap command status response is malformed")
             status = str(command_payload.get("status", "")).lower()
             if status in TERMINAL_STATUSES:
                 return last_payload

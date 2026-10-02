@@ -638,7 +638,7 @@ def test_execute_retries_submit_after_session_not_ready(monkeypatch: pytest.Monk
     assert state["submit_calls"] == 2
 
 
-def test_execute_timeout_attaches_and_returns_recovery_action(
+def test_execute_timeout_preserves_unknown_outcome_without_attach(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = {
@@ -722,9 +722,12 @@ def test_execute_timeout_attaches_and_returns_recovery_action(
     assert result["status"] == "timeout"
     assert result["cmd_id"] == "cmd-timeout"
     assert result["execution_mode"] == "line"
-    assert result["recovery_action"] == "ATTACH"
+    assert result["recovery_action"] is None
+    assert result["outcome"] == "unknown"
+    assert result["non_replayable"] is True
+    assert result["retryable"] is False
+    assert state["attach_calls"] == 0
     assert "serialwrap cmd status timeout" in result["stderr"]
-    assert state["attach_calls"] == 1
     assert state["status_calls"] >= 1
 
 

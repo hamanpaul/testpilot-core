@@ -11,6 +11,8 @@ preparation.
 
 ### Fixed
 
+- Abort before retry or cleanup when serial command acceptance/execution is unknown or explicitly non-replayable; preserve structured command evidence in attempt traces and avoid automatic attach after an accepted-command status timeout.
+
 - Attach operator-bound logical serialwrap selectors without rebinding them by physical port enumeration; reject missing or ambiguous explicit identities before session writes.
 
 - Stop the sequential run after an explicit unrecovered-environment remediation abort, preserving the failed attempt and listing unexecuted cases in an abort artifact.

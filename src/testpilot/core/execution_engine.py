@@ -47,6 +47,28 @@ class ExecutionEngine:
         self.hooks = hook_dispatcher or HookDispatcher()
 
     @staticmethod
+    def _transport_evidence(value: Any) -> dict[str, Any]:
+        if isinstance(value, BaseException):
+            value = getattr(value, "result", None) or getattr(value, "transport_result", None)
+        if not isinstance(value, dict):
+            return {}
+        fields = ("error_code", "retry_after_s", "recommended_action", "cmd_id",
+                  "outcome", "ambiguous", "non_replayable", "retryable", "partial", "status",
+                  "input_integrity", "tx_bytes", "sent_chars", "acked_chars",
+                  "newline_sent", "session_recovered", "recovery_error")
+        return {key: value[key] for key in fields if key in value}
+
+    @staticmethod
+    def _unknown_outcome(evidence: dict[str, Any]) -> bool:
+        return (
+            str(evidence.get("outcome") or "").lower() in {"unknown", "ambiguous"}
+            or evidence.get("ambiguous") is True
+            or evidence.get("non_replayable") is True
+            or evidence.get("partial") is True
+            or str(evidence.get("input_integrity") or "").lower() == "uncertain"
+        )
+
+    @staticmethod
     def attempt_timeout_seconds(
         *,
         steps_count: int,
@@ -126,6 +148,9 @@ class ExecutionEngine:
             payload["result"] = dict(result)
         if exception is not None:
             payload["exception"] = str(exception)
+            evidence = self._transport_evidence(exception)
+            if evidence:
+                payload["transport_result"] = evidence
         self.hooks.dispatch(
             self._hook_ctx("on_failure", runtime_case, runner, attempt_index, step_id),
             payload,
@@ -147,6 +172,8 @@ class ExecutionEngine:
         verdict = False
         comment = ""
         failure_payload: dict[str, Any] = {}
+        transport_evidence: dict[str, Any] = {}
+        unknown_outcome = False
 
         runtime_case = dict(case)
         runtime_case["_agent_runner"] = RunnerSelector.runner_summary(runner)
@@ -156,6 +183,9 @@ class ExecutionEngine:
         try:
             setup_ok = bool(plugin.setup_env(runtime_case, topology=self.config))
             if not setup_ok:
+                snapshot = runtime_case.get("_last_failure", {})
+                transport_evidence = self._transport_evidence(snapshot.get("metadata", {})) if isinstance(snapshot, dict) else {}
+                unknown_outcome = self._unknown_outcome(transport_evidence)
                 comment = "setup_env failed"
                 failure_payload = self._dispatch_failure(
                     runtime_case=runtime_case,
@@ -166,6 +196,9 @@ class ExecutionEngine:
                 )
             env_ok = setup_ok and bool(plugin.verify_env(runtime_case, topology=self.config))
             if setup_ok and not env_ok:
+                snapshot = runtime_case.get("_last_failure", {})
+                transport_evidence = self._transport_evidence(snapshot.get("metadata", {})) if isinstance(snapshot, dict) else {}
+                unknown_outcome = self._unknown_outcome(transport_evidence)
                 comment = "env_verify gate failed"
                 failure_payload = self._dispatch_failure(
                     runtime_case=runtime_case,
@@ -215,6 +248,8 @@ class ExecutionEngine:
                     )
 
                     if not bool(result.get("success", False)):
+                        transport_evidence = self._transport_evidence(result)
+                        unknown_outcome = self._unknown_outcome(transport_evidence)
                         comment = f"step failed: {step_id}"
                         failure_payload = self._dispatch_failure(
                             runtime_case=runtime_case,
@@ -245,6 +280,8 @@ class ExecutionEngine:
                         )
 
         except Exception as exc:  # pragma: no cover - defensive catch for runtime errors
+            transport_evidence = self._transport_evidence(exc)
+            unknown_outcome = self._unknown_outcome(transport_evidence)
             comment = f"exception: {exc}"
             failure_payload = self._dispatch_failure(
                 runtime_case=runtime_case,
@@ -255,10 +292,17 @@ class ExecutionEngine:
                 exception=exc,
             )
         finally:
-            try:
-                plugin.teardown(runtime_case, topology=self.config)
-            except Exception:
-                log.exception("teardown failed: %s", runtime_case.get("id", "?"))
+            if not unknown_outcome:
+                try:
+                    plugin.teardown(runtime_case, topology=self.config)
+                except Exception:
+                    log.exception("teardown failed: %s", runtime_case.get("id", "?"))
+
+        if unknown_outcome and not failure_payload.get("failure_snapshot"):
+            failure_payload["failure_snapshot"] = {
+                "category": "environment", "reason_code": "command_outcome_unknown",
+                "metadata": transport_evidence,
+            }
 
         return {
             "verdict": verdict,
@@ -267,6 +311,9 @@ class ExecutionEngine:
             "outputs": outputs,
             "failure_snapshot": failure_payload.get("failure_snapshot"),
             "remediation_decision": failure_payload.get("remediation_decision"),
+            "transport_result": transport_evidence,
+            "abort_run": unknown_outcome,
+            "abort_reason": "command_outcome_unknown" if unknown_outcome else "",
         }
 
     def execute_with_retry(
@@ -396,8 +443,16 @@ class ExecutionEngine:
                 "outputs": final_outputs,
                 "failure_snapshot": result.get("failure_snapshot"),
                 "remediation_decision": result.get("remediation_decision"),
+                "transport_result": result.get("transport_result", {}),
+                "abort_run": result.get("abort_run") is True,
+                "abort_reason": str(result.get("abort_reason") or ""),
             })
 
+            if result.get("abort_run") is True:
+                abort_run = True
+                abort_reason = str(result.get("abort_reason") or "command_outcome_unknown")
+                final_verdict = False
+                break
             if final_verdict:
                 break
             should_retry = (
