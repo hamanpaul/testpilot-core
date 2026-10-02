@@ -109,7 +109,7 @@ def test_loader_accepts_compatible_plugin_and_caches_it():
     assert loader.loaded == {"dummy": plugin}
 
 
-@pytest.mark.parametrize("declared", [None, "1", 1.0, "1.3", "2.0"])
+@pytest.mark.parametrize("declared", [None, "1", 1.0, "1.4", "2.0"])
 def test_loader_rejects_incompatible_plugin_without_caching(declared):
     from testpilot.api import IncompatiblePluginError
     from testpilot.core.plugin_loader import PluginLoader
