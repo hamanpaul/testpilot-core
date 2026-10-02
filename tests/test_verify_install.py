@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+import sys
 import textwrap
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,15 +22,89 @@ from testpilot.cli import _handle_verify_install
 
 
 class _FakeEntryPoint:
-    def __init__(self, name: str, value: str, *, dist_name: str = "testpilot") -> None:
+    def __init__(
+        self,
+        name: str,
+        value: str,
+        *,
+        dist_name: str = "testpilot",
+        dist_root: Path | None = None,
+    ) -> None:
         self.name = name
         self.value = value
         self.dist = SimpleNamespace(name=dist_name, metadata={"Name": dist_name})
+        if dist_root is not None:
+            self.dist.locate_file = lambda _path: dist_root
 
     def load(self):
         module_name, _, attr_name = self.value.partition(":")
         module = importlib.import_module(module_name)
         return getattr(module, attr_name)
+
+
+def _write_install_health_plugin(
+    tmp_path: Path,
+    module_name: str,
+    *,
+    ok: object,
+    message: str,
+    raise_error: str | None = None,
+) -> _FakeEntryPoint:
+    health_statement = (
+        f"raise RuntimeError({raise_error!r})"
+        if raise_error is not None
+        else f"return [({ok!r}, {message!r})]"
+    )
+    module_path = tmp_path / f"{module_name}.py"
+    module_path.write_text(
+        textwrap.dedent(
+            f"""
+            from pathlib import Path
+            from testpilot.core.plugin_base import PluginBase
+
+            class Plugin(PluginBase):
+                api_version = "1.1"
+
+                @property
+                def name(self):
+                    return "health_fixture"
+
+                @property
+                def cases_dir(self):
+                    return Path(__file__).parent
+
+                def discover_cases(self):
+                    return []
+
+                def execute_step(self, case, step, topology):
+                    return {{}}
+
+                def evaluate(self, case, results):
+                    return True
+
+                def verify_install(self):
+                    {health_statement}
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    return _FakeEntryPoint(
+        "health_fixture",
+        f"{module_name}:Plugin",
+        dist_name="health-fixture",
+        dist_root=tmp_path,
+    )
+
+
+def _healthy_wheel_probe() -> dict:
+    return {
+        "core_version": "0.3.9",
+        "plugins": [],
+        "serialwrap": True,
+        "wrapper_ok": True,
+        "skill_packaged": True,
+        "stray_import": None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -289,6 +364,200 @@ class TestManagedCheckoutReport:
         output = " ".join(str(c) for c in mock_console.print.call_args_list)
         assert "abc1234" in output or "paulc-arc" in output or "main" in output
 
+    def test_wheel_verify_fails_when_declared_plugin_health_is_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A healthy core probe must not hide a declared plugin's failed install check."""
+        entry_point = _write_install_health_plugin(
+            tmp_path,
+            "wheel_health_broken_plugin",
+            ok=False,
+            message="FAIL declared plugin health",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(
+            "testpilot.cli.importlib.metadata.entry_points",
+            lambda *, group: [entry_point],
+        )
+        monkeypatch.setattr("testpilot.cli._probe_wheel_install", _healthy_wheel_probe)
+        mock_console = MagicMock()
+
+        with patch("testpilot.cli._get_managed_src", return_value=tmp_path / "no-checkout"):
+            with patch("testpilot.cli.console", mock_console):
+                with pytest.raises(SystemExit) as exc_info:
+                    _handle_verify_install()
+
+        assert exc_info.value.code == 1
+        output = " ".join(str(call) for call in mock_console.print.call_args_list)
+        assert "FAIL declared plugin health" in output
+        assert "verify-install: all checks passed" not in output
+
+    def test_wheel_verify_runs_warn_health_and_restores_managed_module_cache(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Wheel health WARNs pass, while installed imports leave managed modules intact."""
+        module_name = "wheel_health_warn_plugin"
+        entry_point = _write_install_health_plugin(
+            tmp_path,
+            module_name,
+            ok=True,
+            message="WARN installed plugin health advisory",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        managed_module = ModuleType(module_name)
+        monkeypatch.setitem(sys.modules, module_name, managed_module)
+        monkeypatch.setattr(
+            "testpilot.cli.importlib.metadata.entry_points",
+            lambda *, group: [entry_point],
+        )
+        monkeypatch.setattr("testpilot.cli._probe_wheel_install", _healthy_wheel_probe)
+        mock_console = MagicMock()
+
+        with patch("testpilot.cli._get_managed_src", return_value=tmp_path / "no-checkout"):
+            with patch("testpilot.cli.console", mock_console):
+                _handle_verify_install()
+
+        output = " ".join(str(call) for call in mock_console.print.call_args_list)
+        assert "WARN installed plugin health advisory" in output
+        assert "verify-install: all checks passed" in output
+        assert sys.modules[module_name] is managed_module
+
+    def test_wheel_health_prefers_distribution_root_over_ambient_module(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A same-named cwd/PYTHONPATH module cannot stand in for the installed plugin."""
+        module_name = "wheel_health_shadowed_plugin"
+        installed_root = tmp_path / "site-packages"
+        installed_root.mkdir()
+        entry_point = _write_install_health_plugin(
+            installed_root,
+            module_name,
+            ok=True,
+            message="OK installed distribution selected",
+        )
+
+        ambient_root = tmp_path / "ambient"
+        ambient_root.mkdir()
+        ambient_module = ambient_root / f"{module_name}.py"
+        ambient_module.write_text(
+            "raise RuntimeError('ambient module must not load')\n", encoding="utf-8"
+        )
+        monkeypatch.syspath_prepend(str(ambient_root))
+        # Metadata discovery normally sees this distribution root already later
+        # in sys.path; verify the health loader still gives it precedence.
+        monkeypatch.setattr(sys, "path", [*sys.path, str(installed_root)])
+        original_path = list(sys.path)
+        monkeypatch.setattr(
+            "testpilot.cli.importlib.metadata.entry_points",
+            lambda *, group: [entry_point],
+        )
+        monkeypatch.setattr("testpilot.cli._probe_wheel_install", _healthy_wheel_probe)
+        mock_console = MagicMock()
+
+        with patch("testpilot.cli._get_managed_src", return_value=tmp_path / "no-checkout"):
+            with patch("testpilot.cli.console", mock_console):
+                _handle_verify_install()
+
+        output = " ".join(str(call) for call in mock_console.print.call_args_list)
+        assert "OK installed distribution selected" in output
+        assert "ambient module must not load" not in output
+        assert sys.path == original_path
+
+    def test_wheel_health_rejects_ambient_module_when_distribution_file_is_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An absent installed module cannot be masked by a healthy ambient copy."""
+        module_name = "wheel_health_missing_distribution_plugin"
+        installed_root = tmp_path / "site-packages"
+        installed_root.mkdir()
+        entry_point = _FakeEntryPoint(
+            "health_fixture",
+            f"{module_name}:Plugin",
+            dist_name="health-fixture",
+            dist_root=installed_root,
+        )
+        ambient_root = tmp_path / "ambient"
+        ambient_root.mkdir()
+        ambient_entry_point = _write_install_health_plugin(
+            ambient_root,
+            module_name,
+            ok=True,
+            message="OK ambient copy must not satisfy installed health",
+        )
+        entry_point.value = ambient_entry_point.value
+        monkeypatch.syspath_prepend(str(ambient_root))
+        monkeypatch.setattr(sys, "path", [*sys.path, str(installed_root)])
+        monkeypatch.setattr(
+            "testpilot.cli.importlib.metadata.entry_points",
+            lambda *, group: [entry_point],
+        )
+        monkeypatch.setattr("testpilot.cli._probe_wheel_install", _healthy_wheel_probe)
+        mock_console = MagicMock()
+
+        with patch("testpilot.cli._get_managed_src", return_value=tmp_path / "no-checkout"):
+            with patch("testpilot.cli.console", mock_console):
+                with pytest.raises(SystemExit) as exc_info:
+                    _handle_verify_install()
+
+        assert exc_info.value.code == 1
+        output = " ".join(str(call) for call in mock_console.print.call_args_list)
+        assert "outside its distribution" in output
+        assert "OK ambient copy must not satisfy installed health" not in output
+
+    def test_wheel_verify_fails_closed_when_declared_plugin_health_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entry_point = _write_install_health_plugin(
+            tmp_path,
+            "wheel_health_raises_plugin",
+            ok=True,
+            message="unused",
+            raise_error="private-token-must-not-be-printed",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(
+            "testpilot.cli.importlib.metadata.entry_points",
+            lambda *, group: [entry_point],
+        )
+        monkeypatch.setattr("testpilot.cli._probe_wheel_install", _healthy_wheel_probe)
+        mock_console = MagicMock()
+
+        with patch("testpilot.cli._get_managed_src", return_value=tmp_path / "no-checkout"):
+            with patch("testpilot.cli.console", mock_console):
+                with pytest.raises(SystemExit) as exc_info:
+                    _handle_verify_install()
+
+        assert exc_info.value.code == 1
+        output = " ".join(str(call) for call in mock_console.print.call_args_list)
+        assert "RuntimeError" in output
+        assert "private-token-must-not-be-printed" not in output
+
+    def test_wheel_verify_fails_closed_on_malformed_plugin_health_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        entry_point = _write_install_health_plugin(
+            tmp_path,
+            "wheel_health_malformed_plugin",
+            ok="not-a-bool",
+            message="malformed result",
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(
+            "testpilot.cli.importlib.metadata.entry_points",
+            lambda *, group: [entry_point],
+        )
+        monkeypatch.setattr("testpilot.cli._probe_wheel_install", _healthy_wheel_probe)
+        mock_console = MagicMock()
+
+        with patch("testpilot.cli._get_managed_src", return_value=tmp_path / "no-checkout"):
+            with patch("testpilot.cli.console", mock_console):
+                with pytest.raises(SystemExit) as exc_info:
+                    _handle_verify_install()
+
+        assert exc_info.value.code == 1
+        output = " ".join(str(call) for call in mock_console.print.call_args_list)
+        assert "invalid check row" in output
+
     def test_plugin_owned_health_reports_wifi_llapi_case_inventory(
         self, tmp_path: Path
     ) -> None:
@@ -471,7 +740,8 @@ class TestManagedCheckoutReport:
 
         assert checks
         assert checks[0][0] is False
-        assert "duplicate testpilot.plugins entry point names detected" in checks[0][1]
+        assert "invalid entry-point configuration" in checks[0][1]
+        assert "ValueError" in checks[0][1]
 
 
 class TestManagedInstallHealthFailures:

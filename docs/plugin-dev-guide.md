@@ -113,7 +113,7 @@ implementation detail；若有新 core/schema symbol 要成為穩定契約，必
 | `execution_policy(case)` | 宣告執行約束（concurrency / mode / runner 選擇等） | `{}`（無約束） |
 | `create_reporter()` | 回傳 plugin 專屬 reporter（`IReporter`） | `None`（用 orchestrator 預設） |
 | `register_cli(registrar)` | 透過 `CliRegistrar` 註冊 installed plugin 自己的 Click 命令/群組 | no-op |
-| `verify_install()` | 回傳 plugin-owned install health 診斷訊號供 `testpilot --verify-install` 顯示 | `[]` |
+| `verify_install()` | 回傳 plugin-owned install health 診斷；checkout/wheel `testpilot --verify-install` 與更新後回滾閘都會執行（更新後由新 managed venv 的 isolated process 驗證）。`False`、例外、格式錯誤診斷或載入到所屬 distribution 以外的模組會阻擋驗證，`WARN` 維持提醒 | `[]` |
 | `build_remediation_decision(case, failure_snapshot, topology, ...)` | tier-1 deterministic failure→safe-env action mapping | `None` |
 | `execute_remediation(case, decision, topology)` | 執行 tier-1 allowlist action；只可修 environment | fail-closed unsupported result |
 | `build_tier2_remediation_context(case, failure_snapshot, topology, ...)` | 提供已去敏、有限長度的 failure/log context、env capability catalog 與 deterministic `verify_env` 定義；core 負責 prompt/LLM/schema | `None`（tier-2 disabled） |

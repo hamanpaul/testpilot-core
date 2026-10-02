@@ -10,6 +10,7 @@ These lock the destructive-bug fixes:
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -91,9 +92,11 @@ def test_update_delegates_to_installer_and_reconciles(tmp_path: Path) -> None:
 
 
 def test_update_verify_failure_triggers_rollback(tmp_path: Path) -> None:
-    """I3 + CRITICAL: post-update verify failure restores from .last-good.txt
-    using an OFFLINE pip invocation (never a public index) and exits nonzero."""
+    """I3 + CRITICAL: plugin health failure in post-update verify rolls back offline."""
     venv = _setup_venv(tmp_path)
+    target_python = venv / "bin" / "python"
+    target_python.parent.mkdir(parents=True)
+    target_python.write_text("", encoding="utf-8")
     # Pre-create the snapshot so rollback uses it.
     share = tmp_path / "share"
     share.mkdir()
@@ -103,6 +106,12 @@ def test_update_verify_failure_triggers_rollback(tmp_path: Path) -> None:
     wheel_cache.mkdir()
 
     runner_calls: list[list[str]] = []
+
+    child_calls: list[tuple[list[str], dict]] = []
+
+    def _child_runner(command: list[str], **kwargs) -> SimpleNamespace:
+        child_calls.append((command, kwargs))
+        return SimpleNamespace(returncode=1, stdout="FAIL plugin health\n", stderr="")
 
     with patch.object(cli_mod, "_get_managed_venv", return_value=venv):
         with patch.object(cli_mod, "_resolve_manifest", return_value=_fake_manifest(["wifi_llapi"])):
@@ -116,10 +125,18 @@ def test_update_verify_failure_triggers_rollback(tmp_path: Path) -> None:
                                         "main",
                                         runner=lambda args: runner_calls.append(args) or 0,
                                         installer=lambda env: 0,
-                                        verifier=lambda: False,
+                                        verifier=lambda: cli_mod._verify_after_update(
+                                            runner=_child_runner
+                                        ),
                                     )
 
     assert exc.value.code != 0
+    assert child_calls == [
+        (
+            [str(target_python), "-I", "-m", "testpilot.cli", "--verify-install"],
+            {"capture_output": True, "text": True, "timeout": 60},
+        )
+    ]
     rollback = [c for c in runner_calls if "install" in c and "-r" in c]
     assert rollback, f"rollback install not invoked: {runner_calls}"
     rb = rollback[0]
@@ -133,6 +150,81 @@ def test_update_verify_failure_triggers_rollback(tmp_path: Path) -> None:
     for c in runner_calls:
         if "install" in c and "uninstall" not in c:
             assert "--no-index" in c, f"every install must be offline-only: {c}"
+
+
+def test_post_update_verifier_uses_managed_python_and_forwards_output(
+    tmp_path: Path, capsys
+) -> None:
+    venv = _setup_venv(tmp_path)
+    target_python = venv / "bin" / "python"
+    target_python.parent.mkdir(parents=True)
+    target_python.write_text("", encoding="utf-8")
+    calls: list[tuple[list[str], dict]] = []
+
+    def _runner(command: list[str], **kwargs) -> SimpleNamespace:
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="WARN optional check\n", stderr="")
+
+    with patch.object(cli_mod, "_get_managed_venv", return_value=venv):
+        assert cli_mod._verify_after_update(runner=_runner)
+
+    assert calls == [
+        (
+            [str(target_python), "-I", "-m", "testpilot.cli", "--verify-install"],
+            {"capture_output": True, "text": True, "timeout": 60},
+        )
+    ]
+    assert capsys.readouterr().out == "WARN optional check\n"
+
+
+def test_post_update_verifier_fails_closed_when_managed_python_is_missing(
+    tmp_path: Path, capsys
+) -> None:
+    venv = _setup_venv(tmp_path)
+    calls: list[list[str]] = []
+
+    with patch.object(cli_mod, "_get_managed_venv", return_value=venv):
+        assert not cli_mod._verify_after_update(runner=lambda command, **_: calls.append(command))
+
+    assert calls == []
+    assert "managed Python" in capsys.readouterr().err
+
+
+def test_post_update_verifier_uses_windows_managed_python_path(tmp_path: Path) -> None:
+    venv = _setup_venv(tmp_path)
+    target_python = venv / "Scripts" / "python.exe"
+    target_python.parent.mkdir(parents=True)
+    target_python.write_text("", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    with patch.object(cli_mod, "_get_managed_venv", return_value=venv):
+        assert cli_mod._verify_after_update(
+            runner=lambda command, **_: calls.append(command)
+            or SimpleNamespace(returncode=0, stdout="", stderr="")
+        )
+
+    assert calls == [
+        [str(target_python), "-I", "-m", "testpilot.cli", "--verify-install"]
+    ]
+
+
+def test_post_update_verifier_hides_runner_exception_text(
+    tmp_path: Path, capsys
+) -> None:
+    venv = _setup_venv(tmp_path)
+    target_python = venv / "bin" / "python"
+    target_python.parent.mkdir(parents=True)
+    target_python.write_text("", encoding="utf-8")
+
+    def _runner(*_args, **_kwargs):
+        raise RuntimeError("private-token-must-not-be-printed")
+
+    with patch.object(cli_mod, "_get_managed_venv", return_value=venv):
+        assert not cli_mod._verify_after_update(runner=_runner)
+
+    err = capsys.readouterr().err
+    assert "RuntimeError" in err
+    assert "private-token-must-not-be-printed" not in err
 
 
 def test_rollback_failure_prints_manual_recovery_and_exits_nonzero(

@@ -365,61 +365,174 @@ def _entry_point_module_prefixes(entry_point: object) -> tuple[str, ...]:
     return tuple(".".join(parts[:index]) for index in range(1, len(parts) + 1))
 
 
-def _check_plugin_health(managed_src: Path) -> list[tuple[bool, str]]:
-    """Collect install-health checks exposed by discovered plugins."""
-    plugins_dir = managed_src / "plugins"
-    if not plugins_dir.exists():
-        return []
+def _entry_point_import_root(entry_point: object) -> Path | None:
+    """Return the distribution root that owns an installed entry point."""
+    distribution = getattr(entry_point, "dist", None)
+    locate_file = getattr(distribution, "locate_file", None)
+    if not callable(locate_file):
+        return None
+    try:
+        return Path(locate_file(""))
+    except Exception:
+        return None
 
-    entry_points = _managed_plugin_entry_points(managed_src)
+
+def _plugin_module_is_under_root(plugin: object, import_root: Path) -> bool:
+    """Confirm the imported plugin implementation came from its selected root."""
+    module = sys.modules.get(getattr(plugin.__class__, "__module__", ""))
+    if module is None:
+        return False
+    root = import_root.resolve()
+    origins = [getattr(module, "__file__", None)]
+    origins.extend(getattr(module, "__path__", ()) or ())
+    for origin in origins:
+        if not origin:
+            continue
+        try:
+            Path(origin).resolve().relative_to(root)
+            return True
+        except (OSError, ValueError, TypeError):
+            continue
+    return False
+
+
+def _check_plugin_health_entry_points(
+    entry_points: list[object], *, import_root: Path | None = None
+) -> list[tuple[bool, str]]:
+    """Run plugin-owned install checks while preserving the caller's imports."""
     if not entry_points:
         return []
 
     checks: list[tuple[bool, str]] = []
-    managed_src_entry = str(managed_src)
-    added_managed_src = managed_src_entry not in sys.path
-    if added_managed_src:
-        sys.path.insert(0, managed_src_entry)
+    importlib.invalidate_caches()
     try:
-        importlib.invalidate_caches()
-        try:
-            loader = PluginLoader.from_entry_points(entry_points)
-        except ValueError as exc:
-            return [(False, f"FAIL plugin_health: {exc}")]
+        loader = PluginLoader.from_entry_points(entry_points)
+        entry_points_by_name = {
+            entry_point.name: entry_point for entry_point in entry_points
+        }
+        plugin_names = loader.discover()
+    except Exception as exc:
+        return [
+            (
+                False,
+                f"FAIL plugin_health: invalid entry-point configuration ({type(exc).__name__})",
+            )
+        ]
 
-        entry_points_by_name = {entry_point.name: entry_point for entry_point in entry_points}
-        for name in loader.discover():
-            entry_point = entry_points_by_name.get(name)
-            prefixes = _entry_point_module_prefixes(entry_point) if entry_point is not None else ()
-            saved_modules = {
-                loaded_name: module
-                for loaded_name, module in list(sys.modules.items())
+    for name in plugin_names:
+        entry_point = entry_points_by_name.get(name)
+        if entry_point is None:
+            checks.append((False, f"FAIL plugin_health {name}: entry point not found"))
+            continue
+        preferred_root = import_root or _entry_point_import_root(entry_point)
+        if preferred_root is None:
+            checks.append(
+                (False, f"FAIL plugin_health {name}: distribution import root unavailable")
+            )
+            continue
+
+        try:
+            preferred_root = preferred_root.resolve()
+        except OSError:
+            checks.append(
+                (False, f"FAIL plugin_health {name}: distribution import root unavailable")
+            )
+            continue
+
+        prefixes = _entry_point_module_prefixes(entry_point)
+        saved_modules = {
+            loaded_name: module
+            for loaded_name, module in list(sys.modules.items())
+            if any(
+                loaded_name == prefix or loaded_name.startswith(f"{prefix}.")
+                for prefix in prefixes
+            )
+        }
+        saved_path = list(sys.path)
+        root_entry = str(preferred_root)
+        sys.path[:] = [root_entry] + [path for path in saved_path if path != root_entry]
+        for loaded_name in saved_modules:
+            sys.modules.pop(loaded_name, None)
+        missing_override = object()
+        saved_override = PluginLoader._overrides.pop(name, missing_override)
+        try:
+            importlib.invalidate_caches()
+            plugin = loader.load(name)
+            if not _plugin_module_is_under_root(plugin, preferred_root):
+                checks.append(
+                    (
+                        False,
+                        f"FAIL plugin_health {name}: plugin module loaded outside its distribution",
+                    )
+                )
+                continue
+            plugin_checks = plugin.verify_install()
+            if not isinstance(plugin_checks, list):
+                checks.append(
+                    (
+                        False,
+                        f"FAIL plugin_health {name}: verify_install must return a list of (bool, str) checks",
+                    )
+                )
+                continue
+            for index, check in enumerate(plugin_checks):
+                if (
+                    not isinstance(check, tuple)
+                    or len(check) != 2
+                    or not isinstance(check[0], bool)
+                    or not isinstance(check[1], str)
+                ):
+                    checks.append(
+                        (
+                            False,
+                            f"FAIL plugin_health {name}: invalid check row {index}",
+                        )
+                    )
+                else:
+                    checks.append(check)
+        except Exception as exc:
+            checks.append(
+                (False, f"FAIL plugin_health {name}: check failed ({type(exc).__name__})")
+            )
+        finally:
+            for loaded_name in list(sys.modules):
                 if any(
                     loaded_name == prefix or loaded_name.startswith(f"{prefix}.")
                     for prefix in prefixes
-                )
-            }
-            for loaded_name in saved_modules:
-                sys.modules.pop(loaded_name, None)
-            try:
-                checks.extend(loader.load(name).verify_install())
-            except Exception as exc:
-                checks.append((True, f"WARN plugin_health {name}: {exc}"))
-            finally:
-                for loaded_name in list(sys.modules):
-                    if (
-                        any(
-                            loaded_name == prefix or loaded_name.startswith(f"{prefix}.")
-                            for prefix in prefixes
-                        )
-                    ):
-                        sys.modules.pop(loaded_name, None)
-                sys.modules.update(saved_modules)
-    finally:
-        if added_managed_src and managed_src_entry in sys.path:
-            sys.path.remove(managed_src_entry)
-        importlib.invalidate_caches()
+                ):
+                    sys.modules.pop(loaded_name, None)
+            sys.modules.update(saved_modules)
+            PluginLoader._overrides.pop(name, None)
+            if saved_override is not missing_override:
+                PluginLoader._overrides[name] = saved_override
+            sys.path[:] = saved_path
+            importlib.invalidate_caches()
     return checks
+
+
+def _check_plugin_health(managed_src: Path) -> list[tuple[bool, str]]:
+    """Collect install-health checks exposed by discovered plugins."""
+    if not (managed_src / "plugins").exists():
+        return []
+    return _check_plugin_health_entry_points(
+        _managed_plugin_entry_points(managed_src), import_root=managed_src
+    )
+
+
+def _check_installed_plugin_health() -> list[tuple[bool, str]]:
+    """Collect install-health checks from the installed plugin entry points."""
+    try:
+        entry_points = list(
+            importlib.metadata.entry_points(group=PluginLoader.ENTRY_POINT_GROUP)
+        )
+    except Exception as exc:
+        return [
+            (
+                False,
+                f"FAIL plugin_health: installed entry-point discovery failed ({type(exc).__name__})",
+            )
+        ]
+    return _check_plugin_health_entry_points(entry_points)
 
 
 # ---------------------------------------------------------------------------
@@ -639,6 +752,7 @@ def _handle_verify_install() -> None:
     if not managed_src.exists():
         probe = _probe_wheel_install()
         rows = _verify_install_wheel_mode(probe)
+        rows.extend(_check_installed_plugin_health())
         errors: list[str] = []
         for ok_flag, msg in rows:
             if not ok_flag:
@@ -847,11 +961,50 @@ def _snapshot_environment(managed_venv: Path, last_good: Path) -> None:
         print(f"Warning: could not snapshot environment: {e}", file=sys.stderr)
 
 
-def _verify_after_update() -> bool:
-    """Run wheel-mode verify-install as a post-update gate. True iff healthy."""
-    probe = _probe_wheel_install()
-    rows = _verify_install_wheel_mode(probe)
-    return all(ok for ok, _ in rows)
+def _managed_venv_python(managed_venv: Path) -> Path | None:
+    """Locate the interpreter belonging to the managed virtual environment."""
+    candidates = (
+        managed_venv / "bin" / "python",
+        managed_venv / "Scripts" / "python.exe",
+    )
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def _verify_after_update(*, runner=None) -> bool:
+    """Run the updated managed install's verifier in a fresh isolated process."""
+    managed_venv = _get_managed_venv()
+    python = _managed_venv_python(managed_venv)
+    if python is None:
+        print(
+            f"Post-update verify-install could not find managed Python under {managed_venv}.",
+            file=sys.stderr,
+        )
+        return False
+
+    if runner is None:
+        runner = subprocess.run
+    command = [str(python), "-I", "-m", "testpilot.cli", "--verify-install"]
+    try:
+        result = runner(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except Exception as exc:
+        print(
+            f"Post-update verify-install could not run ({type(exc).__name__}).",
+            file=sys.stderr,
+        )
+        return False
+
+    stdout = getattr(result, "stdout", "")
+    stderr = getattr(result, "stderr", "")
+    if isinstance(stdout, str) and stdout:
+        sys.stdout.write(stdout)
+    if isinstance(stderr, str) and stderr:
+        sys.stderr.write(stderr)
+    return getattr(result, "returncode", 1) == 0
 
 
 def _rollback_from_snapshot(last_good: Path, runner) -> None:
