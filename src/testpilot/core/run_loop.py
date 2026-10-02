@@ -218,6 +218,9 @@ def run(
     provider_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     plugin = orchestrator.loader.load(plugin_name)
+    bind_project_root = getattr(plugin, "bind_project_root", None)
+    if callable(bind_project_root):
+        bind_project_root(getattr(orchestrator, "root", None))
     prepared = plugin.prepare_run(case_ids)
     cases = list(prepared.cases)
     prepared_artifacts = dict(prepared.artifacts)

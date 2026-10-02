@@ -61,7 +61,7 @@ from testpilot.core.tier2_recovery import (
 
 from testpilot.api import excel_adapter  # noqa: F401  (公開子模組)
 
-API_VERSION = "1.2"
+API_VERSION = "1.3"
 
 __all__ = [
     "API_VERSION",

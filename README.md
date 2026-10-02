@@ -200,7 +200,7 @@ testpilot --verify-install    # report managed install health
 
 Use the installed `testpilot` command for normal operation. Developer checkouts can still use `python -m testpilot.cli` when debugging the repository.
 
-Plugin-owned CLI commands are registered from installed plugin packages when `testpilot.cli` is imported. `--root <path>` selects the runtime project root for cases/configs/reports; it does not dynamically replace the registered plugin CLI surface with commands from `<path>/plugins`.
+Plugin-owned CLI commands are registered from installed plugin packages when `testpilot.cli` is imported. `--root <path>` selects the runtime project root for cases/configs/reports; when omitted, TestPilot uses the current working directory, matching the context-free API default. It does not dynamically replace the registered plugin CLI surface with commands from `<path>/plugins`.
 
 The core host commands are:
 

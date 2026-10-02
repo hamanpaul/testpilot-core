@@ -1478,7 +1478,7 @@ def main(
 
     _setup_logging(verbose)
     ctx.ensure_object(dict)
-    ctx.obj["root"] = Path(root) if root else Path(__file__).resolve().parents[2]
+    ctx.obj["root"] = Path(root) if root is not None else Path.cwd()
     ctx.obj["provider_notice"] = None
 
     # When invoked without a subcommand (and no pre-dispatch flags), show help.

@@ -44,8 +44,14 @@ class _FakePlugin:
         self.capture_exception = capture_exception
         self.capture_calls = 0
         self.events = events
+        self.bound_project_root: Path | None = None
+        self.project_root_at_prepare: Path | None = None
+
+    def bind_project_root(self, project_root: Path | str | None) -> None:
+        self.bound_project_root = Path(project_root) if project_root is not None else None
 
     def prepare_run(self, case_ids: Any) -> PreparedRun:
+        self.project_root_at_prepare = self.bound_project_root
         return PreparedRun(cases=[], artifacts={})
 
     def execution_policy(self, case: Any) -> dict[str, Any]:
@@ -97,6 +103,7 @@ class _StubOrchestrator:
         events: list[str] | None = None,
     ) -> None:
         self.plugins_dir = plugins_dir
+        self.root = plugins_dir.parent
         self.config = {}
         self.loader = _FakeLoader(plugin or _FakePlugin())
         self.run_backend = _FakeRunBackend()
@@ -136,6 +143,21 @@ def test_run_payload_carries_agent_session_degraded(tmp_path: Path) -> None:
         "agent_recovered_case_ids": [],
         "audit": [],
     }
+
+
+def test_run_loop_binds_orchestrator_project_root_before_prepare_run(tmp_path: Path) -> None:
+    plugin = _FakePlugin()
+    project_root = tmp_path / "operator-project"
+    orch = _StubOrchestrator(
+        project_root / "plugins",
+        {"degraded": False, "reason": ""},
+        plugin=plugin,
+    )
+
+    run_loop.run(orch, "fake", None, None)
+
+    assert plugin.bound_project_root == project_root
+    assert plugin.project_root_at_prepare == project_root
 
 
 def test_run_payload_degraded_true_when_sessions_fail(tmp_path: Path) -> None:

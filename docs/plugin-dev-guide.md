@@ -113,6 +113,7 @@ implementation detail；若有新 core/schema symbol 要成為穩定契約，必
 | `execution_policy(case)` | 宣告執行約束（concurrency / mode / runner 選擇等） | `{}`（無約束） |
 | `create_reporter()` | 回傳 plugin 專屬 reporter（`IReporter`） | `None`（用 orchestrator 預設） |
 | `register_cli(registrar)` | 透過 `CliRegistrar` 註冊 installed plugin 自己的 Click 命令/群組 | no-op |
+| `bind_project_root(project_root)` | 接收本次執行選定的 operator project root，供 run-start preflight 或其 artifact 使用 | no-op |
 | `verify_install()` | 回傳 plugin-owned install health 診斷；checkout/wheel `testpilot --verify-install` 與更新後回滾閘都會執行（更新後由新 managed venv 的 isolated process 驗證）。`False`、例外、格式錯誤診斷或載入到所屬 distribution 以外的模組會阻擋驗證，`WARN` 維持提醒 | `[]` |
 | `build_remediation_decision(case, failure_snapshot, topology, ...)` | tier-1 deterministic failure→safe-env action mapping | `None` |
 | `execute_remediation(case, decision, topology)` | 執行 tier-1 allowlist action；只可修 environment | fail-closed unsupported result |
@@ -124,6 +125,9 @@ implementation detail；若有新 core/schema symbol 要成為穩定契約，必
 plugin 可透過 `testpilot.api.CliRegistrar` 掛載自己的 CLI surface。
 SDK API `1.2` 新增的 tier-2 hooks 為選配；既有宣告 `api_version = "1.1"`
 的 plugin 仍相容，但只有覆寫兩個 hooks 的 plugin 才能啟用 tier-2。
+SDK API `1.3` 新增 optional `bind_project_root(project_root)` run-context hook，
+預設為 no-op 且不改變既有 plugin method signatures；需要此 root-binding 行為的
+plugin 應宣告 `api_version = "1.3"`，避免舊 core 靜默忽略它。
 每個 tier-2 capability 必須宣告 `executor_key`、`description`、
 `execution_boundary` 與 `params_schema`。core 會驗證 executor allowlist、參數名稱/
 型別/enum/長度與 action budget；`schema_validated` 只表示結構通過，不表示 core
@@ -134,7 +138,10 @@ verdict artifact；core coordinator 另會在 hook 前後檢查 in-memory test s
 `register_cli()` 是 install-time registration：`testpilot.cli` import 時會掃描
 installed checkout 的 `plugins/` 並掛上 plugin commands。`--root <path>` 只改變
 執行時的 project root（cases/configs/testbed/report paths），不會重新掃描 `<path>/plugins`
-或動態改變已註冊的 CLI surface。若要新增/移除 plugin CLI command，請在安裝來源
+或動態改變已註冊的 CLI surface。未提供 `--root` 時，以目前 working directory
+作為 project root，與 context-free API 的預設一致。core 會在 run dispatch 前呼叫
+`bind_project_root()`，並在 `prepare_run()` 前再次綁定，讓 run-start hook 使用同一 root。
+若要新增/移除 plugin CLI command，請在安裝來源
 checkout 內更新 plugin 後重新安裝/更新 TestPilot。
 
 ### Azure BYOK runtime 備註

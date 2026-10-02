@@ -80,6 +80,39 @@ class _Loader:
         return self.plugin
 
 
+def test_orchestrator_binds_project_root_before_custom_runner_dispatch(
+    tmp_path: Path,
+) -> None:
+    class RootBoundPlugin(_Plugin):
+        bound_project_root: Path | None = None
+
+        def bind_project_root(self, project_root: Path | str | None) -> None:
+            self.bound_project_root = Path(project_root) if project_root is not None else None
+
+        def create_runner(self) -> Any:
+            plugin = self
+
+            class Runner:
+                def run(self, *args: Any) -> dict[str, Any]:
+                    del args
+                    assert plugin.bound_project_root == tmp_path
+                    return {"status": "ok"}
+
+            return Runner()
+
+    plugin = RootBoundPlugin()
+    orchestrator = Orchestrator(
+        project_root=tmp_path,
+        agent_runtime=AzureAgentRuntime(AzureAgentStatus(AzureAgentState.DISABLED_NO_KEY)),
+    )
+    orchestrator.loader = _Loader(plugin)  # type: ignore[assignment]
+
+    payload = orchestrator.run("fake")
+
+    assert plugin.bound_project_root == tmp_path
+    assert payload["status"] == "ok"
+
+
 class _RunBackend:
     def mark_position(self, handle: Any) -> None:
         del handle

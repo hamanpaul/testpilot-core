@@ -13,7 +13,7 @@ def test_api_version_is_semver():
     from testpilot.api import API_VERSION
 
     assert re.fullmatch(r"\d+\.\d+", API_VERSION)
-    assert API_VERSION == "1.2"
+    assert API_VERSION == "1.3"
 
 
 def test_tier2_recovery_contract_types_are_exported():

@@ -25,6 +25,8 @@ preparation.
 
 - Wheel-mode `--verify-install` and the post-update rollback gate now execute each installed plugin's `verify_install()` checks; the post-update gate uses the updated managed venv in an isolated process. False or malformed results, raised hook errors, and entry points that resolve outside their owning distribution fail closed, while plugin WARN results remain advisory.
 
+- Add optional SDK API 1.3 project-root binding before run dispatch and `prepare_run`; default CLI and orchestrator roots to the operator working directory so preflight artifacts from installed plugins stay with the project.
+
 ## [0.3.9] - 2026-09-22
 
 ### Fixed

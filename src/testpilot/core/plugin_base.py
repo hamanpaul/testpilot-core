@@ -192,6 +192,16 @@ class PluginBase(ABC):
         del registrar
         return None
 
+    def bind_project_root(self, project_root: Path | str | None) -> None:
+        """Receive the active operator project root before a run starts.
+
+        Core invokes this optional context hook before dispatching a run and
+        again before ``prepare_run``. Plugins may use it for run-start work
+        such as preflight artifacts. The default is a no-op so existing
+        plugins keep their behavior and method signatures.
+        """
+        del project_root
+
     def verify_install(self) -> list[tuple[bool, str]]:
         """Return plugin-owned install-health checks for testpilot --verify-install."""
         return []
