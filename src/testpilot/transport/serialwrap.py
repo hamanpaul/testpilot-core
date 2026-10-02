@@ -31,6 +31,23 @@ _TEMPSCRIPT = "/tmp/_tp_cmd.sh"
 # Overhead per printf chunk: printf '%s\n' '' >> /tmp/_tp_cmd.sh  ≈ 39 chars
 _PRINTF_OVERHEAD = 39
 
+# Preserve broker safety and readiness evidence at the transport boundary.
+_BROKER_RESULT_FIELDS = (
+    "error_code", "message", "hint", "retry_after_s", "recommended_action",
+    "non_replayable", "retryable", "input_integrity", "tx_bytes",
+    "sent_chars", "acked_chars", "newline_sent", "session_recovered",
+    "recovery_error", "daemon_reachable", "daemon_busy",
+)
+
+
+class SerialWrapCommandError(RuntimeError):
+    """CLI/RPC failure retaining the structured broker response."""
+
+    def __init__(self, message: str, result: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.result = dict(result)
+        self.transport_result = self.result
+
 
 def _resolve_serialwrap_binary(config: dict[str, Any]) -> str:
     cfg_bin = config.get("binary")
@@ -163,10 +180,14 @@ class SerialWrapTransport(TransportBase):
                 redir = ">" if first else ">>"
                 first = False
                 fmt = "%s\\n" if is_last_chunk else "%s"
-                self._submit_and_poll(
+                staged = self._submit_and_poll(
                     f"printf '{fmt}' '{chunk}' {redir} {_TEMPSCRIPT}",
                     setup_timeout,
                 )
+                if staged.get("returncode") != 0 or staged.get("partial") or staged.get("non_replayable"):
+                    # Never execute a partially written script or repeat an
+                    # ambiguous write. Retain the original broker evidence.
+                    return staged
 
         result = self._submit_and_poll(
             f"sh {_TEMPSCRIPT}; rm -f {_TEMPSCRIPT}",
@@ -286,6 +307,7 @@ class SerialWrapTransport(TransportBase):
             "background_capture_id": command_status.get("background_capture_id"),
             "interactive_session_id": command_status.get("interactive_session_id"),
             "recovery_action": command_status.get("recovery_action"),
+            **{key: command_status[key] for key in _BROKER_RESULT_FIELDS if key in command_status},
         }
 
     def _build_cli(self, args: list[str]) -> list[str]:
@@ -305,17 +327,27 @@ class SerialWrapTransport(TransportBase):
             check=False,
             timeout=timeout,
         )
+        stdout = (completed.stdout or "").strip()
+        payload = None
+        if stdout:
+            try:
+                decoded = json.loads(stdout)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(decoded, dict):
+                    payload = decoded
         if completed.returncode != 0:
             stderr = (completed.stderr or "").strip()
             stdout_trimmed = (completed.stdout or "").strip()[:500]
             suffix = f" | rc={completed.returncode}"
             if stdout_trimmed:
                 suffix += f" | stdout={stdout_trimmed}"
-            raise RuntimeError(
-                f"serialwrap command failed: {' '.join(args)}: {stderr}{suffix}"
+            raise SerialWrapCommandError(
+                f"serialwrap command failed: {' '.join(args)}: {stderr}{suffix}",
+                payload if payload is not None else {"returncode": completed.returncode, "stderr": stderr},
             )
 
-        stdout = (completed.stdout or "").strip()
         if not stdout:
             raise RuntimeError(f"serialwrap command returned empty stdout: {' '.join(args)}")
 
@@ -330,7 +362,7 @@ class SerialWrapTransport(TransportBase):
             if self._should_retry_with_attach(args, payload):
                 self._attach_session()
                 return self._run_json(args, timeout=timeout)
-            raise RuntimeError(f"serialwrap command not ok: {' '.join(args)}: {stdout}")
+            raise SerialWrapCommandError(f"serialwrap command not ok: {' '.join(args)}: {stdout}", payload)
         return payload
 
     def _ensure_ready_session(self, selector: str, session: dict[str, Any]) -> dict[str, Any]:

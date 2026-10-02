@@ -9,6 +9,10 @@ preparation.
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve serialwrap broker rejection and terminal-command safety metadata for plugin readiness policies; stop long-command staging after a failed or ambiguous script write.
+
 ## [0.3.9] - 2026-09-22
 
 ### Fixed
