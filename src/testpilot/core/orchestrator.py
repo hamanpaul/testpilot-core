@@ -139,9 +139,10 @@ class Orchestrator(OrchestratorRunBackendCompat):
         self.plugins_dir = Path(plugins_dir) if plugins_dir else self.root / DEFAULT_PLUGINS_DIR
         config = config_path or self.root / DEFAULT_CONFIG_DIR / "testbed.yaml"
         self.config = TestbedConfig(config)
+        testbed_config = self.config.raw.get("testbed", self.config.raw)
         self.run_backend = create_run_backend(
-            self.config.raw.get("testbed", {}).get("run_backend"),
-            self.config.raw.get("testbed", {}),
+            testbed_config.get("run_backend"),
+            testbed_config,
         )
         self._run_handle: RunHandle | None = None
         self.loader = PluginLoader(self.plugins_dir)

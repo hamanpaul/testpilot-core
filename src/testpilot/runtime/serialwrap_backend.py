@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -61,35 +62,47 @@ class SerialwrapBackend(RunBackend):
 
     def __init__(self, serialwrap_binary: str | None = None) -> None:
         self._serialwrap_binary = serialwrap_binary
-        self._binding: SerialwrapLogBinding | None = None
+        self._run_bindings: dict[str, SerialwrapLogBinding] = {}
+        self._run_owners: dict[str, object | None] = {}
 
     # -- RunBackend interface --------------------------------------------------
 
     def setup_run(self, run_id: str, config: dict[str, Any]) -> RunHandle:
         """Ensure daemon is running and WAL is clean/reset; return a RunHandle."""
+        if run_id in self._run_bindings:
+            raise ValueError(f"serialwrap run id already has capture state: {run_id}")
         backend_binary = self._serialwrap_binary or config.get("serialwrap_binary")
         binding = resolve_serialwrap_log_binding(
             config,
             backend_binary=str(backend_binary) if backend_binary else None,
         )
-        self._binding = binding
-        _serialwrap_log.configure(
+        if not binding.enabled:
+            self._run_bindings[run_id] = binding
+            self._run_owners[run_id] = None
+            return self._disabled_run_handle(run_id, binding)
+
+        owner = object()
+        if not _serialwrap_log.configure(
             binary=binding.binary,
             socket=binding.socket,
-            enabled=binding.enabled,
-            reason=binding.reason,
-        )
-        binding_meta = binding.to_meta()
-        if not binding.enabled:
-            log.warning("serialwrap run logging disabled: %s", binding.reason)
-            return RunHandle(
-                run_id=run_id,
-                meta={
-                    "wal_path": None,
-                    "bind_sessions": False,
-                    "serialwrap_binding": binding_meta,
-                },
+            enabled=True,
+            reason="",
+            owner=owner,
+        ):
+            binding = replace(
+                binding,
+                enabled=False,
+                binary=None,
+                socket=None,
+                reason="serialwrap logger is already owned by another active run",
             )
+            self._run_bindings[run_id] = binding
+            self._run_owners[run_id] = None
+            return self._disabled_run_handle(run_id, binding)
+
+        self._run_bindings[run_id] = binding
+        self._run_owners[run_id] = owner
+        binding_meta = binding.to_meta()
         started_fresh = False
         try:
             status = _serialwrap_log.daemon_status()
@@ -136,12 +149,27 @@ class SerialwrapBackend(RunBackend):
                 },
             )
 
+    @staticmethod
+    def _disabled_run_handle(run_id: str, binding: SerialwrapLogBinding) -> RunHandle:
+        log.warning("serialwrap run logging disabled: %s", binding.reason)
+        return RunHandle(
+            run_id=run_id,
+            meta={
+                "wal_path": None,
+                "bind_sessions": False,
+                "serialwrap_binding": binding.to_meta(),
+            },
+        )
+
     def bind_sessions(
         self,
         handle: RunHandle,
         devices: list[dict[str, Any]],
     ) -> None:
         """Bind serialwrap sessions to the listed devices."""
+        binding = self._run_bindings.get(handle.run_id)
+        if binding is None or not binding.enabled:
+            return
         if handle.meta.get("serialwrap_binding", {}).get("enabled") is False:
             return
         _serialwrap_log.setup_sessions(devices)
@@ -149,6 +177,9 @@ class SerialwrapBackend(RunBackend):
 
     def mark_position(self, handle: RunHandle) -> int | None:
         """Return the current WAL seq number."""
+        binding = self._run_bindings.get(handle.run_id)
+        if binding is None or not binding.enabled:
+            return None
         if handle.meta.get("serialwrap_binding", {}).get("enabled") is False:
             return None
         try:
@@ -166,30 +197,21 @@ class SerialwrapBackend(RunBackend):
         Exports the requested fixed sequence range in bounded pages. Case line
         references are attached only when the manifest proves complete coverage.
         """
-        if self._binding is not None and not self._binding.enabled:
-            export_path = Path(request.artifact_dir) / "serialwrap-wal-export.json"
-            export_path.parent.mkdir(parents=True, exist_ok=True)
-            export_path.write_text(
-                json.dumps(
-                    {
-                        "complete": False,
-                        "requested_from_seq_exclusive": (
-                            0
-                            if request.run_seq_start is None
-                            else max(int(request.run_seq_start), 0)
-                        ),
-                        "requested_to_seq_inclusive": request.run_seq_end,
-                        "record_count": 0,
-                        "incomplete_reasons": ["logging_disabled"],
-                        "binding": self._binding.to_meta(),
-                        "records": [],
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-                encoding="utf-8",
+        binding = self._run_bindings.get(request.run_id)
+        if binding is None:
+            return self._write_incomplete_export(request, "binding_missing")
+        if not binding.enabled:
+            return self._write_incomplete_export(
+                request,
+                "logging_disabled",
+                binding=binding,
             )
-            return ExportResult(paths={"wal_export_path": str(export_path)})
+        if request.run_seq_end is None:
+            return self._write_incomplete_export(
+                request,
+                "end_marker_missing",
+                binding=binding,
+            )
 
         # serialwrap wal.range uses an exclusive --from-seq cursor. Retain the
         # marker itself here so the first record after it is not skipped.
@@ -207,13 +229,16 @@ class SerialwrapBackend(RunBackend):
                 "requested_from_seq_exclusive": from_seq,
                 "requested_to_seq_inclusive": request.run_seq_end,
                 "record_count": 0,
+                "pages_fetched": 0,
+                "available_from_seq": None,
+                "rotated_out": False,
                 "complete": False,
                 "incomplete_reasons": ["export_error"],
+                "missing_sequence_ranges": [],
                 "error_type": type(exc).__name__,
                 "records": [],
             }
-            if self._binding is not None:
-                manifest["binding"] = self._binding.to_meta()
+            manifest["binding"] = binding.to_meta()
             export_path.write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -224,8 +249,7 @@ class SerialwrapBackend(RunBackend):
         export_path = Path(request.artifact_dir) / "serialwrap-wal-export.json"
         export_path.parent.mkdir(parents=True, exist_ok=True)
         manifest = export.to_dict()
-        if self._binding is not None:
-            manifest["binding"] = self._binding.to_meta()
+        manifest["binding"] = binding.to_meta()
         export_path.write_text(
             json.dumps(manifest, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -271,11 +295,42 @@ class SerialwrapBackend(RunBackend):
 
     def teardown_run(self, handle: RunHandle) -> None:
         """Keep the daemon alive but clear the run-scoped client target."""
-        _serialwrap_log.configure(
-            binary=None,
-            socket=None,
-            enabled=False,
-            reason="run capture is closed",
-        )
-        self._binding = None
+        owner = self._run_owners.pop(handle.run_id, None)
+        self._run_bindings.pop(handle.run_id, None)
+        if owner is not None:
+            _serialwrap_log.release(owner)
         log.debug("teardown_run: daemon kept alive for run %s", handle.run_id)
+
+    @staticmethod
+    def _write_incomplete_export(
+        request: ExportRequest,
+        reason: str,
+        *,
+        binding: SerialwrapLogBinding | None = None,
+    ) -> ExportResult:
+        export_path = Path(request.artifact_dir) / "serialwrap-wal-export.json"
+        export_path.parent.mkdir(parents=True, exist_ok=True)
+        from_seq = (
+            0
+            if request.run_seq_start is None
+            else max(int(request.run_seq_start), 0)
+        )
+        manifest: dict[str, Any] = {
+            "requested_from_seq_exclusive": from_seq,
+            "requested_to_seq_inclusive": request.run_seq_end,
+            "record_count": 0,
+            "pages_fetched": 0,
+            "available_from_seq": None,
+            "rotated_out": False,
+            "complete": False,
+            "incomplete_reasons": [reason],
+            "missing_sequence_ranges": [],
+            "records": [],
+        }
+        if binding is not None:
+            manifest["binding"] = binding.to_meta()
+        export_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return ExportResult(paths={"wal_export_path": str(export_path)})

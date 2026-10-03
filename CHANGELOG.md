@@ -29,6 +29,8 @@ preparation.
 
 - Bind run-level serialwrap logging to the selected DUT/STA transport binary and endpoint, disabling capture on conflicts; page fixed WAL ranges with sequence-gap, rotation, and loss provenance, and avoid local-file seq fallback for broker-reported WAL paths.
 
+- Normalize wrapped and flat testbed settings for logger setup, and preserve non-Unix endpoint schemes when checking device/broker target conflicts.
+
 ## [0.3.9] - 2026-09-22
 
 ### Fixed

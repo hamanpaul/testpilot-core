@@ -71,6 +71,14 @@ def test_export_serialwrap_logs_exports_complete_current_run_range(
     )
 
     backend = SerialwrapBackend()
+    monkeypatch.setattr(_serialwrap_log, "daemon_status", lambda: {"ok": True, "pid": 123})
+    monkeypatch.setattr(_serialwrap_log, "wal_reset", lambda: {"ok": True})
+    monkeypatch.setattr(
+        _serialwrap_log,
+        "get_wal_path",
+        lambda: Path("/tmp/serialwrap/raw.wal.ndjson"),
+    )
+    handle = backend.setup_run("run-1", _serial_config(tmp_path))
     request = ExportRequest(
         run_id="run-1",
         artifact_dir=tmp_path,
@@ -88,6 +96,7 @@ def test_export_serialwrap_logs_exports_complete_current_run_range(
         "dut run start\ndut run end\n"
     )
     assert Path(result.paths["sta_log_path"]).read_text(encoding="utf-8") == "sta run start\n"
+    backend.teardown_run(handle)
 
 
 def test_start_serialwrap_for_run_degrades_on_bind_failure() -> None:
@@ -180,6 +189,7 @@ def test_serialwrap_backend_setup_run_degrades_when_start_daemon_fails(
     assert handle.run_id == "run-1"
     assert handle.meta.get("bind_sessions") is False
     assert handle.meta.get("wal_path") is None
+    backend.teardown_run(handle)
 
 
 def test_serialwrap_backend_setup_run_never_rmtrees_wal_when_status_unknown(
@@ -230,6 +240,7 @@ def test_serialwrap_backend_setup_run_never_rmtrees_wal_when_status_unknown(
     assert handle.run_id == "run-1"
     assert handle.meta.get("bind_sessions") is True
     assert handle.meta.get("wal_path") == "/tmp/serialwrap/wal/raw.wal.ndjson"
+    backend.teardown_run(handle)
 
 
 def test_serialwrap_backend_setup_run_survives_wal_reset_failure_after_fresh_start(
@@ -263,6 +274,7 @@ def test_serialwrap_backend_setup_run_survives_wal_reset_failure_after_fresh_sta
     assert handle.run_id == "run-1"
     assert handle.meta.get("bind_sessions") is True
     assert handle.meta.get("wal_path") == "/tmp/serialwrap/wal/raw.wal.ndjson"
+    backend.teardown_run(handle)
 
 
 def test_serialwrap_backend_mark_position_uses_bound_daemon_rpc_with_reported_path(
@@ -281,11 +293,15 @@ def test_serialwrap_backend_mark_position_uses_bound_daemon_rpc_with_reported_pa
         encoding="utf-8",
     )
     monkeypatch.setattr(_serialwrap_log, "wal_current_seq", lambda: 77)
+    monkeypatch.setattr(_serialwrap_log, "daemon_status", lambda: {"ok": True, "pid": 123})
+    monkeypatch.setattr(_serialwrap_log, "wal_reset", lambda: {"ok": True})
+    monkeypatch.setattr(_serialwrap_log, "get_wal_path", lambda: wal)
 
     backend = SerialwrapBackend()
-    handle = RunHandle(run_id="run-1", meta={"wal_path": str(wal)})
+    handle = backend.setup_run("run-1", _serial_config(tmp_path))
 
     assert backend.mark_position(handle) == 77
+    backend.teardown_run(handle)
 
 
 def test_serialwrap_backend_mark_position_does_not_borrow_local_seq_after_rpc_failure(
@@ -302,6 +318,9 @@ def test_serialwrap_backend_mark_position_does_not_borrow_local_seq_after_rpc_fa
         "wal_current_seq",
         lambda: (_ for _ in ()).throw(RuntimeError("remote daemon unavailable")),
     )
+    monkeypatch.setattr(_serialwrap_log, "daemon_status", lambda: {"ok": True, "pid": 123})
+    monkeypatch.setattr(_serialwrap_log, "wal_reset", lambda: {"ok": True})
+    monkeypatch.setattr(_serialwrap_log, "get_wal_path", lambda: wal)
     tail_calls: list[list[str]] = []
     monkeypatch.setattr(
         _serialwrap_log.subprocess,
@@ -310,10 +329,11 @@ def test_serialwrap_backend_mark_position_does_not_borrow_local_seq_after_rpc_fa
     )
 
     backend = SerialwrapBackend()
-    handle = RunHandle(run_id="run-1", meta={"wal_path": str(wal)})
+    handle = backend.setup_run("run-1", _serial_config(tmp_path))
 
     assert backend.mark_position(handle) is None
     assert tail_calls == []
+    backend.teardown_run(handle)
 
 
 def test_get_current_seq_allows_explicit_verified_local_fallback(
@@ -334,10 +354,21 @@ def test_get_current_seq_allows_explicit_verified_local_fallback(
     assert _serialwrap_log.get_current_seq(wal, same_host_wal_path=True) == 42
 
 
-def test_serialwrap_backend_mark_position_uses_none_fallback(monkeypatch) -> None:
+def test_serialwrap_backend_mark_position_uses_none_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(_serialwrap_log, "wal_current_seq", lambda: 77)
+    monkeypatch.setattr(_serialwrap_log, "daemon_status", lambda: {"ok": True, "pid": 123})
+    monkeypatch.setattr(_serialwrap_log, "wal_reset", lambda: {"ok": True})
+    monkeypatch.setattr(
+        _serialwrap_log,
+        "get_wal_path",
+        lambda: Path("/tmp/serialwrap/raw.wal.ndjson"),
+    )
 
     backend = SerialwrapBackend()
-    handle = RunHandle(run_id="run-1", meta={"wal_path": None})
+    handle = backend.setup_run("run-1", _serial_config(tmp_path))
 
     assert backend.mark_position(handle) == 77
+    backend.teardown_run(handle)

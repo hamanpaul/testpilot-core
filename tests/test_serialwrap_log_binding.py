@@ -58,6 +58,36 @@ def _orchestrator(
     return orchestrator, binary
 
 
+def _setup_bound_backend(
+    backend: SerialwrapBackend,
+    run_id: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Any:
+    binary = tmp_path / f"{run_id}-serialwrap"
+    binary.write_text("fake", encoding="utf-8")
+    monkeypatch.setattr(_serialwrap_log, "daemon_status", lambda: {"ok": True, "pid": 123})
+    monkeypatch.setattr(_serialwrap_log, "wal_reset", lambda: {"ok": True})
+    monkeypatch.setattr(
+        _serialwrap_log,
+        "get_wal_path",
+        lambda: Path("/tmp/serialwrap/raw.wal.ndjson"),
+    )
+    return backend.setup_run(
+        run_id,
+        {
+            "devices": {
+                "DUT": {
+                    "transport": "serialwrap",
+                    "binary": str(binary),
+                    "socket": str(tmp_path / f"{run_id}.sock"),
+                    "selector": "COM0",
+                }
+            }
+        },
+    )
+
+
 def test_orchestrator_binds_logger_to_unanimous_device_binary_and_socket(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -95,6 +125,7 @@ def test_orchestrator_binds_logger_to_unanimous_device_binary_and_socket(
     assert binding["binary_source"] == "device_config"
     assert binding["socket_source"] == "device_config"
     assert binding["device_count"] == 2
+    orchestrator._stop_serialwrap()
 
 
 def test_orchestrator_disables_capture_for_mismatched_device_endpoints(
@@ -124,6 +155,248 @@ def test_orchestrator_disables_capture_for_mismatched_device_endpoints(
     assert handle.meta["bind_sessions"] is False
     assert calls == []
     assert orchestrator.run_backend.mark_position(handle) is None
+    orchestrator._stop_serialwrap()
+
+
+def test_orchestrator_accepts_flat_testbed_config_for_run_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SERIALWRAP_BIN", raising=False)
+    monkeypatch.delenv("SERIALWRAP_ENDPOINT", raising=False)
+    binary = tmp_path / "serialwrap-flat"
+    binary.write_text("fake cli path", encoding="utf-8")
+    socket = str(tmp_path / "serialwrap.sock")
+    config_path = tmp_path / "flat-testbed.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "name: flat-binding-test",
+                "run_backend: serialwrap",
+                "serialwrap_binary: " + str(binary),
+                "devices:",
+                "  DUT:",
+                "    transport: serial",
+                "    binary: " + str(binary),
+                "    socket: " + socket,
+                "    selector: COM0",
+                "  STA:",
+                "    transport: serialwrap",
+                "    binary: " + str(binary),
+                "    socket: " + socket,
+                "    selector: COM1",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    orchestrator = Orchestrator(
+        config_path=config_path,
+        agent_runtime=AzureAgentRuntime(
+            AzureAgentStatus(AzureAgentState.DISABLED_NO_KEY)
+        ),
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
+        del kwargs
+        calls.append(cmd)
+        if cmd[-2:] == ["daemon", "status"]:
+            payload = {"ok": True, "pid": 123, "wal_path": "/wal/raw.wal.ndjson"}
+        elif cmd[-2:] == ["wal", "reset"]:
+            payload = {"ok": True, "previous_seq": 0}
+        else:  # pragma: no cover - unexpected command guard
+            raise AssertionError(cmd)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(_serialwrap_log.subprocess, "run", fake_run)
+
+    orchestrator._start_serialwrap_for_run("run-flat")
+
+    assert orchestrator.run_backend._serialwrap_binary == str(binary)
+    assert len(calls) == 3
+    assert all(call[:3] == [str(binary), "--socket", socket] for call in calls)
+    assert orchestrator._run_handle.meta["serialwrap_binding"]["enabled"] is True
+    orchestrator._stop_serialwrap()
+
+
+def test_tcp_environment_endpoint_does_not_alias_a_unix_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SERIALWRAP_BIN", raising=False)
+    monkeypatch.setenv("SERIALWRAP_ENDPOINT", "tcp://127.0.0.1:48700")
+    binary = tmp_path / "serialwrap-fake"
+    binary.write_text("fake", encoding="utf-8")
+    # This path is the accidental filesystem normalization of the TCP URI.
+    # The DUT explicitly targets a Unix socket while STA inherits the TCP URI.
+    colliding_unix_path = str(Path.cwd() / "tcp:" / "127.0.0.1:48700")
+
+    binding = resolve_serialwrap_log_binding(
+        {
+            "devices": {
+                "DUT": {
+                    "transport": "serial",
+                    "binary": str(binary),
+                    "socket": colliding_unix_path,
+                },
+                "STA": {"transport": "serialwrap", "binary": str(binary)},
+            }
+        }
+    )
+
+    assert binding.enabled is False
+    assert binding.reason == "serialwrap device endpoints differ"
+
+
+def test_overlapping_backends_cannot_retarget_or_release_active_logger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SERIALWRAP_BIN", raising=False)
+    monkeypatch.delenv("SERIALWRAP_ENDPOINT", raising=False)
+    binary_a = tmp_path / "serialwrap-a"
+    binary_b = tmp_path / "serialwrap-b"
+    binary_a.write_text("fake A", encoding="utf-8")
+    binary_b.write_text("fake B", encoding="utf-8")
+    socket_a = str(tmp_path / "a.sock")
+    socket_b = str(tmp_path / "b.sock")
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
+        del kwargs
+        calls.append(cmd)
+        if cmd[-2:] == ["daemon", "status"]:
+            payload = {"ok": True, "pid": 123, "wal_path": "/wal/raw.wal.ndjson"}
+        elif cmd[-2:] == ["wal", "reset"]:
+            payload = {"ok": True, "previous_seq": 0}
+        elif cmd[-2:] == ["wal", "current-seq"]:
+            payload = {"ok": True, "seq": 55}
+        else:  # pragma: no cover - unexpected command guard
+            raise AssertionError(cmd)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(_serialwrap_log.subprocess, "run", fake_run)
+    config_a = {
+        "devices": {
+            "DUT": {
+                "transport": "serialwrap",
+                "binary": str(binary_a),
+                "socket": socket_a,
+                "selector": "COM0",
+            }
+        }
+    }
+    config_b = {
+        "devices": {
+            "DUT": {
+                "transport": "serialwrap",
+                "binary": str(binary_b),
+                "socket": socket_b,
+                "selector": "COM0",
+            }
+        }
+    }
+    backend_a = SerialwrapBackend()
+    backend_b = SerialwrapBackend()
+
+    handle_a = backend_a.setup_run("run-a", config_a)
+    calls_after_a_setup = len(calls)
+    handle_b = backend_b.setup_run("run-b", config_b)
+
+    assert calls_after_a_setup == 3
+    assert len(calls) == calls_after_a_setup
+    assert handle_b.meta["serialwrap_binding"]["enabled"] is False
+    assert "already owned" in handle_b.meta["serialwrap_binding"]["reason"]
+    assert backend_b.mark_position(handle_b) is None
+    assert backend_a.mark_position(handle_a) == 55
+    blocked_result = backend_b.export_logs(
+        ExportRequest(
+            run_id="run-b",
+            artifact_dir=tmp_path / "blocked-artifacts",
+            case_seq_ranges={},
+            run_seq_start=0,
+            run_seq_end=10,
+        )
+    )
+    blocked_manifest = json.loads(
+        Path(blocked_result.paths["wal_export_path"]).read_text(encoding="utf-8")
+    )
+    assert blocked_manifest["incomplete_reasons"] == ["logging_disabled"]
+    backend_b.teardown_run(handle_b)
+    assert backend_a.mark_position(handle_a) == 55
+    assert all(call[:3] == [str(binary_a), "--socket", socket_a] for call in calls)
+
+    backend_a.teardown_run(handle_a)
+    handle_b_retry = backend_b.setup_run("run-b-retry", config_b)
+
+    assert handle_b_retry.meta["serialwrap_binding"]["enabled"] is True
+    assert all(
+        call[:3] == [str(binary_b), "--socket", socket_b]
+        for call in calls[calls_after_a_setup + 2:]
+    )
+    backend_b.teardown_run(handle_b_retry)
+
+
+def test_missing_final_marker_exports_unknown_boundary_without_wal_rpc(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SERIALWRAP_BIN", raising=False)
+    monkeypatch.delenv("SERIALWRAP_ENDPOINT", raising=False)
+    binary = tmp_path / "serialwrap-fake"
+    binary.write_text("fake", encoding="utf-8")
+    socket = str(tmp_path / "serialwrap.sock")
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> SimpleNamespace:
+        del kwargs
+        if cmd[-2:] == ["daemon", "status"]:
+            payload = {"ok": True, "pid": 123, "wal_path": "/wal/raw.wal.ndjson"}
+        elif cmd[-2:] == ["wal", "reset"]:
+            payload = {"ok": True, "previous_seq": 0}
+        else:  # pragma: no cover - unexpected command guard
+            raise AssertionError(cmd)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(_serialwrap_log.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        _serialwrap_log,
+        "export_records_with_metadata",
+        lambda **kwargs: pytest.fail("unknown run boundary must not trigger WAL export"),
+    )
+    backend = SerialwrapBackend()
+    handle = backend.setup_run(
+        "run-no-end",
+        {
+            "devices": {
+                "DUT": {
+                    "transport": "serialwrap",
+                    "binary": str(binary),
+                    "socket": socket,
+                    "selector": "COM0",
+                }
+            }
+        },
+    )
+    case_result = SimpleNamespace(case_id="D001", dut_log_lines="", sta_log_lines="")
+    result = backend.export_logs(
+        ExportRequest(
+            run_id="run-no-end",
+            artifact_dir=tmp_path / "artifacts",
+            case_seq_ranges={"D001": {"seq_start": 1, "seq_end": 2}},
+            case_results=[case_result],
+            run_seq_start=0,
+            run_seq_end=None,
+        )
+    )
+
+    manifest = json.loads(Path(result.paths["wal_export_path"]).read_text(encoding="utf-8"))
+    assert manifest["complete"] is False
+    assert manifest["requested_to_seq_inclusive"] is None
+    assert manifest["incomplete_reasons"] == ["end_marker_missing"]
+    assert case_result.dut_log_lines == ""
+    assert case_result.sta_log_lines == ""
+    backend.teardown_run(handle)
 
 
 def test_backend_binary_conflict_with_device_binary_fails_closed(
@@ -169,6 +442,7 @@ def test_no_selected_serial_device_disables_logger_before_cli(
     )
     assert handle.meta["bind_sessions"] is False
     assert calls == []
+    backend.teardown_run(handle)
 
 
 def test_environment_binary_and_endpoint_override_both_transport_configs(
@@ -406,6 +680,7 @@ def test_incomplete_export_preserves_raw_loss_record_without_case_line_claim(
     )
     case_result = SimpleNamespace(case_id="D001", dut_log_lines="", sta_log_lines="")
     backend = SerialwrapBackend()
+    handle = _setup_bound_backend(backend, "run-loss", tmp_path, monkeypatch)
 
     result = backend.export_logs(
         ExportRequest(
@@ -423,6 +698,7 @@ def test_incomplete_export_preserves_raw_loss_record_without_case_line_claim(
     assert saved["records"][0]["loss_flag"] is True
     assert case_result.dut_log_lines == ""
     assert case_result.sta_log_lines == ""
+    backend.teardown_run(handle)
 
 
 def test_export_rpc_failure_writes_incomplete_manifest(
@@ -434,8 +710,10 @@ def test_export_rpc_failure_writes_incomplete_manifest(
         raise TimeoutError("remote wrapper unavailable")
 
     monkeypatch.setattr(_serialwrap_log, "export_records_with_metadata", fail_export)
+    backend = SerialwrapBackend()
+    handle = _setup_bound_backend(backend, "run-export-error", tmp_path, monkeypatch)
 
-    result = SerialwrapBackend().export_logs(
+    result = backend.export_logs(
         ExportRequest(
             run_id="run-export-error",
             artifact_dir=tmp_path,
@@ -451,6 +729,7 @@ def test_export_rpc_failure_writes_incomplete_manifest(
     assert saved["error_type"] == "TimeoutError"
     assert saved["requested_from_seq_exclusive"] == 12
     assert saved["requested_to_seq_inclusive"] == 34
+    backend.teardown_run(handle)
 
 
 def test_backend_socket_conflict_writes_disabled_export_provenance_without_cli(
@@ -494,3 +773,4 @@ def test_backend_socket_conflict_writes_disabled_export_provenance_without_cli(
     assert saved["requested_to_seq_inclusive"] == 34
     assert saved["incomplete_reasons"] == ["logging_disabled"]
     assert saved["binding"]["reason"] == "serialwrap device endpoints differ"
+    backend.teardown_run(handle)

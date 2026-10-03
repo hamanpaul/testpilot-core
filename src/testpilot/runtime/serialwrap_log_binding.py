@@ -59,6 +59,10 @@ def _normalize_endpoint(value: str | None) -> str | None:
     if raw.startswith("unix://"):
         path = raw[len("unix://"):]
         return "unix://" + os.path.normcase(os.path.abspath(os.path.normpath(path)))
+    if "://" in raw:
+        # Preserve non-Unix endpoint schemes (notably tcp://); interpreting
+        # their slashes as filesystem separators can alias a distinct socket.
+        return raw
     if os.path.isabs(raw) or os.path.sep in raw:
         return "unix://" + os.path.normcase(os.path.abspath(os.path.normpath(raw)))
     return raw

@@ -97,9 +97,10 @@ class OrchestratorRunBackendCompat:
     def _start_serialwrap_for_run(self, run_id: str = "run") -> Path | None:
         handle: RunHandle | None = None
         try:
+            testbed_config = self.config.raw.get("testbed", self.config.raw)
             handle = self.run_backend.setup_run(
                 run_id=run_id,
-                config=self.config.raw.get("testbed", {}),
+                config=testbed_config,
             )
             self._run_handle = handle
             devices = self._run_backend_devices()

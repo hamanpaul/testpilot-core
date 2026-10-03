@@ -10,6 +10,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from testpilot.serialwrap_binary import resolve_serialwrap_binary
@@ -26,46 +27,70 @@ _configured_bin: str | None = None
 _configured_socket: str | None = None
 _configured_enabled = True
 _configured_reason = ""
+_configured_owner: object | None = None
+_configured_lock = RLock()
 
 
 def configure(
     *,
     binary: str | None,
     socket: str | None,
+    owner: object,
     enabled: bool = True,
     reason: str = "",
-) -> None:
-    """Set the run logger target, including an explicit disabled state."""
-    global _configured_bin, _configured_socket, _configured_enabled, _configured_reason  # noqa: PLW0603
-    _configured_bin = binary
-    _configured_socket = socket
-    _configured_enabled = bool(enabled)
-    _configured_reason = str(reason)
+) -> bool:
+    """Set the run logger target unless another run currently owns it."""
+    global _configured_bin, _configured_socket, _configured_enabled, _configured_reason, _configured_owner  # noqa: PLW0603
+    with _configured_lock:
+        if _configured_owner is not None and _configured_owner is not owner:
+            return False
+        _configured_bin = binary
+        _configured_socket = socket
+        _configured_enabled = bool(enabled)
+        _configured_reason = str(reason)
+        _configured_owner = owner
+        return True
+
+
+def release(owner: object) -> bool:
+    """Clear the run target only when called by its current owner."""
+    global _configured_bin, _configured_socket, _configured_enabled, _configured_reason, _configured_owner  # noqa: PLW0603
+    with _configured_lock:
+        if _configured_owner is not owner:
+            return False
+        _configured_bin = None
+        _configured_socket = None
+        _configured_enabled = False
+        _configured_reason = "run capture is closed"
+        _configured_owner = None
+        return True
 
 
 def _cli_prefix() -> list[str]:
-    if not _configured_enabled:
-        raise RuntimeError(
-            "serialwrap run logging is disabled: "
-            + (_configured_reason or "device target could not be resolved")
-        )
-    command = [_resolve_bin()]
-    if _configured_socket:
-        command.extend(["--socket", _configured_socket])
-    return command
+    with _configured_lock:
+        if not _configured_enabled:
+            raise RuntimeError(
+                "serialwrap run logging is disabled: "
+                + (_configured_reason or "device target could not be resolved")
+            )
+        command = [_resolve_bin()]
+        if _configured_socket:
+            command.extend(["--socket", _configured_socket])
+        return command
 
 
 def _resolve_bin() -> str:
     """Resolve serialwrap binary: ENV → configure() value → PATH."""
-    if not _configured_enabled:
-        raise RuntimeError(
-            "serialwrap run logging is disabled: "
-            + (_configured_reason or "device target could not be resolved")
+    with _configured_lock:
+        if not _configured_enabled:
+            raise RuntimeError(
+                "serialwrap run logging is disabled: "
+                + (_configured_reason or "device target could not be resolved")
+            )
+        return resolve_serialwrap_binary(
+            _configured_bin,
+            config_label="'serialwrap_binary' in testbed config",
         )
-    return resolve_serialwrap_binary(
-        _configured_bin,
-        config_label="'serialwrap_binary' in testbed config",
-    )
 
 
 def _run_sw(args: list[str], timeout: float = 10.0) -> dict[str, Any]:
