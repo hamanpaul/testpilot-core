@@ -74,18 +74,19 @@ standard policy.
 After the fixes are merged, deploy the exact Core/plugin artifact pair and the
 same approved effective configuration for both runs. Each run must complete the
 full official case inventory across all applicable bands and produce its final
-JSON. Before tagging, verify that both JSON files contain the complete expected
-case/band matrix, that both runs use the same pinned software and configuration
-identities, and that each result matches the predeclared per-case/per-band
-release gate. The two runs must have no unexplained outcome drift. This is not
-an all-PASS requirement: an explicitly approved expected environment verdict,
-including a clock-related `FailEnv`, remains acceptable when it matches that
-gate. Missing rows, incomplete runs, or any result outside the gate block the
-release.
+JSON. Before tagging, verify that both JSON files contain the same complete
+case/band matrix and that both runs use the same pinned software and
+configuration identities. The final overall verdict, diagnostic verdicts, and
+every per-band verdict must agree exactly between the two runs. Keep `FailEnv`
+and `Skip` as distinct final verdicts; retain retry and remediation histories
+separately, even when those histories differ between runs. This is not an
+all-PASS requirement. Missing rows, incomplete runs, or any difference in the
+final verdict fields block the release.
 
 Do not create or push the v0.4.0 tag, or publish its GitHub Release, when the
 fixes are merged. Create and publish the tag only after both complete run
-results have been reviewed and found consistent with the same release gate.
+results have been reviewed and found to agree on the required final verdict
+fields.
 
 Recommended PR title:
 
