@@ -766,8 +766,9 @@ def _decode_record_payload(rec: dict[str, Any]) -> str | None:
 def save_decoded_log(text: str, path: Path) -> Path:
     """Write decoded log text to file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
-    logger.info("saved decoded log: %s (%d bytes)", path, len(text))
+    encoded = text.encode("utf-8")
+    path.write_bytes(encoded)
+    logger.info("saved decoded log: %s (%d bytes)", path, len(encoded))
     return path
 
 

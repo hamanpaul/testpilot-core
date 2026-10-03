@@ -37,6 +37,8 @@ preparation.
 
 - Keep approximate serialwrap log-range endpoints within the requested case sequence interval; emit no citation when a COM has no records inside it or the sequence range is reversed.
 
+- Save decoded serialwrap logs as exact UTF-8 payload bytes without platform newline translation, and report the encoded byte length.
+
 ### Changed
 
 - Increment the plugin SDK contract to API 1.4 and add `PreparedRun.no_io`; empty selections automatically skip run-level DUT/STA capture and firmware-version queries, while plugins can explicitly opt out for an entirely no-I/O prepared selection without skipping per-case results.

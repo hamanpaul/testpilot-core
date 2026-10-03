@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -246,6 +247,45 @@ class TestSaveDecodedLog:
         result = log_capture.save_decoded_log("hello world\n", out)
         assert result == out
         assert out.read_text() == "hello world\n"
+
+    def test_preserves_exact_utf8_newline_bytes_on_windows(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        original_io_open = io.open
+
+        def windows_text_output_open(
+            file,
+            mode="r",
+            buffering=-1,
+            encoding=None,
+            errors=None,
+            newline=None,
+            closefd=True,
+            opener=None,
+        ):
+            if "b" not in mode and "w" in mode and newline is None:
+                newline = "\r\n"
+            return original_io_open(
+                file,
+                mode,
+                buffering,
+                encoding,
+                errors,
+                newline,
+                closefd,
+                opener,
+            )
+
+        monkeypatch.setattr(io, "open", windows_text_output_open)
+        caplog.set_level(20, logger=log_capture.logger.name)
+        text = "β\r\nlast\n"
+        expected = text.encode("utf-8")
+        out = tmp_path / "DUT.log"
+
+        result = log_capture.save_decoded_log(text, out)
+
+        assert result.read_bytes() == expected
+        assert f"({len(expected)} bytes)" in caplog.text
 
 
 # ---------------------------------------------------------------------------
