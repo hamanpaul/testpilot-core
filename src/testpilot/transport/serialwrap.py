@@ -30,6 +30,7 @@ MODE_ALIASES = {"fg": "line", "bg": "background"}
 # executed via ``sh``, avoiding truncation.
 _MAX_SERIAL_LINE_LENGTH = 120
 _TEMPSCRIPT_PREFIX = "/tmp/t"
+_DEVICE_LIST_TIMEOUT = 5.0
 # Overhead for the legacy quote-chunk unit-test helper. Production staging
 # computes its exact framed command length in UTF-8 bytes below.
 _PRINTF_OVERHEAD = 39
@@ -119,6 +120,7 @@ class SerialWrapTransport(TransportBase):
                 sessions = self._list_sessions()
                 selector, session = self._resolve_session(params, sessions)
                 self._validate_session_binding(params, session)
+                self._session = session
                 session = self._ensure_ready_session(selector, session)
             except Exception as exc:
                 last_error = exc
@@ -150,6 +152,7 @@ class SerialWrapTransport(TransportBase):
     def recover(self, timeout: float | None = None) -> None:
         if not self._selector:
             raise RuntimeError("serialwrap recover requires resolved selector")
+        self._check_current_session_binding()
         recover_timeout = float(timeout if timeout is not None else self._session_attach_timeout)
         self._run_json(
             [
@@ -162,7 +165,7 @@ class SerialWrapTransport(TransportBase):
             ],
             timeout=recover_timeout + 2.0,
         )
-        self._attach_session()
+        self._require_ready_attached_session(self._attach_session(), "recover")
 
     def execute(self, command: str, timeout: float = 30.0) -> dict[str, Any]:
         if not self._connected or not self._selector:
@@ -181,10 +184,12 @@ class SerialWrapTransport(TransportBase):
         transaction is budgeted for its submit CLI timeout, status-poll
         deadline, one final status RPC that may cross that deadline, and one
         configured poll interval. A submit and the final status RPC may each
-        incur one known-safe ``SESSION_NOT_READY`` attach and retry; unknown,
-        accepted, partial, ambiguous, or otherwise non-replayable receipts are
-        never retried. OS subprocess start/termination/reap and scheduler
-        latency are outside this timeout-derived estimate.
+        incur one known-safe ``SESSION_NOT_READY`` attach and retry, including
+        the fresh session-list check and possible physical device-list checks
+        before and after attach. Unknown, accepted, partial, ambiguous, or
+        otherwise non-replayable receipts are never retried. OS subprocess
+        start/termination/reap and scheduler latency are outside this
+        timeout-derived estimate.
 
         This pure estimate is intended for callers that must fit a whole
         transport call into a larger deadline.  It does not submit commands or
@@ -196,9 +201,17 @@ class SerialWrapTransport(TransportBase):
             timeout_s = max(float(timeout), 0.1)
             poll_interval_s = float(self._poll_interval)
             attach_timeout_s = float(self._session_attach_timeout)
+            config = getattr(self, "_config", {})
+            session_list_timeout_s = float(
+                getattr(
+                    self,
+                    "_session_list_timeout",
+                    config.get("session_list_timeout", config.get("connect_timeout", 10.0)),
+                )
+            )
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                "timeout, poll interval, and session attach timeout must be numeric"
+                "timeout, poll interval, and serialwrap CLI timeouts must be numeric"
             ) from exc
         if not math.isfinite(timeout_s):
             raise ValueError("timeout must be finite")
@@ -206,6 +219,26 @@ class SerialWrapTransport(TransportBase):
             raise ValueError("poll interval must be finite and non-negative")
         if not math.isfinite(attach_timeout_s) or attach_timeout_s < 0:
             raise ValueError("session attach timeout must be finite and non-negative")
+        if not math.isfinite(session_list_timeout_s) or session_list_timeout_s < 0:
+            raise ValueError("session list timeout must be finite and non-negative")
+
+        binding_params = getattr(self, "_binding_params", None) or config
+        serial_port = str(binding_params.get("serial_port") or "").strip()
+        has_explicit_selector = any(
+            binding_params.get(field) for field in ("selector", "alias", "session_id")
+        )
+        needs_device_lookup = bool(
+            serial_port
+            and has_explicit_selector
+            and not self._is_by_id_path(serial_port)
+            and not self._normalize_com_name(serial_port)
+        )
+        # Binding validation may resolve a physical tty path both before the
+        # attach and again against its response. Budget both bounded device
+        # list reads as well as the fresh session-list read.
+        attach_binding_check_budget_s = session_list_timeout_s + (
+            2 * _DEVICE_LIST_TIMEOUT if needs_device_lookup else 0.0
+        )
 
         def transaction_budget(transaction_timeout_s: float) -> float:
             submit_cli_timeout_s = transaction_timeout_s + 2.0
@@ -214,15 +247,20 @@ class SerialWrapTransport(TransportBase):
             # t+1 deadline, can sleep once past it, and then may run one last
             # status CLI call whose timeout is min(t+1, 5). Either that final
             # status request or the submit may receive one known-safe
-            # SESSION_NOT_READY response and incur one attach plus one retry.
+            # SESSION_NOT_READY response and incur one binding preflight,
+            # attach, and retry. The preflight refreshes session-list metadata
+            # and may perform two device-list lookups for an explicit physical
+            # tty path (before attach and on its response).
             return (
                 submit_cli_timeout_s
                 + transaction_timeout_s
                 + 1.0
                 + poll_interval_s
                 + status_cli_timeout_s
+                + attach_binding_check_budget_s
                 + attach_timeout_s
                 + submit_cli_timeout_s
+                + attach_binding_check_budget_s
                 + attach_timeout_s
                 + status_cli_timeout_s
             )
@@ -722,7 +760,9 @@ class SerialWrapTransport(TransportBase):
                 _attach_retry_count < 1
                 and self._should_retry_with_attach(args, payload)
             ):
-                self._attach_session()
+                self._require_ready_attached_session(
+                    self._attach_session(), "command retry"
+                )
                 return self._run_json(
                     args,
                     timeout=timeout,
@@ -752,12 +792,15 @@ class SerialWrapTransport(TransportBase):
         selector = self._selector
         if not selector:
             raise RuntimeError("serialwrap attach requires resolved selector")
-        payload = self._run_json(
-            ["session", "attach", "--selector", selector],
-            timeout=self._session_attach_timeout,
-        )
-        session = payload.get("session")
-        if isinstance(session, dict):
+        try:
+            self._check_current_session_binding()
+            payload = self._run_json(
+                ["session", "attach", "--selector", selector],
+                timeout=self._session_attach_timeout,
+            )
+            session = payload.get("session")
+            if not isinstance(session, dict):
+                raise RuntimeError("serialwrap attach returned no session payload")
             if selector not in {
                 str(session.get("session_id", "")),
                 str(session.get("com", "")),
@@ -767,8 +810,24 @@ class SerialWrapTransport(TransportBase):
             self._validate_session_binding(
                 getattr(self, "_binding_params", {}), session
             )
+            cached_session = self._session
+            if not isinstance(cached_session, dict):
+                raise RuntimeError("serialwrap cached session identity is unavailable")
+            self._validate_same_session_identity(cached_session, session)
             self._session = session
-        return payload
+            return payload
+        except Exception:
+            self._clear_session_binding()
+            raise
+
+    def _require_ready_attached_session(
+        self, payload: dict[str, Any], context: str
+    ) -> dict[str, Any]:
+        session = payload.get("session")
+        if not isinstance(session, dict) or str(session.get("state", "")).upper() != "READY":
+            self._clear_session_binding()
+            raise RuntimeError(f"serialwrap {context} attach did not return a READY session")
+        return session
 
     def _should_retry_with_attach(self, args: list[str], payload: dict[str, Any]) -> bool:
         outcome = str(payload.get("outcome") or "").strip().lower()
@@ -787,7 +846,10 @@ class SerialWrapTransport(TransportBase):
             return False
         if payload.get("error_code") != "SESSION_NOT_READY":
             return False
-        if len(args) < 2 or args[:2] == ["session", "list"]:
+        if len(args) < 2 or args[:2] in (
+            ["session", "list"],
+            ["device", "list"],
+        ):
             return False
         return True
 
@@ -900,6 +962,44 @@ class SerialWrapTransport(TransportBase):
             return
         raise RuntimeError("serialwrap session physical identity does not match configuration")
 
+    def _check_current_session_binding(self) -> None:
+        selector = self._selector
+        cached_session = self._session
+        if not selector or not isinstance(cached_session, dict):
+            raise RuntimeError("serialwrap current session identity is unavailable")
+
+        params = getattr(self, "_binding_params", {})
+        selector_params = dict(params)
+        selector_params["selector"] = selector
+        selector_params.pop("alias", None)
+        selector_params.pop("session_id", None)
+        try:
+            sessions = self._list_sessions()
+            _, current_session = self._resolve_session(selector_params, sessions)
+            self._validate_session_binding(params, current_session)
+            self._validate_same_session_identity(cached_session, current_session)
+        except Exception:
+            self._clear_session_binding()
+            raise
+
+    def _validate_same_session_identity(
+        self, expected_session: dict[str, Any], actual_session: dict[str, Any]
+    ) -> None:
+        for field in ("session_id", "profile", "device_by_id", "platform", "com", "alias"):
+            expected = expected_session.get(field)
+            if expected in (None, ""):
+                continue
+            actual = actual_session.get(field)
+            if actual is None or str(actual) != str(expected):
+                raise RuntimeError("serialwrap current session identity changed")
+
+    def _clear_session_binding(self) -> None:
+        # Once daemon metadata or an attach response disagrees with the
+        # accepted session, cached selectors are no longer safe to use.
+        self._connected = False
+        self._selector = None
+        self._session = None
+
     def _session_matches_serial_port(
         self, serial_port: str, session: dict[str, Any]
     ) -> bool:
@@ -1009,7 +1109,9 @@ class SerialWrapTransport(TransportBase):
 
     def _resolve_by_id_from_real_path(self, serial_port: str) -> str | None:
         try:
-            payload = self._run_json(["device", "list"], timeout=5.0)
+            payload = self._run_json(
+                ["device", "list"], timeout=_DEVICE_LIST_TIMEOUT
+            )
         except Exception:
             return None
         devices = payload.get("devices", [])
@@ -1027,7 +1129,9 @@ class SerialWrapTransport(TransportBase):
 
     def _resolve_unique_by_id_from_real_path(self, serial_port: str) -> str | None:
         try:
-            payload = self._run_json(["device", "list"], timeout=5.0)
+            payload = self._run_json(
+                ["device", "list"], timeout=_DEVICE_LIST_TIMEOUT
+            )
         except Exception:
             return None
         devices = payload.get("devices", [])

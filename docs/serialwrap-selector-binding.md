@@ -26,8 +26,20 @@ must still name the selected session and satisfy the same constraints. The
 older serial-port-only discovery path, including its ttyUSB-to-COM fallback,
 remains unchanged.
 
-These checks validate the latest session-list snapshot and any attach response.
-They do not atomically bind a later command to that metadata: serialwrap's
+Before `recover()` and before the safe `SESSION_NOT_READY` attach/retry path,
+the transport refreshes the session list and requires the current selector,
+profile, and physical identity to match the session accepted by `connect()`.
+Missing, ambiguous, or changed metadata clears the connection and prevents the
+recovery, attach, or command replay. Ordinary command submissions do not each
+perform a new session-list query.
+Session and device metadata lookups are read-only and do not themselves trigger
+automatic attach retries; a failed physical-identity lookup fails closed.
+The execute-budget estimator includes the fresh session-list timeout and, for
+an explicitly selected non-COM physical path, up to two device-list timeouts
+per possible safe attach/retry (pre-attach and attach-response validation).
+
+These checks validate a session-list snapshot before the following operation;
+they do not atomically bind that operation to the metadata. Serialwrap's
 current command interface carries no expected-device identity token, so a
 concurrent daemon-side rebind after validation remains a race outside this
 client-side guard.

@@ -187,6 +187,7 @@ def test_connect_uses_configured_session_timeouts(monkeypatch: pytest.MonkeyPatc
 
     assert seen_timeouts == [
         (("session", "list"), 12.5),
+        (("session", "list"), 12.5),
         (("session", "attach"), 18.0),
     ]
 
@@ -1066,6 +1067,7 @@ def test_estimated_execute_budget_matches_submit_transactions(
     transport._connected = True
     transport._selector = "COM0"
     transport._poll_interval = 0.25
+    transport._session_list_timeout = 7.0
     transport._session_attach_timeout = 10.0
 
     estimate = transport.estimate_execute_time_budget_s(command, timeout=30.0)
@@ -1085,8 +1087,10 @@ def test_estimated_execute_budget_matches_submit_transactions(
             + 1.0
             + 0.25
             + status_timeout
+            + 7.0
             + 10.0
             + submit_timeout
+            + 7.0
             + 10.0
             + status_timeout
         )
@@ -1099,6 +1103,7 @@ def test_estimated_execute_budget_matches_submit_transactions(
 def test_estimated_execute_budget_includes_bounded_session_recovery() -> None:
     transport = SerialWrapTransport.__new__(SerialWrapTransport)
     transport._poll_interval = 0.25
+    transport._session_list_timeout = 7.0
     transport._session_attach_timeout = 10.0
 
     timeout = 5.0
@@ -1107,13 +1112,35 @@ def test_estimated_execute_budget_includes_bounded_session_recovery() -> None:
     status_timeout = min(timeout + 1.0, 5.0)
     base = submit_timeout + timeout + 1.0 + 0.25 + status_timeout
     recovery = (
-        transport._session_attach_timeout
+        transport._session_list_timeout
+        + transport._session_attach_timeout
         + submit_timeout
+        + transport._session_list_timeout
         + transport._session_attach_timeout
         + status_timeout
     )
 
     assert estimate == pytest.approx(base + recovery)
+
+
+def test_estimated_execute_budget_includes_possible_device_identity_lookups() -> None:
+    transport = SerialWrapTransport.__new__(SerialWrapTransport)
+    transport._poll_interval = 0.0
+    transport._session_list_timeout = 7.0
+    transport._session_attach_timeout = 3.0
+    transport._binding_params = {
+        "selector": "COM0",
+        "serial_port": "/dev/ttyUSB0",
+    }
+
+    estimate = transport.estimate_execute_time_budget_s("echo ok", timeout=1.0)
+    submit_timeout = 3.0
+    status_timeout = 2.0
+    base = submit_timeout + 1.0 + 1.0 + status_timeout
+    one_attach_retry = 7.0 + 2 * 5.0 + 3.0 + submit_timeout
+    final_status_retry = 7.0 + 2 * 5.0 + 3.0 + status_timeout
+
+    assert estimate == pytest.approx(base + one_attach_retry + final_status_retry)
 
 
 def _public_session(
@@ -1154,7 +1181,10 @@ def _binding_transport(
     selector: str | None = "COM0",
     serial_port: str = "/dev/serial/by-id/expected-device",
     attach_session: dict[str, Any] | None = None,
+    attach_response: dict[str, Any] | None = None,
     devices: list[dict[str, Any]] | None = None,
+    not_ready_submits: bool = False,
+    device_list_state: dict[str, bool] | None = None,
 ) -> tuple[SerialWrapTransport, list[tuple[str, ...]]]:
     monkeypatch.setattr(
         "testpilot.transport.serialwrap.resolve_serialwrap_binary",
@@ -1177,9 +1207,31 @@ def _binding_transport(
         if operation == ("session", "list"):
             return _cp(args, {"ok": True, "sessions": sessions})
         if operation == ("device", "list"):
+            if device_list_state and device_list_state.get("not_ready"):
+                return _cp(
+                    args,
+                    {
+                        "ok": False,
+                        "error_code": "SESSION_NOT_READY",
+                        "retryable": True,
+                    },
+                )
             return _cp(args, {"ok": True, "devices": devices or []})
+        if operation == ("session", "recover"):
+            return _cp(args, {"ok": True})
+        if operation == ("session", "attach") and attach_response is not None:
+            return _cp(args, attach_response)
         if operation == ("session", "attach") and attach_session is not None:
             return _cp(args, {"ok": True, "session": attach_session})
+        if operation == ("cmd", "submit") and not_ready_submits:
+            return _cp(
+                args,
+                {
+                    "ok": False,
+                    "error_code": "SESSION_NOT_READY",
+                    "retryable": True,
+                },
+            )
         pytest.fail(f"unexpected mutating or unsupported serialwrap call: {args[1:3]}")
 
     monkeypatch.setattr("testpilot.transport.serialwrap.subprocess.run", fake_run)
@@ -1291,7 +1343,11 @@ def test_connect_accepts_matching_attached_selector_session(
 
     assert transport.is_connected is True
     assert transport.session == attached
-    assert calls == [("session", "list"), ("session", "attach")]
+    assert calls == [
+        ("session", "list"),
+        ("session", "list"),
+        ("session", "attach"),
+    ]
 
 
 def test_connect_rejects_identity_changed_by_attach_and_clears_selector(
@@ -1315,7 +1371,11 @@ def test_connect_rejects_identity_changed_by_attach_and_clears_selector(
         transport.execute("echo must-not-run")
     with pytest.raises(RuntimeError, match="recover requires resolved selector"):
         transport.recover()
-    assert calls == [("session", "list"), ("session", "attach")]
+    assert calls == [
+        ("session", "list"),
+        ("session", "list"),
+        ("session", "attach"),
+    ]
     assert transport.is_connected is False
     assert transport.session is None
 
@@ -1333,7 +1393,11 @@ def test_connect_rejects_attach_response_for_different_session_id(
     with pytest.raises(RuntimeError):
         transport.connect()
 
-    assert calls == [("session", "list"), ("session", "attach")]
+    assert calls == [
+        ("session", "list"),
+        ("session", "list"),
+        ("session", "attach"),
+    ]
     assert transport.is_connected is False
     assert transport.session is None
 
@@ -1342,7 +1406,11 @@ def test_failed_reconnect_clears_previous_selector_before_execute_or_recover(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     sessions = [_public_session()]
-    transport, calls = _binding_transport(monkeypatch, sessions)
+    transport, calls = _binding_transport(
+        monkeypatch,
+        sessions,
+        attach_session=_public_session(),
+    )
     transport.connect()
     assert transport.is_connected is True
 
@@ -1443,3 +1511,212 @@ def test_serial_port_only_legacy_tty_fallback_rejects_ambiguous_com_sessions(
 
     assert calls == [("session", "list"), ("device", "list")]
     assert transport.is_connected is False
+
+
+def test_recover_rechecks_live_session_before_recovery_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = [_public_session()]
+    transport, calls = _binding_transport(
+        monkeypatch,
+        sessions,
+        attach_session=_public_session(),
+    )
+    transport.connect()
+    sessions[0] = _public_session(
+        device_by_id="/dev/serial/by-id/foreign-device",
+        profile="other-profile",
+    )
+
+    # The fake returns the original identity on attach; recovery must reject
+    # the changed live binding before issuing either mutating operation.
+    with pytest.raises(RuntimeError):
+        transport.recover()
+
+    assert calls == [("session", "list"), ("session", "list")]
+    assert transport.is_connected is False
+    assert transport.session is None
+    with pytest.raises(RuntimeError, match="not connected"):
+        transport.execute("reboot")
+    assert calls == [("session", "list"), ("session", "list")]
+
+
+@pytest.mark.parametrize(
+    ("attach_state", "should_connect"),
+    [("READY", True), ("ATTACHED", False)],
+)
+def test_recover_requires_matching_ready_attach_response(
+    attach_state: str,
+    should_connect: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport, calls = _binding_transport(
+        monkeypatch,
+        [_public_session()],
+        attach_session=_public_session(state=attach_state),
+    )
+    transport.connect()
+
+    if should_connect:
+        transport.recover()
+        assert transport.is_connected is True
+        assert transport.session == _public_session(state="READY")
+    else:
+        with pytest.raises(RuntimeError, match="READY session"):
+            transport.recover()
+        assert transport.is_connected is False
+        assert transport.session is None
+        with pytest.raises(RuntimeError, match="not connected"):
+            transport.execute("reboot")
+
+    assert calls == [
+        ("session", "list"),
+        ("session", "list"),
+        ("session", "recover"),
+        ("session", "list"),
+        ("session", "attach"),
+    ]
+
+
+def test_session_not_ready_rechecks_binding_before_attach_and_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = [_public_session()]
+    transport, calls = _binding_transport(
+        monkeypatch,
+        sessions,
+        attach_session=_public_session(),
+        not_ready_submits=True,
+    )
+    transport.connect()
+    sessions[0] = _public_session(
+        device_by_id="/dev/serial/by-id/foreign-device",
+        profile="other-profile",
+    )
+
+    with pytest.raises(RuntimeError):
+        transport.execute("echo this-command-must-not-replay")
+
+    assert calls == [
+        ("session", "list"),
+        ("cmd", "submit"),
+        ("session", "list"),
+    ]
+    assert transport.is_connected is False
+    assert transport.session is None
+    with pytest.raises(RuntimeError, match="not connected"):
+        transport.execute("reboot")
+    assert calls == [
+        ("session", "list"),
+        ("cmd", "submit"),
+        ("session", "list"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "attach_response",
+    [
+        {"ok": True},
+        {"ok": True, "session": "malformed"},
+        {"ok": True, "session": _public_session(state="ATTACHED")},
+    ],
+    ids=["missing-session", "nonmapping-session", "not-ready-session"],
+)
+def test_session_not_ready_requires_ready_attach_before_command_replay(
+    attach_response: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transport, calls = _binding_transport(
+        monkeypatch,
+        [_public_session()],
+        attach_response=attach_response,
+        not_ready_submits=True,
+    )
+    transport.connect()
+
+    with pytest.raises(RuntimeError):
+        transport.execute("echo must-not-replay-without-ready-attach")
+
+    assert calls == [
+        ("session", "list"),
+        ("cmd", "submit"),
+        ("session", "list"),
+        ("session", "attach"),
+    ]
+    assert transport.is_connected is False
+    assert transport.session is None
+
+
+@pytest.mark.parametrize(
+    "attach_session",
+    [
+        _public_session(profile="other-profile"),
+        _public_session(device_by_id="/dev/serial/by-id/foreign-device"),
+        _public_session(session_id="replacement:COM0"),
+    ],
+    ids=["wrong-profile", "wrong-device", "changed-session-id"],
+)
+def test_safe_retry_rejects_changed_attach_identity_and_clears_transport(
+    attach_session: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transport, calls = _binding_transport(
+        monkeypatch,
+        [_public_session()],
+        attach_session=attach_session,
+        not_ready_submits=True,
+    )
+    transport.connect()
+
+    with pytest.raises(RuntimeError):
+        transport.execute("echo must-not-replay-after-foreign-attach")
+
+    assert calls == [
+        ("session", "list"),
+        ("cmd", "submit"),
+        ("session", "list"),
+        ("session", "attach"),
+    ]
+    assert transport.is_connected is False
+    assert transport.session is None
+    with pytest.raises(RuntimeError, match="not connected"):
+        transport.execute("reboot")
+    assert calls == [
+        ("session", "list"),
+        ("cmd", "submit"),
+        ("session", "list"),
+        ("session", "attach"),
+    ]
+
+
+def test_device_list_not_ready_does_not_trigger_nested_attach_or_command_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    device_list_state = {"not_ready": False}
+    transport, calls = _binding_transport(
+        monkeypatch,
+        [_public_session()],
+        serial_port="/dev/ttyUSB0",
+        devices=[
+            {
+                "by_id": "/dev/serial/by-id/expected-device",
+                "real_path": "/dev/ttyUSB0",
+                "com": "COM0",
+            }
+        ],
+        not_ready_submits=True,
+        device_list_state=device_list_state,
+    )
+    transport.connect()
+    device_list_state["not_ready"] = True
+
+    with pytest.raises(RuntimeError):
+        transport.execute("echo must-not-replay-after-metadata-error")
+
+    assert calls == [
+        ("session", "list"),
+        ("device", "list"),
+        ("cmd", "submit"),
+        ("session", "list"),
+        ("device", "list"),
+    ]
+    assert transport.is_connected is False
+    assert transport.session is None
