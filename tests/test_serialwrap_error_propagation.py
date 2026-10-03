@@ -47,11 +47,14 @@ def test_terminal_command_error_keeps_non_replayable_outcome(monkeypatch):
 def test_failed_script_stage_prevents_execution_of_partial_script(monkeypatch):
     transport = SerialWrapTransport({"binary": "/tmp/serialwrap"})
     calls = []
-    def submit(command, timeout):
+    def submit(command, timeout, *, preserve_stdout=False):
+        del timeout, preserve_stdout
         calls.append(command)
         return {"returncode": 1, "status": "error", "error_code": "RX_BUSY", "non_replayable": True}
     monkeypatch.setattr(transport, "_submit_and_poll", submit)
     result = transport._execute_via_tempscript("echo " + "x" * 200, 30)
-    assert result["returncode"] == 1
+    assert result["returncode"] == 124
+    assert result["outcome"] == "unknown"
+    assert result["original_broker_result"]["error_code"] == "RX_BUSY"
     assert len(calls) == 1
     assert result["error_code"] == "RX_BUSY"

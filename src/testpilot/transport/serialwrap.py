@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import secrets
 import subprocess
 import time
 from typing import Any
@@ -28,8 +29,9 @@ MODE_ALIASES = {"fg": "line", "bg": "background"}
 # threshold are automatically staged to a temp script on the device and
 # executed via ``sh``, avoiding truncation.
 _MAX_SERIAL_LINE_LENGTH = 120
-_TEMPSCRIPT = "/tmp/_tp_cmd.sh"
-# Overhead per printf chunk: printf '%s\n' '' >> /tmp/_tp_cmd.sh  ≈ 39 chars
+_TEMPSCRIPT_PREFIX = "/tmp/t"
+# Overhead for the legacy quote-chunk unit-test helper. Production staging
+# computes its exact framed command length in UTF-8 bytes below.
 _PRINTF_OVERHEAD = 39
 
 # Preserve broker safety and readiness evidence at the transport boundary.
@@ -154,7 +156,7 @@ class SerialWrapTransport(TransportBase):
         if not self._connected or not self._selector:
             raise RuntimeError("serialwrap transport is not connected")
 
-        if len(command) > _MAX_SERIAL_LINE_LENGTH:
+        if len(command.encode("utf-8")) > _MAX_SERIAL_LINE_LENGTH:
             return self._execute_via_tempscript(command, timeout)
 
         return self._submit_and_poll(command, timeout)
@@ -213,11 +215,15 @@ class SerialWrapTransport(TransportBase):
                 + status_cli_timeout_s
             )
 
-        if len(command) <= _MAX_SERIAL_LINE_LENGTH:
+        if len(command.encode("utf-8")) <= _MAX_SERIAL_LINE_LENGTH:
             return transaction_budget(timeout_s)
 
+        nonce = "A" * 16
+        script_path = self._tempscript_path(nonce)
+        marker = f"TP{nonce}"
         stage_transactions = sum(
-            len(self._sq_chunks(line)) for line in command.split("\n")
+            len(self._sq_chunks(line, script_path=script_path, marker=marker))
+            for line in command.split("\n")
         )
         setup_timeout_s = min(timeout_s, 10.0)
         return (
@@ -230,89 +236,331 @@ class SerialWrapTransport(TransportBase):
     # ------------------------------------------------------------------
 
     def _execute_via_tempscript(self, command: str, timeout: float) -> dict[str, Any]:
-        """Write *command* to a temp script on the device then execute it.
+        """Write *command* to a unique temp script, then execute it.
 
-        Uses ``printf '%s\\n'`` with single-quote escaping to transmit the
-        script in small chunks, each well under the serial line-length
-        limit.  Newlines in the command are handled by splitting into
-        separate lines first.
+        Each staging printf and the final script shell report their producer
+        status through one unpredictable terminal marker. Unknown or malformed
+        receipts stop without replaying or executing a possibly partial file.
         """
         lines = command.split("\n")
         setup_timeout = min(timeout, 10.0)
+        nonce = secrets.token_urlsafe(12)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{16}", nonce):
+            raise RuntimeError("failed to generate a safe staged-command nonce")
+        script_path = self._tempscript_path(nonce)
+        marker = f"TP{nonce}"
         first = True
+        staged_write_count = 0
 
         for line in lines:
-            chunks = self._sq_chunks(line)
+            chunks = self._sq_chunks(line, script_path=script_path, marker=marker)
             for chunk_idx, chunk in enumerate(chunks):
-                is_last_chunk = chunk_idx == len(chunks) - 1
-                redir = ">" if first else ">>"
-                first = False
-                fmt = "%s\\n" if is_last_chunk else "%s"
-                staged = self._submit_and_poll(
-                    f"printf '{fmt}' '{chunk}' {redir} {_TEMPSCRIPT}",
-                    setup_timeout,
+                stage_command = self._stage_write_command(
+                    chunk,
+                    script_path=script_path,
+                    marker=marker,
+                    append=not first,
+                    finish_line=chunk_idx == len(chunks) - 1,
                 )
-                staged_outcome = str(staged.get("outcome") or "").strip().lower()
-                if (
-                    staged.get("returncode") != 0
-                    or staged.get("partial")
-                    or staged.get("non_replayable")
-                    or staged.get("ambiguous") is True
-                    or staged_outcome in {"accepted", "unknown", "ambiguous"}
-                ):
-                    # Never execute a partially written script or repeat an
-                    # ambiguous write. Retain the original broker evidence.
-                    return staged
+                if len(stage_command.encode("utf-8")) > _MAX_SERIAL_LINE_LENGTH:
+                    raise RuntimeError("generated staged write exceeds serial line byte limit")
+                first = False
+                staged = self._submit_and_poll(
+                    stage_command, setup_timeout, preserve_stdout=True,
+                )
+                if self._receipt_is_uncertain(staged):
+                    # Keep the raw receipt while making the transport result
+                    # fail closed; never run the script after an uncertain write.
+                    return self._uncertain_producer_result(
+                        staged,
+                        phase="stage_write",
+                        staged_write_count=staged_write_count,
+                    )
 
-        result = self._submit_and_poll(
-            f"sh {_TEMPSCRIPT}; rm -f {_TEMPSCRIPT}",
-            timeout,
+                parsed = self._parse_producer_frame(staged.get("stdout"), marker, fields=1)
+                if parsed is None:
+                    return self._producer_status_unknown(
+                        staged,
+                        phase="stage_write",
+                        staged_write_count=staged_write_count,
+                    )
+                producer_rc, _cleanup_rc, clean_stdout = parsed
+                staged_write_count += 1
+                framed_stage = self._producer_result(
+                    staged,
+                    phase="stage_write",
+                    producer_rc=producer_rc,
+                    cleanup_rc=None,
+                    clean_stdout=clean_stdout,
+                    staged_write_count=staged_write_count,
+                )
+                if framed_stage["returncode"] != 0:
+                    # Keep the uniquely owned partial file and do not execute it.
+                    return framed_stage
+
+        final_command = self._final_script_command(script_path=script_path, marker=marker)
+        if len(final_command.encode("utf-8")) > _MAX_SERIAL_LINE_LENGTH:
+            raise RuntimeError("generated staged execution exceeds serial line byte limit")
+        result = self._submit_and_poll(final_command, timeout, preserve_stdout=True)
+        if self._receipt_is_uncertain(result):
+            return self._uncertain_producer_result(
+                result,
+                phase="script",
+                staged_write_count=staged_write_count,
+            )
+
+        parsed = self._parse_producer_frame(result.get("stdout"), marker, fields=2)
+        if parsed is None:
+            return self._producer_status_unknown(
+                result,
+                phase="script",
+                staged_write_count=staged_write_count,
+            )
+        producer_rc, cleanup_rc, clean_stdout = parsed
+        return self._producer_result(
+            result,
+            phase="script",
+            producer_rc=producer_rc,
+            cleanup_rc=cleanup_rc,
+            clean_stdout=clean_stdout,
+            staged_write_count=staged_write_count,
+        )
+
+    @staticmethod
+    def _tempscript_path(nonce: str) -> str:
+        """Build a unique path separate from the legacy shared temp file."""
+        return f"{_TEMPSCRIPT_PREFIX}{nonce}"
+
+    @staticmethod
+    def _stage_write_command(
+        chunk: str,
+        *,
+        script_path: str,
+        marker: str,
+        append: bool,
+        finish_line: bool,
+    ) -> str:
+        fmt = "%s\\n" if finish_line else "%s"
+        redirection = ">>" if append else ">"
+        return (
+            f"printf '{fmt}' '{chunk}' {redirection} {script_path}; "
+            f"printf '\\n{marker}:%s\\n' \"$?\""
+        )
+
+    @staticmethod
+    def _final_script_command(*, script_path: str, marker: str) -> str:
+        # The subshell keeps its short status variables out of the caller.
+        # Capture the script result before cleanup and frame cleanup separately.
+        return (
+            f"(sh {script_path}; s=$?; rm -f {script_path}; r=$?; "
+            f"printf '\\n{marker}:%s:%s\\n' \"$s\" \"$r\")"
+        )
+
+    @staticmethod
+    def _receipt_is_uncertain(result: dict[str, Any]) -> bool:
+        outcome = str(result.get("outcome") or "").strip().lower()
+        status = str(result.get("status") or "").strip().lower()
+        error_code = str(result.get("error_code") or "").strip().upper()
+        input_integrity = str(result.get("input_integrity") or "").strip().lower()
+        return bool(
+            result.get("partial") is True
+            or result.get("non_replayable") is True
+            or result.get("ambiguous") is True
+            or outcome in {"accepted", "unknown", "ambiguous"}
+            or status in {"accepted", "running", "timeout", "unknown"}
+            or error_code == "COMMAND_OUTCOME_UNKNOWN"
+            or input_integrity == "uncertain"
+        )
+
+    @staticmethod
+    def _parse_producer_frame(
+        stdout: Any, marker: str, *, fields: int
+    ) -> tuple[int, int | None, str] | None:
+        """Parse exactly one complete terminal marker and remove its separator."""
+        if not isinstance(stdout, str) or fields not in {1, 2}:
+            return None
+        lines = stdout.splitlines(keepends=True)
+        if not lines:
+            return None
+
+        status_pattern = re.compile(
+            rf"{re.escape(marker)}:([0-9]{{1,3}})"
+            + (r":([0-9]{1,3})" if fields == 2 else "")
+        )
+        matches: list[tuple[int, re.Match[str]]] = []
+        for index, line in enumerate(lines):
+            content = line
+            if content.endswith("\n"):
+                content = content[:-1]
+                if content.endswith("\r"):
+                    content = content[:-1]
+            elif content.endswith("\r"):
+                content = content[:-1]
+            if content.startswith(marker):
+                match = status_pattern.fullmatch(content)
+                if match is None:
+                    return None
+                matches.append((index, match))
+
+        if len(matches) != 1 or matches[0][0] != len(lines) - 1:
+            return None
+        _, match = matches[0]
+        producer_rc = int(match.group(1))
+        cleanup_rc = int(match.group(2)) if fields == 2 else None
+        if producer_rc > 255 or (cleanup_rc is not None and cleanup_rc > 255):
+            return None
+
+        clean_stdout = "".join(lines[:-1])
+        if clean_stdout.endswith("\n"):
+            # Remove only the newline injected before our frame. A preceding
+            # CR may belong to the command's real output and must be retained.
+            clean_stdout = clean_stdout[:-1]
+        else:
+            return None
+        return producer_rc, cleanup_rc, clean_stdout
+
+    @staticmethod
+    def _producer_status_unknown(
+        broker_result: dict[str, Any],
+        *,
+        phase: str,
+        staged_write_count: int,
+    ) -> dict[str, Any]:
+        result = dict(broker_result)
+        result.update(
+            returncode=124,
+            outcome="unknown",
+            non_replayable=True,
+            retryable=False,
+            error_code="PRODUCER_STATUS_UNKNOWN",
+            producer_status="unknown",
+            producer_phase=phase,
+            producer_returncode=None,
+            cleanup_returncode=None,
+            broker_returncode=broker_result.get("returncode"),
+            staged_write_count=staged_write_count,
+            original_broker_result=dict(broker_result),
         )
         return result
 
     @staticmethod
-    def _sq_chunks(line: str) -> list[str]:
-        """Split *line* into single-quote-escaped chunks for ``printf``.
+    def _uncertain_producer_result(
+        broker_result: dict[str, Any],
+        *,
+        phase: str,
+        staged_write_count: int,
+    ) -> dict[str, Any]:
+        """Fail closed while retaining the exact uncertain broker receipt."""
+        result = dict(broker_result)
+        result.update(
+            returncode=124,
+            outcome="unknown",
+            non_replayable=True,
+            retryable=False,
+            producer_status="unknown",
+            producer_phase=phase,
+            producer_returncode=None,
+            cleanup_returncode=None,
+            broker_returncode=broker_result.get("returncode"),
+            staged_write_count=staged_write_count,
+            original_broker_result=dict(broker_result),
+        )
+        if not result.get("error_code"):
+            result["error_code"] = "COMMAND_OUTCOME_UNKNOWN"
+        return result
 
-        Each chunk, when wrapped as ``printf '%s' '<chunk>' >> file``,
-        stays under ``_MAX_SERIAL_LINE_LENGTH`` characters.  Single
-        quotes in *line* are escaped as ``'\\''`` (end-quote, literal
-        quote, start-quote) — standard POSIX shell quoting.
-        """
-        max_content = _MAX_SERIAL_LINE_LENGTH - _PRINTF_OVERHEAD
-        if max_content < 10:
-            max_content = 10
+    @staticmethod
+    def _producer_result(
+        broker_result: dict[str, Any],
+        *,
+        phase: str,
+        producer_rc: int,
+        cleanup_rc: int | None,
+        clean_stdout: str,
+        staged_write_count: int,
+    ) -> dict[str, Any]:
+        result = dict(broker_result)
+        broker_rc = broker_result.get("returncode", 0)
+        if not isinstance(broker_rc, int):
+            broker_rc = 0
+        if producer_rc != 0:
+            effective_rc = producer_rc
+        elif cleanup_rc not in {None, 0}:
+            effective_rc = cleanup_rc
+        else:
+            effective_rc = broker_rc
+        result.update(
+            returncode=effective_rc,
+            stdout=clean_stdout,
+            producer_status="known",
+            producer_phase=phase,
+            producer_returncode=producer_rc,
+            cleanup_returncode=cleanup_rc,
+            broker_returncode=broker_result.get("returncode"),
+            staged_write_count=staged_write_count,
+            original_broker_result=dict(broker_result),
+        )
+        return result
+
+    @classmethod
+    def _sq_chunks(
+        cls,
+        line: str,
+        *,
+        script_path: str | None = None,
+        marker: str | None = None,
+    ) -> list[str]:
+        """Split a shell line into safely quoted chunks within the wire budget."""
+        if (script_path is None) != (marker is None):
+            raise ValueError("script_path and marker must be provided together")
+        if script_path is None or marker is None:
+            max_content_bytes = max(0, _MAX_SERIAL_LINE_LENGTH - _PRINTF_OVERHEAD)
+        else:
+            framing_overhead = max(
+                len(
+                    cls._stage_write_command(
+                        "",
+                        script_path=script_path,
+                        marker=marker,
+                        append=append,
+                        finish_line=finish_line,
+                    ).encode("utf-8")
+                )
+                for append in (False, True)
+                for finish_line in (False, True)
+            )
+            max_content_bytes = _MAX_SERIAL_LINE_LENGTH - framing_overhead
 
         chunks: list[str] = []
         current: list[str] = []
-        current_len = 0
+        current_bytes = 0
 
-        for c in line:
-            if c == "'":
-                piece = "'\\''"
-                piece_len = 4
-            else:
-                piece = c
-                piece_len = 1
-
-            if current_len + piece_len > max_content and current:
+        for char in line:
+            piece = "'\\''" if char == "'" else char
+            piece_bytes = len(piece.encode("utf-8"))
+            if current_bytes + piece_bytes > max_content_bytes and current:
                 chunks.append("".join(current))
                 current = []
-                current_len = 0
-
+                current_bytes = 0
+            if piece_bytes > max_content_bytes:
+                raise ValueError("one UTF-8 character exceeds staged serial command budget")
             current.append(piece)
-            current_len += piece_len
+            current_bytes += piece_bytes
 
         if current:
             chunks.append("".join(current))
-
         return chunks or [""]
-
     # ------------------------------------------------------------------
     # Low-level submit + poll
     # ------------------------------------------------------------------
 
-    def _submit_and_poll(self, command: str, timeout: float = 30.0) -> dict[str, Any]:
+    def _submit_and_poll(
+        self,
+        command: str,
+        timeout: float = 30.0,
+        *,
+        preserve_stdout: bool = False,
+    ) -> dict[str, Any]:
         timeout_s = max(float(timeout), 0.1)
         start = time.monotonic()
         submit_args = [
@@ -365,7 +613,8 @@ class SerialWrapTransport(TransportBase):
             }
 
         command_status = status_payload.get("command", {})
-        stdout = str(command_status.get("stdout", "") or "").strip()
+        raw_stdout = str(command_status.get("stdout", "") or "")
+        stdout = raw_stdout if preserve_stdout else raw_stdout.strip()
         returncode = self._status_to_returncode(
             str(command_status.get("status", "")), command_status.get("error_code"),
         )

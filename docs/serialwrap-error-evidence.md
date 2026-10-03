@@ -10,9 +10,15 @@ Terminal command results preserve those same fields. Plugins can distinguish
 a rejected boot-window command from a command that was accepted and has an
 ambiguous outcome. A CLI timeout alone is not permission to resubmit a write.
 
-When staging a long command, a failed, partial or non-replayable script-write
-result stops staging and is returned to the caller. The transport does not
-execute the incomplete script. Successful staging behavior stays the same.
+When staging a long command, each script-write shell and the final script shell
+emit a per-invocation unpredictable status marker. The transport checks one
+complete terminal marker before continuing, reports the target shell's exit
+status separately from the broker result, and retains the original broker
+receipt. A known failed stage stops before execution; an accepted partial,
+unknown, or malformed receipt stops without another command. Final cleanup has
+its own status and cannot hide a nonzero script exit. The marker framing is
+removed from stdout while preserving the command's output, including real
+trailing newlines.
 
 These changes provide evidence for plugin readiness policy; they do not
 perform boot-window retries or claim that the target is ready.

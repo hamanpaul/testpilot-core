@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from typing import Any
 
@@ -902,21 +903,20 @@ def test_sq_chunks_preserves_single_quotes():
     """Single quotes are escaped as '\\'' and never split mid-escape."""
     chunks = SerialWrapTransport._sq_chunks("echo 'hello world'")
     assert len(chunks) >= 1
-    reassembled = "".join(chunks).replace("'\\'", "").replace("''", "")
     # Just verify the escaping is present
     assert "'\\''" in "".join(chunks)
 
 
 def test_sq_chunks_all_under_serial_limit():
     """Every generated printf command stays under _MAX_SERIAL_LINE_LENGTH."""
-    from testpilot.transport.serialwrap import _MAX_SERIAL_LINE_LENGTH, _TEMPSCRIPT
+    from testpilot.transport.serialwrap import _MAX_SERIAL_LINE_LENGTH
 
     # 500-char command simulating a long STA_MAC chain
     cmd = "STA_MAC=$(ubus-cli 'WiFi.AccessPoint.1.AssociatedDevice.1.MACAddress?' | " + "A" * 400 + ")"
     chunks = SerialWrapTransport._sq_chunks(cmd)
     assert len(chunks) > 1
     for chunk in chunks:
-        full = f"printf '%s\\n' '{chunk}' >> {_TEMPSCRIPT}"
+        full = f"printf '%s\\n' '{chunk}' >> /tmp/_tp_cmd.sh"
         assert len(full) <= _MAX_SERIAL_LINE_LENGTH, (
             f"chunk printf command too long: {len(full)} > {_MAX_SERIAL_LINE_LENGTH}"
         )
@@ -932,15 +932,24 @@ def test_sq_chunks_roundtrip():
 
 def test_execute_via_tempscript_stages_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     """Long commands are staged via printf chunks then executed with sh."""
-    from testpilot.transport.serialwrap import _MAX_SERIAL_LINE_LENGTH, _TEMPSCRIPT
+    from testpilot.transport.serialwrap import _MAX_SERIAL_LINE_LENGTH
 
     submitted: list[str] = []
 
-    def fake_submit(self, command, timeout=30.0):
+    def fake_submit(self, command, timeout=30.0, *, preserve_stdout=False):
+        del self, timeout
         submitted.append(command)
+        marker = re.search(r"TP([A-Za-z0-9_-]{16}):%s", command)
+        assert marker is not None
+        if ":%s:%s" in command:
+            stdout = f"\nTP{marker.group(1)}:0:0\n"
+        else:
+            stdout = f"\nTP{marker.group(1)}:0\n"
+        if not preserve_stdout:
+            stdout = stdout.strip()
         return {
             "returncode": 0,
-            "stdout": "",
+            "stdout": stdout,
             "stderr": "",
             "elapsed": 0.1,
             "cmd_id": "fake",
@@ -968,11 +977,14 @@ def test_execute_via_tempscript_stages_chunks(monkeypatch: pytest.MonkeyPatch) -
     for mid in submitted[1:-1]:
         assert mid.startswith("printf '%s")
         assert " >> " in mid  # subsequent chunks use >>
-    assert submitted[-1].startswith(f"sh {_TEMPSCRIPT}")
+    assert submitted[-1].startswith("(sh /tmp/t")
+    assert "; rm -f /tmp/t" in submitted[-1]
 
-    # All printf commands must be under the serial limit
-    for cmd in submitted[:-1]:
-        assert len(cmd) <= _MAX_SERIAL_LINE_LENGTH, f"too long: {len(cmd)}"
+    # Every submitted command includes framing within the UTF-8 byte limit.
+    for cmd in submitted:
+        assert len(cmd.encode("utf-8")) <= _MAX_SERIAL_LINE_LENGTH, (
+            f"too long: {len(cmd.encode('utf-8'))}"
+        )
 
 
 @pytest.mark.parametrize(
@@ -990,8 +1002,11 @@ def test_execute_via_tempscript_stops_after_unsafe_staging_result(
     submitted: list[str] = []
     result = {"returncode": 0, "stdout": "", "stderr": "", **unsafe_fields}
 
-    def fake_submit(self, command: str, timeout: float = 30.0) -> dict[str, Any]:
+    def fake_submit(
+        self, command: str, timeout: float = 30.0, *, preserve_stdout: bool = False
+    ) -> dict[str, Any]:
         del self, timeout
+        del preserve_stdout
         submitted.append(command)
         return result
 
@@ -1002,7 +1017,11 @@ def test_execute_via_tempscript_stops_after_unsafe_staging_result(
 
     actual = transport.execute("x" * 130, timeout=10.0)
 
-    assert actual is result
+    assert actual is not result
+    assert actual["returncode"] == 124
+    assert actual["outcome"] == "unknown"
+    assert actual["non_replayable"] is True
+    assert actual["original_broker_result"] == result
     assert len(submitted) == 1
     assert submitted[0].startswith("printf '%s")
 
@@ -1011,14 +1030,14 @@ def test_execute_via_tempscript_stops_after_unsafe_staging_result(
     ("command", "expected_stage_transactions"),
     [
         ("x" * 120, 0),
-        ("x" * 121, 2),
+        ("x" * 121, 4),
         (
             "pid=$(pgrep -f '/tmp/wl1_hapd.conf' 2>/dev/null | head -n1); "
             'if [ -n "$pid" ]; then kill -HUP "$pid" 2>/dev/null || true; fi',
-            2,
+            4,
         ),
-        ("a" * 60 + "\n" + "b" * 60 + "\n" + "c" * 5, 3),
-        ("'" * 130, 7),
+        ("a" * 60 + "\n" + "b" * 60 + "\n" + "c" * 5, 5),
+        ("'" * 130, 15),
     ],
 )
 def test_estimated_execute_budget_matches_submit_transactions(
@@ -1028,9 +1047,17 @@ def test_estimated_execute_budget_matches_submit_transactions(
 ) -> None:
     submitted_timeouts: list[float] = []
 
-    def fake_submit(self, command, timeout=30.0):
+    def fake_submit(self, command, timeout=30.0, *, preserve_stdout=False):
+        del self, preserve_stdout
         submitted_timeouts.append(timeout)
-        return {"returncode": 0, "stdout": "", "stderr": "", "partial": False}
+        marker = re.search(r"TP([A-Za-z0-9_-]{16}):%s", command)
+        if marker is None:
+            stdout = ""
+        elif ":%s:%s" in command:
+            stdout = f"\nTP{marker.group(1)}:0:0\n"
+        else:
+            stdout = f"\nTP{marker.group(1)}:0\n"
+        return {"returncode": 0, "stdout": stdout, "stderr": "", "status": "done", "partial": False}
 
     monkeypatch.setattr(SerialWrapTransport, "_submit_and_poll", fake_submit)
     transport = SerialWrapTransport.__new__(SerialWrapTransport)

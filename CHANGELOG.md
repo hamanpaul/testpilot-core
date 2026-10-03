@@ -23,6 +23,8 @@ preparation.
 
 - Expose a side-effect-free serialwrap execute-budget estimator for every staged-script transaction, including one bounded known-safe session attach/retry per submit and final status RPC; stop staged writes and retries when structured accepted/unknown/partial/ambiguous evidence makes the outcome unsafe.
 
+- Frame staged serial `printf` and script-shell exit statuses independently of broker completion status; preserve the original receipt and exact stdout, separate cleanup failure, and stop on missing or malformed producer markers.
+
 - Wheel-mode `--verify-install` and the post-update rollback gate execute each installed plugin's `verify_install()` checks; post-update uses the updated managed venv in an isolated process. False or malformed results, raised hook errors, and entry-point shim or Plugin class module ownership that cannot be verified against the distribution RECORD or PEP 610 editable source root fail closed; plugin WARN results remain advisory.
 
 - Add optional SDK API 1.3 project-root binding before run dispatch and `prepare_run`; default CLI and orchestrator roots to the operator working directory so preflight artifacts from installed plugins stay with the project.
