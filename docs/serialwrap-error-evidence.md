@@ -25,5 +25,11 @@ that `Bridge.send_command` appends to commands without a terminal LF. Generated
 staging and final commands remain single physical lines; a command already
 ending in LF is not charged for a second terminator.
 
+Per-case serialwrap log intervals use the exact concatenated decoded text saved
+to `DUT.log` and `STA.log`. WAL record boundaries do not add lines; CR, LF, and
+CRLF boundaries (including a CRLF split across records) follow the saved text's
+`splitlines` behavior. The interval includes the full first and last payload
+lines, even when the final record spans multiple lines.
+
 These changes provide evidence for plugin readiness policy; they do not
 perform boot-window retries or claim that the target is ready.

@@ -44,9 +44,9 @@ def test_export_serialwrap_logs_exports_complete_current_run_range(
 ) -> None:
     calls: list[dict[str, int | None]] = []
     records = [
-        _record(101, "COM0", "dut run start\n"),
+        _record(101, "COM0", "dut run start\r"),
         _record(102, "COM1", "sta run start\n"),
-        _record(130, "COM0", "dut run end\n"),
+        _record(130, "COM0", "\ndut run end-a\ndut run end-b\n"),
     ]
 
     def export_records(
@@ -83,7 +83,9 @@ def test_export_serialwrap_logs_exports_complete_current_run_range(
         run_id="run-1",
         artifact_dir=tmp_path,
         case_seq_ranges={"case-1": {"seq_start": 101, "seq_end": 130}},
-        case_results=[],
+        case_results=[
+            SimpleNamespace(case_id="case-1", dut_log_lines="", sta_log_lines="")
+        ],
         run_seq_start=100,
         run_seq_end=130,
         dut_com="COM0",
@@ -93,9 +95,11 @@ def test_export_serialwrap_logs_exports_complete_current_run_range(
 
     assert calls == [{"from_seq": 100, "to_seq": 130, "limit": 0}]
     assert Path(result.paths["dut_log_path"]).read_text(encoding="utf-8") == (
-        "dut run start\ndut run end\n"
+        "dut run start\ndut run end-a\ndut run end-b\n"
     )
     assert Path(result.paths["sta_log_path"]).read_text(encoding="utf-8") == "sta run start\n"
+    assert request.case_results[0].dut_log_lines == "L1-L3"
+    assert request.case_results[0].sta_log_lines == "L1-L1"
     backend.teardown_run(handle)
 
 

@@ -273,8 +273,8 @@ class SerialwrapBackend(RunBackend):
         )
 
         if export.complete:
-            dut_line_map = _serialwrap_log.build_seq_to_line_map(records, com_filter=dut_com)
-            sta_line_map = _serialwrap_log.build_seq_to_line_map(records, com_filter=sta_com)
+            dut_line_map = _serialwrap_log.build_seq_to_line_span_map(records, com_filter=dut_com)
+            sta_line_map = _serialwrap_log.build_seq_to_line_span_map(records, com_filter=sta_com)
             for cr in request.case_results:
                 seq_range = request.case_seq_ranges.get(cr.case_id)
                 if not seq_range:

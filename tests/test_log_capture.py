@@ -115,6 +115,66 @@ class TestBuildSeqToLineMap:
         mapping = log_capture.build_seq_to_line_map(records, com_filter="COM0")
         assert mapping[10] == 1
 
+    def test_fragments_map_to_lines_in_concatenated_log(self):
+        records = [
+            _make_record(1, "COM0", "first"),
+            _make_record(2, "COM0", "-second\nthird"),
+            _make_record(3, "COM0", "-fourth\n"),
+        ]
+
+        assert log_capture.decode_log(records, com_filter="COM0") == (
+            "first-second\nthird-fourth\n"
+        )
+        assert log_capture.build_seq_to_line_map(records, com_filter="COM0") == {
+            1: 1,
+            2: 1,
+            3: 2,
+        }
+
+    def test_line_spans_include_multiline_end_record(self):
+        records = [
+            _make_record(10, "COM0", "start\n"),
+            _make_record(11, "COM0", "end-a\nend-b\nend-c\n"),
+        ]
+
+        spans = log_capture.build_seq_to_line_span_map(records, com_filter="COM0")
+
+        assert spans == {10: (1, 1), 11: (2, 4)}
+        assert log_capture.seq_range_to_line_range(10, 11, spans) == "L1-L4"
+
+    def test_line_spans_follow_global_crlf_boundary_across_records(self):
+        records = [
+            _make_record(1, "COM0", "a\r"),
+            _make_record(2, "COM0", "\nb\n"),
+        ]
+
+        assert log_capture.decode_log(records, com_filter="COM0").splitlines() == [
+            "a",
+            "b",
+        ]
+        assert log_capture.build_seq_to_line_span_map(records, com_filter="COM0") == {
+            1: (1, 1),
+            2: (1, 2),
+        }
+
+    def test_line_spans_are_independent_per_com_and_skip_invalid_payload(self):
+        records = [
+            _make_record(1, "COM0", "dut-first"),
+            _make_record(2, "COM1", "sta-first\n"),
+            {"seq": 3, "com": "COM0", "payload_b64": "%%%not-base64%%%"},
+            _make_record(4, "COM0", "-dut-last\n"),
+            _make_record(5, "COM1", "sta-second\nsta-third\n"),
+        ]
+
+        dut_spans = log_capture.build_seq_to_line_span_map(records, com_filter="COM0")
+        sta_spans = log_capture.build_seq_to_line_span_map(records, com_filter="COM1")
+
+        assert log_capture.decode_log(records, com_filter="COM0") == "dut-first-dut-last\n"
+        assert dut_spans == {1: (1, 1), 4: (1, 1)}
+        assert sta_spans == {2: (1, 1), 5: (2, 3)}
+        assert log_capture.seq_range_to_line_range(1, 4, dut_spans) == "L1-L1"
+        assert log_capture.seq_range_to_line_range(1, 5, sta_spans) == "L1-L3"
+
 
 # ---------------------------------------------------------------------------
 # seq_range_to_line_range

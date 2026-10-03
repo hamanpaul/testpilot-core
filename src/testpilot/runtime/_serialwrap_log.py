@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from bisect import bisect_right
 import json
 import logging
 import subprocess
@@ -738,21 +739,28 @@ def decode_log(
         com_filter: If set, only include records from this COM port (e.g. "COM0").
 
     Returns:
-        Decoded text with each record's payload joined by newlines.
+        Decoded text with each selected record's payload concatenated in WAL order.
     """
     lines: list[str] = []
     for rec in records:
         if com_filter and rec.get("com") != com_filter:
             continue
-        payload_b64 = rec.get("payload_b64", "")
-        if not payload_b64:
-            continue
-        try:
-            text = base64.b64decode(payload_b64).decode("utf-8", errors="replace")
-        except Exception:
+        text = _decode_record_payload(rec)
+        if text is None:
             continue
         lines.append(text)
     return "".join(lines)
+
+
+def _decode_record_payload(rec: dict[str, Any]) -> str | None:
+    """Decode one WAL payload using the same skip/replacement policy as decode_log."""
+    payload_b64 = rec.get("payload_b64", "")
+    if not payload_b64:
+        return None
+    try:
+        return base64.b64decode(payload_b64).decode("utf-8", errors="replace")
+    except Exception:
+        return None
 
 
 def save_decoded_log(text: str, path: Path) -> Path:
@@ -767,64 +775,100 @@ def build_seq_to_line_map(
     records: list[dict[str, Any]],
     com_filter: str | None = None,
 ) -> dict[int, int]:
-    """Build a mapping from seq number to the first line number in decoded output.
+    """Build a mapping from seq number to its first decoded-log line.
 
     Line numbers are 1-based. A record with multi-line payload maps to its
-    first line. Records from other COM ports are skipped.
+    first line. Payload fragments are concatenated exactly as in ``decode_log``;
+    a WAL record boundary alone does not add a decoded-log line. Records from
+    other COM ports and payloads skipped by ``decode_log`` are skipped.
 
     Returns:
         {seq: first_line_number, ...}
     """
-    mapping: dict[int, int] = {}
-    current_line = 1
+    return {
+        seq: span[0]
+        for seq, span in build_seq_to_line_span_map(records, com_filter=com_filter).items()
+    }
+
+
+def build_seq_to_line_span_map(
+    records: list[dict[str, Any]],
+    com_filter: str | None = None,
+) -> dict[int, tuple[int, int]]:
+    """Map each WAL seq to the inclusive line span touched by its payload.
+
+    Spans use the same concatenated text and ``splitlines`` boundaries as the
+    decoded log. This also handles a CRLF pair whose CR and LF bytes are stored
+    in separate WAL records.
+    """
+    chunks: list[str] = []
+    seq_offsets: list[tuple[int, int, int]] = []
+    current_offset = 0
     for rec in records:
         if com_filter and rec.get("com") != com_filter:
             continue
+        text = _decode_record_payload(rec)
+        if text is None or not text:
+            continue
         seq = rec.get("seq")
-        payload_b64 = rec.get("payload_b64", "")
-        if not payload_b64:
-            continue
-        try:
-            text = base64.b64decode(payload_b64).decode("utf-8", errors="replace")
-        except Exception:
-            continue
         if seq is not None:
-            mapping[int(seq)] = current_line
-        line_count = text.count("\n")
-        if not text.endswith("\n") and text:
-            line_count += 1
-        current_line += line_count
+            seq_offsets.append((int(seq), current_offset, current_offset + len(text)))
+        chunks.append(text)
+        current_offset += len(text)
+
+    decoded_text = "".join(chunks)
+    line_starts = [0]
+    offset = 0
+    for line in decoded_text.splitlines(keepends=True):
+        offset += len(line)
+        if offset < len(decoded_text):
+            line_starts.append(offset)
+
+    def line_for_offset(text_offset: int) -> int:
+        return bisect_right(line_starts, text_offset)
+
+    mapping: dict[int, tuple[int, int]] = {}
+    for seq, start_offset, end_offset in seq_offsets:
+        mapping[seq] = (
+            line_for_offset(start_offset),
+            line_for_offset(end_offset - 1),
+        )
     return mapping
 
 
 def seq_range_to_line_range(
     seq_start: int | None,
     seq_end: int | None,
-    seq_to_line: dict[int, int],
+    seq_to_line: dict[int, int | tuple[int, int]],
 ) -> str:
-    """Convert a seq range to line range string (e.g. 'L123-L456').
+    """Convert a seq range to an inclusive line range (e.g. 'L123-L456').
 
-    Returns empty string if mapping is insufficient.
+    Integer values retain the legacy first-line mapping behavior. Tuple values
+    are inclusive ``(first_line, last_line)`` spans and include all lines
+    touched by the final seq payload. Returns empty string if the mapping is
+    insufficient.
     """
     if seq_start is None or seq_end is None:
         return ""
     if not seq_to_line:
         return ""
 
-    start_line = seq_to_line.get(seq_start)
-    end_line = seq_to_line.get(seq_end)
+    start_value = seq_to_line.get(seq_start)
+    end_value = seq_to_line.get(seq_end)
 
-    if start_line is None:
+    if start_value is None:
         seqs_at_or_after = [s for s in seq_to_line if s >= seq_start]
         if seqs_at_or_after:
-            start_line = seq_to_line[min(seqs_at_or_after)]
-    if end_line is None:
+            start_value = seq_to_line[min(seqs_at_or_after)]
+    if end_value is None:
         seqs_at_or_before = [s for s in seq_to_line if s <= seq_end]
         if seqs_at_or_before:
-            end_line = seq_to_line[max(seqs_at_or_before)]
+            end_value = seq_to_line[max(seqs_at_or_before)]
 
-    if start_line is None or end_line is None:
+    if start_value is None or end_value is None:
         return ""
+    start_line = start_value[0] if isinstance(start_value, tuple) else start_value
+    end_line = end_value[1] if isinstance(end_value, tuple) else end_value
     if start_line > end_line:
         start_line, end_line = end_line, start_line
     return f"L{start_line}-L{end_line}"

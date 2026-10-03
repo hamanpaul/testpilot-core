@@ -33,6 +33,8 @@ preparation.
 
 - Normalize wrapped and flat testbed settings for logger setup, and preserve non-Unix endpoint schemes when checking device/broker target conflicts.
 
+- Map serialwrap case log intervals against the exact concatenated DUT/STA text: payload fragments no longer invent lines, and the reported end line includes the complete final WAL payload.
+
 ### Changed
 
 - Increment the plugin SDK contract to API 1.4 and add `PreparedRun.no_io`; empty selections automatically skip run-level DUT/STA capture and firmware-version queries, while plugins can explicitly opt out for an entirely no-I/O prepared selection without skipping per-case results.
