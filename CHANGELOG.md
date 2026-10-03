@@ -9,6 +9,7 @@ preparation.
 
 ## [Unreleased]
 
+- Fail closed when a selected serialwrap session is ambiguous or conflicts with a configured profile or physical port; verify attach identity before allowing transport commands, while preserving serial-port-only legacy discovery.
 
 ## [0.4.0] - 2026-10-03
 

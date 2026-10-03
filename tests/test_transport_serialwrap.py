@@ -1114,3 +1114,332 @@ def test_estimated_execute_budget_includes_bounded_session_recovery() -> None:
     )
 
     assert estimate == pytest.approx(base + recovery)
+
+
+def _public_session(
+    *,
+    state: str = "READY",
+    profile: str | None = "prpl-template",
+    device_by_id: str | None = "/dev/serial/by-id/expected-device",
+    session_id: str = "prpl-template:COM0",
+    com: str = "COM0",
+    alias: str = "dut",
+) -> dict[str, Any]:
+    session: dict[str, Any] = {
+        "session_id": session_id,
+        "profile": profile,
+        "com": com,
+        "alias": alias,
+        "act_no": None,
+        "device_by_id": device_by_id,
+        "platform": "linux",
+        "profile_source": "operator",
+        "command_capable": True,
+        "state": state,
+        "last_error": None,
+        "vtty": "/dev/pts/7",
+        "attached_real_path": "/dev/ttyUSB0",
+    }
+    if profile is None:
+        session.pop("profile")
+    if device_by_id is None:
+        session.pop("device_by_id")
+    return session
+
+
+def _binding_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    sessions: list[dict[str, Any]],
+    *,
+    selector: str | None = "COM0",
+    serial_port: str = "/dev/serial/by-id/expected-device",
+    attach_session: dict[str, Any] | None = None,
+    devices: list[dict[str, Any]] | None = None,
+) -> tuple[SerialWrapTransport, list[tuple[str, ...]]]:
+    monkeypatch.setattr(
+        "testpilot.transport.serialwrap.resolve_serialwrap_binary",
+        lambda configured_bin, *, config_label: str(configured_bin),
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run(
+        args: list[str],
+        capture_output: bool,
+        text: bool,
+        check: bool,
+        timeout: float | None,
+        encoding: str | None = None,
+        errors: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        del capture_output, text, check, timeout, encoding, errors
+        operation = tuple(args[1:3])
+        calls.append(operation)
+        if operation == ("session", "list"):
+            return _cp(args, {"ok": True, "sessions": sessions})
+        if operation == ("device", "list"):
+            return _cp(args, {"ok": True, "devices": devices or []})
+        if operation == ("session", "attach") and attach_session is not None:
+            return _cp(args, {"ok": True, "session": attach_session})
+        pytest.fail(f"unexpected mutating or unsupported serialwrap call: {args[1:3]}")
+
+    monkeypatch.setattr("testpilot.transport.serialwrap.subprocess.run", fake_run)
+    config = {
+        "binary": "/tmp/serialwrap",
+        "serial_port": serial_port,
+        "profile": "prpl-template",
+        "connect_attempts": 1,
+        "connect_retry_delay": 0.0,
+    }
+    if selector is not None:
+        config["selector"] = selector
+    transport = SerialWrapTransport(config)
+    return transport, calls
+
+
+@pytest.mark.parametrize(
+    "session",
+    [
+        _public_session(
+            device_by_id="/dev/serial/by-id/foreign-device",
+            profile="prpl-template",
+        ),
+        _public_session(
+            device_by_id="/dev/serial/by-id/expected-device",
+            profile="other-profile",
+        ),
+        _public_session(device_by_id=None, profile="prpl-template"),
+        _public_session(
+            device_by_id="/dev/serial/by-id/expected-device",
+            profile=None,
+        ),
+    ],
+    ids=["foreign-physical-device", "wrong-profile", "missing-device-identity", "missing-profile"],
+)
+def test_connect_rejects_selector_identity_mismatch_before_any_mutation(
+    session: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transport, calls = _binding_transport(monkeypatch, [session])
+
+    with pytest.raises(RuntimeError):
+        transport.connect()
+
+    with pytest.raises(RuntimeError, match="not connected"):
+        transport.execute("echo must-not-run")
+    with pytest.raises(RuntimeError, match="recover requires resolved selector"):
+        transport.recover()
+    assert calls == [("session", "list")]
+    assert transport.is_connected is False
+    assert transport.session is None
+
+
+def test_connect_rejects_duplicate_selector_matches_before_attach(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport, calls = _binding_transport(
+        monkeypatch,
+        [
+            _public_session(session_id="first:COM0"),
+            _public_session(session_id="second:COM0"),
+        ],
+    )
+
+    with pytest.raises(RuntimeError):
+        transport.connect()
+
+    assert calls == [("session", "list")]
+    assert transport.is_connected is False
+
+
+def test_connect_accepts_ready_selector_with_matching_physical_device_and_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport, calls = _binding_transport(monkeypatch, [_public_session()])
+
+    transport.connect()
+
+    assert transport.is_connected is True
+    assert transport.session == _public_session()
+    assert calls == [("session", "list")]
+
+
+@pytest.mark.parametrize("serial_port", ["com0", r"\\.\COM0"])
+def test_connect_accepts_matching_windows_com_selector(
+    serial_port: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transport, calls = _binding_transport(
+        monkeypatch, [_public_session()], serial_port=serial_port
+    )
+
+    transport.connect()
+
+    assert transport.is_connected is True
+    assert calls == [("session", "list")]
+
+
+def test_connect_accepts_matching_attached_selector_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attached = _public_session()
+    attached["state"] = "READY"
+    transport, calls = _binding_transport(
+        monkeypatch,
+        [_public_session(state="ATTACHED")],
+        attach_session=attached,
+    )
+
+    transport.connect()
+
+    assert transport.is_connected is True
+    assert transport.session == attached
+    assert calls == [("session", "list"), ("session", "attach")]
+
+
+def test_connect_rejects_identity_changed_by_attach_and_clears_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    foreign = _public_session(
+        state="READY",
+        profile="other-profile",
+        device_by_id="/dev/serial/by-id/foreign-device",
+    )
+    transport, calls = _binding_transport(
+        monkeypatch,
+        [_public_session(state="ATTACHED")],
+        attach_session=foreign,
+    )
+
+    with pytest.raises(RuntimeError):
+        transport.connect()
+
+    with pytest.raises(RuntimeError, match="not connected"):
+        transport.execute("echo must-not-run")
+    with pytest.raises(RuntimeError, match="recover requires resolved selector"):
+        transport.recover()
+    assert calls == [("session", "list"), ("session", "attach")]
+    assert transport.is_connected is False
+    assert transport.session is None
+
+
+def test_connect_rejects_attach_response_for_different_session_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    changed_session = _public_session(session_id="replacement:COM0")
+    transport, calls = _binding_transport(
+        monkeypatch,
+        [_public_session(state="ATTACHED")],
+        attach_session=changed_session,
+    )
+
+    with pytest.raises(RuntimeError):
+        transport.connect()
+
+    assert calls == [("session", "list"), ("session", "attach")]
+    assert transport.is_connected is False
+    assert transport.session is None
+
+
+def test_failed_reconnect_clears_previous_selector_before_execute_or_recover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = [_public_session()]
+    transport, calls = _binding_transport(monkeypatch, sessions)
+    transport.connect()
+    assert transport.is_connected is True
+
+    sessions[0] = _public_session(device_by_id="/dev/serial/by-id/foreign-device")
+    with pytest.raises(RuntimeError):
+        transport.connect()
+
+    with pytest.raises(RuntimeError, match="not connected"):
+        transport.execute("echo must-not-run")
+    with pytest.raises(RuntimeError, match="recover requires resolved selector"):
+        transport.recover()
+    assert calls == [("session", "list"), ("session", "list")]
+    assert transport.is_connected is False
+    assert transport.session is None
+
+
+def test_explicit_selector_resolves_legacy_tty_path_to_expected_by_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport, calls = _binding_transport(
+        monkeypatch,
+        [_public_session()],
+        serial_port="/dev/ttyUSB0",
+        devices=[
+            {
+                "by_id": "/dev/serial/by-id/expected-device",
+                "real_path": "/dev/ttyUSB0",
+                "com": "COM0",
+            }
+        ],
+    )
+
+    transport.connect()
+
+    assert transport.is_connected is True
+    assert calls == [("session", "list"), ("device", "list")]
+
+
+def test_explicit_selector_rejects_ambiguous_tty_to_by_id_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport, calls = _binding_transport(
+        monkeypatch,
+        [_public_session()],
+        serial_port="/dev/ttyUSB0",
+        devices=[
+            {
+                "by_id": "/dev/serial/by-id/expected-device",
+                "real_path": "/dev/ttyUSB0",
+                "com": "COM0",
+            },
+            {
+                "by_id": "/dev/serial/by-id/foreign-device",
+                "real_path": "/dev/ttyUSB0",
+                "com": "COM1",
+            },
+        ],
+    )
+
+    with pytest.raises(RuntimeError):
+        transport.connect()
+
+    assert calls == [("session", "list"), ("device", "list")]
+    assert transport.is_connected is False
+
+
+def test_serial_port_only_legacy_tty_fallback_accepts_unique_com_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport, calls = _binding_transport(
+        monkeypatch,
+        [_public_session()],
+        selector=None,
+        serial_port="/dev/ttyUSB0",
+    )
+
+    transport.connect()
+
+    assert transport.is_connected is True
+    assert calls == [("session", "list"), ("device", "list")]
+
+
+def test_serial_port_only_legacy_tty_fallback_rejects_ambiguous_com_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport, calls = _binding_transport(
+        monkeypatch,
+        [
+            _public_session(session_id="first:COM0"),
+            _public_session(session_id="second:COM0"),
+        ],
+        selector=None,
+        serial_port="/dev/ttyUSB0",
+    )
+
+    with pytest.raises(RuntimeError):
+        transport.connect()
+
+    assert calls == [("session", "list"), ("device", "list")]
+    assert transport.is_connected is False

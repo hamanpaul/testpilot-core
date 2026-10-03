@@ -89,6 +89,7 @@ class SerialWrapTransport(TransportBase):
         self._connected = False
         self._selector: str | None = None
         self._session: dict[str, Any] | None = None
+        self._binding_params: dict[str, Any] = {}
 
     @property
     def transport_type(self) -> str:
@@ -106,15 +107,26 @@ class SerialWrapTransport(TransportBase):
 
     def connect(self, **kwargs: Any) -> None:
         params = {**self._config, **kwargs}
+        # A failed reconnect must not leave an earlier selector usable for a
+        # command or recovery attempt under the newly requested identity.
+        self._connected = False
+        self._selector = None
+        self._session = None
+        self._binding_params = dict(params)
         last_error: Exception | None = None
         for attempt in range(1, self._connect_attempts + 1):
             try:
                 sessions = self._list_sessions()
                 selector, session = self._resolve_session(params, sessions)
+                self._validate_session_binding(params, session)
                 session = self._ensure_ready_session(selector, session)
             except Exception as exc:
                 last_error = exc
+                self._connected = False
+                self._selector = None
+                self._session = None
                 if attempt >= self._connect_attempts:
+                    self._binding_params = {}
                     raise
                 if self._connect_retry_delay > 0.0:
                     time.sleep(self._connect_retry_delay)
@@ -746,6 +758,15 @@ class SerialWrapTransport(TransportBase):
         )
         session = payload.get("session")
         if isinstance(session, dict):
+            if selector not in {
+                str(session.get("session_id", "")),
+                str(session.get("com", "")),
+                str(session.get("alias", "")),
+            }:
+                raise RuntimeError("serialwrap attach returned a different session identity")
+            self._validate_session_binding(
+                getattr(self, "_binding_params", {}), session
+            )
             self._session = session
         return payload
 
@@ -786,10 +807,19 @@ class SerialWrapTransport(TransportBase):
         serial_port = params.get("serial_port")
 
         if selector:
-            selected = self._find_by_selector(str(selector), sessions)
-            if selected is None:
-                raise RuntimeError(f"serialwrap session not found by selector: {selector}")
-            return str(selector), selected
+            matches = [
+                session
+                for session in sessions
+                if str(selector)
+                in {
+                    str(session.get("session_id", "")),
+                    str(session.get("alias", "")),
+                    str(session.get("com", "")),
+                }
+            ]
+            if len(matches) != 1:
+                raise RuntimeError(f"serialwrap selector lookup failed: {selector}")
+            return str(selector), matches[0]
 
         if alias:
             selected = self._find_one(sessions, "alias", str(alias))
@@ -845,17 +875,79 @@ class SerialWrapTransport(TransportBase):
             "when READY sessions are not unique"
         )
 
+    def _validate_session_binding(
+        self, params: dict[str, Any], session: dict[str, Any]
+    ) -> None:
+        requested_profile = params.get("profile")
+        if requested_profile:
+            actual_profile = session.get("profile")
+            if not actual_profile or str(actual_profile) != str(requested_profile):
+                raise RuntimeError("serialwrap session profile does not match configuration")
+
+        serial_port = str(params.get("serial_port") or "").strip()
+        if not serial_port:
+            return
+
+        explicitly_selected = any(
+            params.get(field) for field in ("selector", "alias", "session_id")
+        )
+        if not explicitly_selected and not self._is_by_id_path(serial_port):
+            # Preserve serial_port-only legacy discovery, including the
+            # ttyUSB-to-COM fallback in _resolve_session().
+            return
+
+        if self._session_matches_serial_port(serial_port, session):
+            return
+        raise RuntimeError("serialwrap session physical identity does not match configuration")
+
+    def _session_matches_serial_port(
+        self, serial_port: str, session: dict[str, Any]
+    ) -> bool:
+        by_id = str(session.get("device_by_id") or "").strip()
+        if self._is_by_id_path(serial_port):
+            return bool(by_id and by_id == serial_port)
+
+        vtty = str(session.get("vtty") or "").strip()
+        if vtty and vtty == serial_port:
+            return True
+
+        requested_com = self._normalize_com_name(serial_port)
+        actual_com = self._normalize_com_name(str(session.get("com") or ""))
+        if requested_com and requested_com == actual_com:
+            return True
+
+        resolved_by_id = self._resolve_unique_by_id_from_real_path(serial_port)
+        return bool(resolved_by_id and by_id and resolved_by_id == by_id)
+
+    @staticmethod
+    def _is_by_id_path(value: str) -> bool:
+        return value.startswith("/dev/serial/by-id/")
+
+    @staticmethod
+    def _normalize_com_name(value: str) -> str | None:
+        normalized = value.strip()
+        if normalized.startswith("\\\\.\\"):
+            normalized = normalized[4:]
+        if re.fullmatch(r"COM\d+", normalized, flags=re.IGNORECASE):
+            return normalized.upper()
+        return None
+
     def _find_by_selector(
         self, selector: str, sessions: list[dict[str, Any]]
     ) -> dict[str, Any] | None:
-        for session in sessions:
-            if selector in {
+        matches = [
+            session
+            for session in sessions
+            if selector
+            in {
                 str(session.get("session_id", "")),
                 str(session.get("alias", "")),
                 str(session.get("com", "")),
-            }:
-                return session
-        return None
+            }
+        ]
+        if len(matches) != 1:
+            return None
+        return matches[0]
 
     def _find_one(
         self, sessions: list[dict[str, Any]], field: str, expected: str
@@ -932,6 +1024,29 @@ class SerialWrapTransport(TransportBase):
             if by_id:
                 return by_id
         return None
+
+    def _resolve_unique_by_id_from_real_path(self, serial_port: str) -> str | None:
+        try:
+            payload = self._run_json(["device", "list"], timeout=5.0)
+        except Exception:
+            return None
+        devices = payload.get("devices", [])
+        if not isinstance(devices, list):
+            return None
+        matches: set[str] = set()
+        for item in devices:
+            if not isinstance(item, dict):
+                continue
+            by_id = item.get("by_id")
+            if (
+                isinstance(by_id, str)
+                and by_id.strip()
+                and str(item.get("real_path", "")) == serial_port
+            ):
+                matches.add(by_id.strip())
+        if len(matches) != 1:
+            return None
+        return next(iter(matches))
 
     @staticmethod
     def _resolve_com_from_serial_port(serial_port: str) -> str | None:
