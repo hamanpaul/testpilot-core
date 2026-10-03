@@ -44,19 +44,20 @@ def append_log(entry):
 
 if args[:2] == ["cmd", "submit"]:
     command = args[args.index("--cmd") + 1]
+    wire_command = command
     cmd_id = f"fake-{state['next']}"
     state["next"] += 1
     append_log({"cmd_id": cmd_id, "command": command})
 
     remote = re.search(r"/tmp/t([A-Za-z0-9_-]{16})", command)
+    nonce = remote.group(1) if remote else None
+    marker = "TP" + nonce if nonce else None
     if remote:
         local = target_root / f"t{remote.group(1)}"
         command = command.replace(remote.group(0), str(local))
 
     mode = os.environ.get("TP_TEST_MODE", "")
     is_stage = command.startswith("printf ")
-    marker_match = re.search(r"TP([A-Za-z0-9_-]{16}):%s", command)
-    marker = "TP" + marker_match.group(1) if marker_match else None
 
     if (mode == "unknown-stage" and is_stage) or (mode == "unknown-final" and not is_stage):
         terminal = {
@@ -77,7 +78,19 @@ if args[:2] == ["cmd", "submit"]:
         )
         stdout = completed.stdout.decode("utf-8")
         stderr = completed.stderr.decode("utf-8")
-        if marker and mode == "missing-stage-marker" and is_stage:
+        if marker and mode == "wrapped-marker-echo" and is_stage:
+            # Model the captured serial console echo: CRCRLF is inserted just
+            # after the printf format's escaped newline. With a literal marker
+            # in the submitted command, the continuation begins with the
+            # marker and resembles a malformed producer frame.
+            wrap_at = wire_command.find("\\nTP")
+            if wrap_at >= 0:
+                wrap_at += len("\\n")
+                echoed = wire_command[:wrap_at] + "\r\r\n" + wire_command[wrap_at:]
+            else:
+                echoed = wire_command
+            stdout = echoed + "\r\n\r\n" + stdout
+        elif marker and mode == "missing-stage-marker" and is_stage:
             stdout = ""
         elif marker and mode == "spoof-stage-marker" and is_stage:
             stdout = f"noise {marker}:0\n"
@@ -252,6 +265,55 @@ def test_staged_stdout_preserves_quotes_backslashes_and_no_final_lf(
     assert result["stdout"] == f"first\n{value}"
     assert not result["stdout"].endswith("\n")
     assert result["producer_returncode"] == 0
+    _assert_wire_budget(log_path)
+
+
+def test_uart_wrapped_command_echo_does_not_poison_known_stage_receipt(
+    staged_transport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transport, _target_root, _fake_bin, log_path = staged_transport
+    monkeypatch.setenv("TP_TEST_MODE", "wrapped-marker-echo")
+
+    result = transport.execute(_long_script("printf wrapped-ok"))
+
+    assert result["returncode"] == 0
+    assert result["stdout"] == "wrapped-ok"
+    assert result["producer_status"] == "known"
+    assert len(_logged_commands(log_path)) > 1
+    _assert_wire_budget(log_path)
+
+
+def test_producer_frames_survive_echo_wraps_at_every_wire_offset(
+    staged_transport,
+) -> None:
+    transport, _target_root, _fake_bin, log_path = staged_transport
+    assert transport.execute(_long_script("printf wrap-sweep"))["returncode"] == 0
+
+    for command in _logged_commands(log_path):
+        match = re.search(r"/tmp/t([A-Za-z0-9_-]{16})", command)
+        assert match is not None
+        marker = "TP" + match.group(1)
+        fields = 1 if command.startswith("printf ") else 2
+        status_fields = "0" if fields == 1 else "0:0"
+
+        one_wraps = [(offset,) for offset in range(len(command) + 1)]
+        adjacent_multiwraps = [(offset, offset + 1) for offset in range(len(command))]
+        for offsets in (*one_wraps, *adjacent_multiwraps):
+            pieces: list[str] = []
+            last = 0
+            for offset in offsets:
+                pieces.append(command[last:offset])
+                pieces.append("\r\r\n")
+                last = offset
+            pieces.append(command[last:])
+            echoed = "".join(pieces)
+            stdout = f"{echoed}\r\n\r\n{marker}:{status_fields}\r\n"
+            parsed = transport._parse_producer_frame(stdout, marker, fields=fields)
+            assert parsed is not None, f"frame rejected for wraps at {offsets}"
+            assert parsed[0] == 0
+            assert parsed[1] == (0 if fields == 2 else None)
+
+        assert marker not in command, "full producer marker must not be echoed from TX"
     _assert_wire_budget(log_path)
 
 
