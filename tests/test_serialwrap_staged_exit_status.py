@@ -157,9 +157,12 @@ def _logged_commands(log_path: Path) -> list[str]:
 def _assert_wire_budget(log_path: Path) -> None:
     commands = _logged_commands(log_path)
     assert commands
-    assert all(len(command.encode("utf-8")) <= 120 for command in commands), [
-        len(command.encode("utf-8")) for command in commands
+    wire_lengths = [
+        len(command.encode("utf-8"))
+        + (0 if command.endswith("\n") else 1)
+        for command in commands
     ]
+    assert all(length <= 120 for length in wire_lengths), wire_lengths
 
 
 def _long_script(body: str) -> str:
@@ -303,6 +306,65 @@ def test_utf8_byte_budget_stages_and_splits_without_breaking_characters(
     assert result["returncode"] == 0
     assert result["stdout"] == "utf8-ok"
     assert len(_logged_commands(log_path)) > 2
+    _assert_wire_budget(log_path)
+
+
+@pytest.mark.parametrize(
+    ("line_prefix", "line_character", "repeat_count"),
+    [("", "x", 999), ("#", "界", 333), ("#", "'", 400)],
+    ids=["ascii", "multibyte", "quoted"],
+)
+def test_stage_and_final_commands_budget_the_uart_line_terminator(
+    staged_transport, line_prefix: str, line_character: str, repeat_count: int
+) -> None:
+    transport, _target_root, _fake_bin, log_path = staged_transport
+    command = line_prefix + line_character * repeat_count + "\nprintf boundary-ok"
+
+    result = transport.execute(command)
+
+    assert result["returncode"] == 0
+    assert result["stdout"] == "boundary-ok"
+    commands = _logged_commands(log_path)
+    assert all("\n" not in submitted for submitted in commands)
+    _assert_wire_budget(log_path)
+
+
+def test_direct_command_budget_accounts_for_appended_lf_at_120_byte_boundary(
+    staged_transport,
+) -> None:
+    transport, _target_root, _fake_bin, log_path = staged_transport
+
+    direct = "x" * 119
+    transport.execute(direct)
+    assert _logged_commands(log_path) == [direct]
+    _assert_wire_budget(log_path)
+
+    log_path.write_text("", encoding="utf-8")
+    boundary = "x" * 120
+    result = transport.execute(boundary)
+
+    assert result["producer_status"] == "known"
+    commands = _logged_commands(log_path)
+    assert commands[0].startswith("printf '")
+    assert all("\n" not in submitted for submitted in commands)
+    _assert_wire_budget(log_path)
+
+
+def test_direct_command_with_own_lf_does_not_get_double_counted(
+    staged_transport,
+) -> None:
+    transport, _target_root, _fake_bin, log_path = staged_transport
+    prefix = "printf '%s' '"
+    suffix = "'\n"
+    output = "d" * (120 - len(prefix.encode("utf-8")) - len(suffix.encode("utf-8")))
+    command = prefix + output + suffix
+    assert len(command.encode("utf-8")) == 120
+
+    result = transport.execute(command)
+
+    assert result["stdout"] == output
+    assert _logged_commands(log_path) == [command]
+    assert "producer_status" not in result
     _assert_wire_budget(log_path)
 
 

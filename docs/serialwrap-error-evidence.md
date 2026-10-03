@@ -20,5 +20,10 @@ its own status and cannot hide a nonzero script exit. The marker framing is
 removed from stdout while preserving the command's output, including real
 trailing newlines.
 
+The 120-byte limit is measured on the UTF-8 UART payload, including the LF
+that `Bridge.send_command` appends to commands without a terminal LF. Generated
+staging and final commands remain single physical lines; a command already
+ending in LF is not charged for a second terminator.
+
 These changes provide evidence for plugin readiness policy; they do not
 perform boot-window retries or claim that the target is ready.

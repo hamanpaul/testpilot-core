@@ -156,7 +156,7 @@ class SerialWrapTransport(TransportBase):
         if not self._connected or not self._selector:
             raise RuntimeError("serialwrap transport is not connected")
 
-        if len(command.encode("utf-8")) > _MAX_SERIAL_LINE_LENGTH:
+        if self._serial_wire_bytes(command) > _MAX_SERIAL_LINE_LENGTH:
             return self._execute_via_tempscript(command, timeout)
 
         return self._submit_and_poll(command, timeout)
@@ -215,7 +215,7 @@ class SerialWrapTransport(TransportBase):
                 + status_cli_timeout_s
             )
 
-        if len(command.encode("utf-8")) <= _MAX_SERIAL_LINE_LENGTH:
+        if self._serial_wire_bytes(command) <= _MAX_SERIAL_LINE_LENGTH:
             return transaction_budget(timeout_s)
 
         nonce = "A" * 16
@@ -262,7 +262,7 @@ class SerialWrapTransport(TransportBase):
                     append=not first,
                     finish_line=chunk_idx == len(chunks) - 1,
                 )
-                if len(stage_command.encode("utf-8")) > _MAX_SERIAL_LINE_LENGTH:
+                if self._serial_wire_bytes(stage_command) > _MAX_SERIAL_LINE_LENGTH:
                     raise RuntimeError("generated staged write exceeds serial line byte limit")
                 first = False
                 staged = self._submit_and_poll(
@@ -299,7 +299,7 @@ class SerialWrapTransport(TransportBase):
                     return framed_stage
 
         final_command = self._final_script_command(script_path=script_path, marker=marker)
-        if len(final_command.encode("utf-8")) > _MAX_SERIAL_LINE_LENGTH:
+        if self._serial_wire_bytes(final_command) > _MAX_SERIAL_LINE_LENGTH:
             raise RuntimeError("generated staged execution exceeds serial line byte limit")
         result = self._submit_and_poll(final_command, timeout, preserve_stdout=True)
         if self._receipt_is_uncertain(result):
@@ -330,6 +330,12 @@ class SerialWrapTransport(TransportBase):
     def _tempscript_path(nonce: str) -> str:
         """Build a unique path separate from the legacy shared temp file."""
         return f"{_TEMPSCRIPT_PREFIX}{nonce}"
+
+    @staticmethod
+    def _serial_wire_bytes(command: str) -> int:
+        """Count UTF-8 bytes sent by ``Bridge.send_command``, including LF."""
+        payload = command.encode("utf-8")
+        return len(payload) if payload.endswith(b"\n") else len(payload) + 1
 
     @staticmethod
     def _stage_write_command(
@@ -514,17 +520,19 @@ class SerialWrapTransport(TransportBase):
         if (script_path is None) != (marker is None):
             raise ValueError("script_path and marker must be provided together")
         if script_path is None or marker is None:
-            max_content_bytes = max(0, _MAX_SERIAL_LINE_LENGTH - _PRINTF_OVERHEAD)
+            max_content_bytes = max(
+                0, _MAX_SERIAL_LINE_LENGTH - _PRINTF_OVERHEAD - 1
+            )
         else:
             framing_overhead = max(
-                len(
+                cls._serial_wire_bytes(
                     cls._stage_write_command(
                         "",
                         script_path=script_path,
                         marker=marker,
                         append=append,
                         finish_line=finish_line,
-                    ).encode("utf-8")
+                    )
                 )
                 for append in (False, True)
                 for finish_line in (False, True)

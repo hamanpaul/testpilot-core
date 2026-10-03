@@ -917,8 +917,9 @@ def test_sq_chunks_all_under_serial_limit():
     assert len(chunks) > 1
     for chunk in chunks:
         full = f"printf '%s\\n' '{chunk}' >> /tmp/_tp_cmd.sh"
-        assert len(full) <= _MAX_SERIAL_LINE_LENGTH, (
-            f"chunk printf command too long: {len(full)} > {_MAX_SERIAL_LINE_LENGTH}"
+        wire_bytes = len(full.encode("utf-8")) + 1
+        assert wire_bytes <= _MAX_SERIAL_LINE_LENGTH, (
+            f"chunk printf wire line too long: {wire_bytes} > {_MAX_SERIAL_LINE_LENGTH}"
         )
 
 
@@ -982,8 +983,9 @@ def test_execute_via_tempscript_stages_chunks(monkeypatch: pytest.MonkeyPatch) -
 
     # Every submitted command includes framing within the UTF-8 byte limit.
     for cmd in submitted:
-        assert len(cmd.encode("utf-8")) <= _MAX_SERIAL_LINE_LENGTH, (
-            f"too long: {len(cmd.encode('utf-8'))}"
+        wire_bytes = len(cmd.encode("utf-8")) + 1
+        assert wire_bytes <= _MAX_SERIAL_LINE_LENGTH, (
+            f"too long: {wire_bytes}"
         )
 
 
@@ -1029,7 +1031,7 @@ def test_execute_via_tempscript_stops_after_unsafe_staging_result(
 @pytest.mark.parametrize(
     ("command", "expected_stage_transactions"),
     [
-        ("x" * 120, 0),
+        ("x" * 120, 4),
         ("x" * 121, 4),
         (
             "pid=$(pgrep -f '/tmp/wl1_hapd.conf' 2>/dev/null | head -n1); "
