@@ -118,6 +118,8 @@ else:
 
 @pytest.fixture
 def staged_transport(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # The CI-wide serialwrap stub must not replace this receipt-producing CLI.
+    monkeypatch.delenv("SERIALWRAP_BIN", raising=False)
     target_root = tmp_path / "target"
     target_root.mkdir()
     fake_bin = tmp_path / "bin"
