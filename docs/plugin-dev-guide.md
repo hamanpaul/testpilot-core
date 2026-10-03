@@ -64,6 +64,7 @@ case schema helpers（`load_case`, `load_cases_dir`, `CaseValidationError`,
 transport contracts（`TransportBase`,
 `StubTransport`, `create_transport`）、reporting contracts、run-backend
 contract（`RunBackend`, `RunHandle`, `ExportRequest`, `ExportResult`）、
+run preparation contract（`PreparedRun`, including API 1.4 `no_io`),
 case utility helpers、tier-2 contracts（`Tier2Capability`,
 `Tier2RecoveryContext`, `Tier2RecoveryAudit`, `Tier2PlanValidationError`）、
 `CliRegistrar`、run helpers（含 ctx-free 的
@@ -128,6 +129,13 @@ SDK API `1.2` 新增的 tier-2 hooks 為選配；既有宣告 `api_version = "1.
 SDK API `1.3` 新增 optional `bind_project_root(project_root)` run-context hook，
 預設為 no-op 且不改變既有 plugin method signatures；需要此 root-binding 行為的
 plugin 應宣告 `api_version = "1.3"`，避免舊 core 靜默忽略它。
+SDK API `1.4` 新增 `PreparedRun.no_io`（預設 `False`）。Plugin 只有在整個 prepared
+selection 都不需要 Core 的 DUT/STA capture、sequence marker、log export 與 firmware
+version query 時才設為 `True`，例如透過 `PreparedRun(cases=cases, no_io=True)` 標示全為
+unsupported/N/A 的 selection；此宣告不會跳過 case planning、execution 或 reporting。
+空 selection 會由 Core 自動略過上述環境 I/O。
+需要宣告 `no_io=True` 的 plugin 應使用 `api_version = "1.4"`；一般既有 plugin
+維持預設值即可。
 每個 tier-2 capability 必須宣告 `executor_key`、`description`、
 `execution_boundary` 與 `params_schema`。core 會驗證 executor allowlist、參數名稱/
 型別/enum/長度與 action budget；`schema_validated` 只表示結構通過，不表示 core

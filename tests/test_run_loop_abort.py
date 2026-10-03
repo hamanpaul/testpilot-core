@@ -250,12 +250,21 @@ def test_pre_case_setup_failure_releases_serialwrap_owner_for_next_run(
         "serialwrap_binary": str(binary),
         "devices": {"DUT": dict(device), "STA": dict(device)},
     }
-    plugin = _Plugin([])
+    plugin = _Plugin(
+        [
+            {
+                "id": "D001",
+                "source": {"row": 1},
+                "steps": [],
+                "pass_criteria": [],
+            }
+        ]
+    )
     backend = _RecordingSerialwrapBackend()
     orchestrator = _LeaseAbortOrchestrator(
         tmp_path,
         plugin,
-        _ExecutionEngine([]),
+        _ExecutionEngine([_retry_result(verdict=True)]),
     )
     orchestrator.run_backend = backend
     orchestrator._run_handle = None

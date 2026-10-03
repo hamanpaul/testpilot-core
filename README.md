@@ -327,6 +327,8 @@ testpilot list-plugins
 
 Implement the `PluginBase` contract: declare `api_version`, `name`, `discover_cases()`, `execute_step()`, and `evaluate()`; override optional hooks such as `setup_env()`, `verify_env()`, `teardown()`, `create_reporter()`, `create_runner()`, `register_cli()`, and remediation hooks as needed.
 
+Plugins using SDK API 1.4 may return `PreparedRun(cases=cases, no_io=True)` when the entire prepared selection needs no Core DUT/STA capture, sequence markers, log export, or firmware-version query. This keeps per-case planning, execution, and reporting intact. Empty selections skip those Core environment queries automatically; mixed selections must leave `no_io=False`.
+
 Plugins import the public SDK surface from `testpilot.api`; they must not reach into `testpilot.core`, `testpilot.schema`, `testpilot.reporting`, `testpilot.transport`, or `testpilot.runtime` internals. See `plugins/_template/README.md` and `docs/plugin-dev-guide.md` for the current contract.
 
 For a complete runnable zero-hardware reference, see `examples/sample_echo/`.
@@ -547,6 +549,8 @@ my_plugin = "my_plugin.plugin:Plugin"
 ```
 
 必要 contract 包含 `api_version`、`name`、`discover_cases()`、`execute_step()`、`evaluate()`；依需求可覆寫 `setup_env()`、`verify_env()`、`teardown()`、`create_reporter()`、`create_runner()`、`register_cli()` 與 remediation hooks。
+
+使用 SDK API 1.4 的 plugin 可在整個 prepared selection 都不需要 Core DUT/STA capture、sequence marker、log export 與 firmware version query 時回傳 `PreparedRun(cases=cases, no_io=True)`。這不會略過 per-case planning、execution 或 reporting。空 selection 會由 Core 自動略過上述環境查詢；含有一般可執行 case 的混合 selection 必須維持 `no_io=False`。
 
 完整 contract 請見 `plugins/_template/README.md` 與 `docs/plugin-dev-guide.md`；零硬體 runnable example 請見 `examples/sample_echo/`。
 

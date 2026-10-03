@@ -266,21 +266,31 @@ def _run_with_capture(
     reports_root = Path(orchestrator.plugins_dir) / plugin_name / "reports"
     run_date = date.today()
     run_id = datetime.now().strftime("%Y%m%dT%H%M%S%f")
-    # Mark the attempt before calling into the orchestrator: a transport setup
-    # may acquire its owner lease and then raise while binding sessions.
-    capture_state["capture_attempted"] = True
-    capture_path = orchestrator._start_run_capture(run_id)
-    run_handle = _seq_tracking_handle(
-        orchestrator,
-        run_id=run_id,
-        capture_path=capture_path,
-    )
-    run_seq_start = _mark_seq_position(orchestrator, run_handle)
-    version_manifest = _capture_version_manifest(
-        orchestrator,
-        plugin=plugin,
-        cases=cases,
-    )
+    # Empty selections have no executable work to capture. Plugins can also
+    # explicitly classify a non-empty selection as no-I/O (for example when
+    # every prepared result is unsupported/N/A). Case planning, execution, and
+    # reporting still run for the latter; only Core's environment probes stop.
+    capture_enabled = bool(cases) and getattr(prepared, "no_io", False) is not True
+    if capture_enabled:
+        # Mark the attempt before calling into the orchestrator: a transport
+        # setup may acquire its owner lease and then raise while binding sessions.
+        capture_state["capture_attempted"] = True
+        capture_path = orchestrator._start_run_capture(run_id)
+        run_handle = _seq_tracking_handle(
+            orchestrator,
+            run_id=run_id,
+            capture_path=capture_path,
+        )
+        run_seq_start = _mark_seq_position(orchestrator, run_handle)
+        version_manifest = _capture_version_manifest(
+            orchestrator,
+            plugin=plugin,
+            cases=cases,
+        )
+    else:
+        run_handle = None
+        run_seq_start = None
+        version_manifest = {}
 
     fw_ver, fw_ver_source = _resolve_firmware_version(
         requested=dut_fw_ver,
@@ -412,22 +422,23 @@ def _run_with_capture(
 
     dut_log_path = ""
     sta_log_path = ""
-    try:
-        run_seq_end = _mark_seq_position(orchestrator, run_handle)
-        log_result = orchestrator._export_run_logs(
-            run_id=run_id,
-            artifact_dir=artifact_dir,
-            case_seq_ranges=case_seq_ranges,
-            case_results=case_records,
-            run_seq_start=run_seq_start,
-            run_seq_end=run_seq_end,
-        )
-        dut_log_path = log_result.get("dut_log_path", "")
-        sta_log_path = log_result.get("sta_log_path", "")
-    except Exception:
-        log.warning("run log export failed", exc_info=True)
-    finally:
-        _stop_run_capture_once(orchestrator, capture_state)
+    if capture_enabled:
+        try:
+            run_seq_end = _mark_seq_position(orchestrator, run_handle)
+            log_result = orchestrator._export_run_logs(
+                run_id=run_id,
+                artifact_dir=artifact_dir,
+                case_seq_ranges=case_seq_ranges,
+                case_results=case_records,
+                run_seq_start=run_seq_start,
+                run_seq_end=run_seq_end,
+            )
+            dut_log_path = log_result.get("dut_log_path", "")
+            sta_log_path = log_result.get("sta_log_path", "")
+        except Exception:
+            log.warning("run log export failed", exc_info=True)
+        finally:
+            _stop_run_capture_once(orchestrator, capture_state)
 
     run_result = RunResult(
         cases=case_records,
