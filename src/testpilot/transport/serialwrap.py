@@ -270,9 +270,8 @@ class SerialWrapTransport(TransportBase):
 
         nonce = "A" * 16
         script_path = self._tempscript_path(nonce)
-        marker = f"TP{nonce}"
         stage_transactions = sum(
-            len(self._sq_chunks(line, script_path=script_path, marker=marker))
+            len(self._sq_chunks(line, script_path=script_path, nonce=nonce))
             for line in command.split("\n")
         )
         setup_timeout_s = min(timeout_s, 10.0)
@@ -303,12 +302,12 @@ class SerialWrapTransport(TransportBase):
         staged_write_count = 0
 
         for line in lines:
-            chunks = self._sq_chunks(line, script_path=script_path, marker=marker)
+            chunks = self._sq_chunks(line, script_path=script_path, nonce=nonce)
             for chunk_idx, chunk in enumerate(chunks):
                 stage_command = self._stage_write_command(
                     chunk,
                     script_path=script_path,
-                    marker=marker,
+                    nonce=nonce,
                     append=not first,
                     finish_line=chunk_idx == len(chunks) - 1,
                 )
@@ -348,7 +347,7 @@ class SerialWrapTransport(TransportBase):
                     # Keep the uniquely owned partial file and do not execute it.
                     return framed_stage
 
-        final_command = self._final_script_command(script_path=script_path, marker=marker)
+        final_command = self._final_script_command(script_path=script_path, nonce=nonce)
         if self._serial_wire_bytes(final_command) > _MAX_SERIAL_LINE_LENGTH:
             raise RuntimeError("generated staged execution exceeds serial line byte limit")
         result = self._submit_and_poll(final_command, timeout, preserve_stdout=True)
@@ -392,7 +391,7 @@ class SerialWrapTransport(TransportBase):
         chunk: str,
         *,
         script_path: str,
-        marker: str,
+        nonce: str,
         append: bool,
         finish_line: bool,
     ) -> str:
@@ -400,16 +399,18 @@ class SerialWrapTransport(TransportBase):
         redirection = ">>" if append else ">"
         return (
             f"printf '{fmt}' '{chunk}' {redirection} {script_path}; "
-            f"printf '\\n{marker}:%s\\n' \"$?\""
+            f"printf '\\nTP%s:%s\\n' '{nonce}' \"$?\""
         )
 
     @staticmethod
-    def _final_script_command(*, script_path: str, marker: str) -> str:
+    def _final_script_command(*, script_path: str, nonce: str) -> str:
         # The subshell keeps its short status variables out of the caller.
-        # Capture the script result before cleanup and frame cleanup separately.
+        # The split literal keeps the complete marker out of UART command echo.
+        # Capture script status before cleanup; printf's second status argument
+        # expands to the cleanup command's status.
         return (
-            f"(sh {script_path}; s=$?; rm -f {script_path}; r=$?; "
-            f"printf '\\n{marker}:%s:%s\\n' \"$s\" \"$r\")"
+            f"(sh {script_path}; s=$?; rm -f {script_path}; "
+            f"printf '\\nTP%s:%s:%s\\n' '{nonce}' \"$s\" \"$?\")"
         )
 
     @staticmethod
@@ -564,12 +565,12 @@ class SerialWrapTransport(TransportBase):
         line: str,
         *,
         script_path: str | None = None,
-        marker: str | None = None,
+        nonce: str | None = None,
     ) -> list[str]:
         """Split a shell line into safely quoted chunks within the wire budget."""
-        if (script_path is None) != (marker is None):
-            raise ValueError("script_path and marker must be provided together")
-        if script_path is None or marker is None:
+        if (script_path is None) != (nonce is None):
+            raise ValueError("script_path and nonce must be provided together")
+        if script_path is None or nonce is None:
             max_content_bytes = max(
                 0, _MAX_SERIAL_LINE_LENGTH - _PRINTF_OVERHEAD - 1
             )
@@ -579,7 +580,7 @@ class SerialWrapTransport(TransportBase):
                     cls._stage_write_command(
                         "",
                         script_path=script_path,
-                        marker=marker,
+                        nonce=nonce,
                         append=append,
                         finish_line=finish_line,
                     )

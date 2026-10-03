@@ -20,6 +20,12 @@ its own status and cannot hide a nonzero script exit. The marker framing is
 removed from stdout while preserving the command's output, including real
 trailing newlines.
 
+Generated shell commands split the marker text from the nonce argument so a
+UART echo that wraps at an escaped newline cannot echo the complete marker as a
+malformed frame prefix. Parsing remains strict: exactly one complete terminal
+frame is required, and malformed or duplicate marker-like output still fails
+closed.
+
 The 120-byte limit is measured on the UTF-8 UART payload, including the LF
 that `Bridge.send_command` appends to commands without a terminal LF. Generated
 staging and final commands remain single physical lines; a command already

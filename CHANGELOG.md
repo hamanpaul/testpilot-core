@@ -9,6 +9,10 @@ preparation.
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep staged-command producer markers parseable when serial console echo inserts CR/LF wrapping inside commands by splitting the marker literal in generated shell commands; retain strict receipt validation, per-invocation nonces, separate script/cleanup statuses, and the 120-byte UART budget.
+
 ## [0.4.0] - 2026-10-03
 
 ### Fixed

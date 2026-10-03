@@ -941,12 +941,13 @@ def test_execute_via_tempscript_stages_chunks(monkeypatch: pytest.MonkeyPatch) -
     def fake_submit(self, command, timeout=30.0, *, preserve_stdout=False):
         del self, timeout
         submitted.append(command)
-        marker = re.search(r"TP([A-Za-z0-9_-]{16}):%s", command)
-        assert marker is not None
+        nonce = re.search(r"/tmp/t([A-Za-z0-9_-]{16})", command)
+        assert nonce is not None
+        marker = f"TP{nonce.group(1)}"
         if ":%s:%s" in command:
-            stdout = f"\nTP{marker.group(1)}:0:0\n"
+            stdout = f"\n{marker}:0:0\n"
         else:
-            stdout = f"\nTP{marker.group(1)}:0\n"
+            stdout = f"\n{marker}:0\n"
         if not preserve_stdout:
             stdout = stdout.strip()
         return {
@@ -1037,10 +1038,10 @@ def test_execute_via_tempscript_stops_after_unsafe_staging_result(
         (
             "pid=$(pgrep -f '/tmp/wl1_hapd.conf' 2>/dev/null | head -n1); "
             'if [ -n "$pid" ]; then kill -HUP "$pid" 2>/dev/null || true; fi',
-            4,
+            5,  # The split-literal nonce frame consumes framing bytes per chunk.
         ),
         ("a" * 60 + "\n" + "b" * 60 + "\n" + "c" * 5, 5),
-        ("'" * 130, 15),
+        ("'" * 130, 19),  # Quoting plus the nonce frame reduces chunk capacity.
     ],
 )
 def test_estimated_execute_budget_matches_submit_transactions(
@@ -1053,13 +1054,13 @@ def test_estimated_execute_budget_matches_submit_transactions(
     def fake_submit(self, command, timeout=30.0, *, preserve_stdout=False):
         del self, preserve_stdout
         submitted_timeouts.append(timeout)
-        marker = re.search(r"TP([A-Za-z0-9_-]{16}):%s", command)
-        if marker is None:
+        nonce = re.search(r"/tmp/t([A-Za-z0-9_-]{16})", command)
+        if nonce is None:
             stdout = ""
         elif ":%s:%s" in command:
-            stdout = f"\nTP{marker.group(1)}:0:0\n"
+            stdout = f"\nTP{nonce.group(1)}:0:0\n"
         else:
-            stdout = f"\nTP{marker.group(1)}:0\n"
+            stdout = f"\nTP{nonce.group(1)}:0\n"
         return {"returncode": 0, "stdout": stdout, "stderr": "", "status": "done", "partial": False}
 
     monkeypatch.setattr(SerialWrapTransport, "_submit_and_poll", fake_submit)
