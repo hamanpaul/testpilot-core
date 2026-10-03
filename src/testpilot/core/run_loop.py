@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
+import json
 import logging
 from pathlib import Path
 import time
@@ -200,6 +201,8 @@ def _build_case_trace_payload(
             "attempts_used": retry_result.attempts_used,
             "comment": retry_result.comment,
             "diagnostic_status": retry_result.diagnostic_status,
+            "abort_run": bool(getattr(retry_result, "abort_run", False)),
+            "abort_reason": str(getattr(retry_result, "abort_reason", "")),
         },
         "diagnostic_status": retry_result.diagnostic_status,
         "remediation_history": retry_result.remediation_history or [],
@@ -207,6 +210,15 @@ def _build_case_trace_payload(
         "tier2_audit": retry_result.tier2_audit or [],
         "agent_recovered": bool(retry_result.agent_recovered),
     }
+
+
+def _stop_run_capture_once(orchestrator: Any, capture_state: dict[str, bool]) -> None:
+    if not capture_state.get("capture_attempted") or capture_state.get("capture_stopped"):
+        return
+    orchestrator._stop_run_capture()
+    capture_state["capture_stopped"] = True
+
+
 def run(
     orchestrator: Any,
     plugin_name: str,
@@ -214,7 +226,39 @@ def run(
     dut_fw_ver: str | None,
     provider_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    capture_state = {"capture_attempted": False, "capture_stopped": False}
+    try:
+        return _run_with_capture(
+            orchestrator,
+            plugin_name,
+            case_ids,
+            dut_fw_ver,
+            provider_config,
+            capture_state=capture_state,
+        )
+    finally:
+        if capture_state["capture_attempted"] and not capture_state["capture_stopped"]:
+            try:
+                _stop_run_capture_once(orchestrator, capture_state)
+            except Exception:
+                # Preserve a setup/run exception while making the failed cleanup
+                # visible. The normal export-path cleanup still propagates errors.
+                log.warning("run capture cleanup failed", exc_info=True)
+
+
+def _run_with_capture(
+    orchestrator: Any,
+    plugin_name: str,
+    case_ids: list[str] | None,
+    dut_fw_ver: str | None,
+    provider_config: dict[str, Any] | None,
+    *,
+    capture_state: dict[str, bool],
+) -> dict[str, Any]:
     plugin = orchestrator.loader.load(plugin_name)
+    bind_project_root = getattr(plugin, "bind_project_root", None)
+    if callable(bind_project_root):
+        bind_project_root(getattr(orchestrator, "root", None))
     prepared = plugin.prepare_run(case_ids)
     cases = list(prepared.cases)
     prepared_artifacts = dict(prepared.artifacts)
@@ -222,18 +266,31 @@ def run(
     reports_root = Path(orchestrator.plugins_dir) / plugin_name / "reports"
     run_date = date.today()
     run_id = datetime.now().strftime("%Y%m%dT%H%M%S%f")
-    capture_path = orchestrator._start_run_capture(run_id)
-    run_handle = _seq_tracking_handle(
-        orchestrator,
-        run_id=run_id,
-        capture_path=capture_path,
-    )
-    run_seq_start = _mark_seq_position(orchestrator, run_handle)
-    version_manifest = _capture_version_manifest(
-        orchestrator,
-        plugin=plugin,
-        cases=cases,
-    )
+    # Empty selections have no executable work to capture. Plugins can also
+    # explicitly classify a non-empty selection as no-I/O (for example when
+    # every prepared result is unsupported/N/A). Case planning, execution, and
+    # reporting still run for the latter; only Core's environment probes stop.
+    capture_enabled = bool(cases) and getattr(prepared, "no_io", False) is not True
+    if capture_enabled:
+        # Mark the attempt before calling into the orchestrator: a transport
+        # setup may acquire its owner lease and then raise while binding sessions.
+        capture_state["capture_attempted"] = True
+        capture_path = orchestrator._start_run_capture(run_id)
+        run_handle = _seq_tracking_handle(
+            orchestrator,
+            run_id=run_id,
+            capture_path=capture_path,
+        )
+        run_seq_start = _mark_seq_position(orchestrator, run_handle)
+        version_manifest = _capture_version_manifest(
+            orchestrator,
+            plugin=plugin,
+            cases=cases,
+        )
+    else:
+        run_handle = None
+        run_seq_start = None
+        version_manifest = {}
 
     fw_ver, fw_ver_source = _resolve_firmware_version(
         requested=dut_fw_ver,
@@ -346,27 +403,42 @@ def run(
                     case_id=case_id,
                 )
             )
+            if getattr(retry_result, "abort_run", False) is True:
+                # Later cases were never executed and must not acquire verdicts.
+                abort_summary = {
+                    "case_id": case_id,
+                    "reason": retry_result.abort_reason,
+                    "executed_case_count": len(case_records),
+                    "requested_case_count": len(cases),
+                    "unexecuted_case_ids": [str(item.get("id", "?")) for item in cases[case_ordinal:]],
+                }
+                prepared_artifacts["run_abort"] = abort_summary
+                (artifact_dir / "run-abort.json").write_text(
+                    json.dumps(abort_summary, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+                break
     except Exception as exc:
         loop_error = exc
 
     dut_log_path = ""
     sta_log_path = ""
-    try:
-        run_seq_end = _mark_seq_position(orchestrator, run_handle)
-        log_result = orchestrator._export_run_logs(
-            run_id=run_id,
-            artifact_dir=artifact_dir,
-            case_seq_ranges=case_seq_ranges,
-            case_results=case_records,
-            run_seq_start=run_seq_start,
-            run_seq_end=run_seq_end,
-        )
-        dut_log_path = log_result.get("dut_log_path", "")
-        sta_log_path = log_result.get("sta_log_path", "")
-    except Exception:
-        log.warning("run log export failed", exc_info=True)
-    finally:
-        orchestrator._stop_run_capture()
+    if capture_enabled:
+        try:
+            run_seq_end = _mark_seq_position(orchestrator, run_handle)
+            log_result = orchestrator._export_run_logs(
+                run_id=run_id,
+                artifact_dir=artifact_dir,
+                case_seq_ranges=case_seq_ranges,
+                case_results=case_records,
+                run_seq_start=run_seq_start,
+                run_seq_end=run_seq_end,
+            )
+            dut_log_path = log_result.get("dut_log_path", "")
+            sta_log_path = log_result.get("sta_log_path", "")
+        except Exception:
+            log.warning("run log export failed", exc_info=True)
+        finally:
+            _stop_run_capture_once(orchestrator, capture_state)
 
     run_result = RunResult(
         cases=case_records,
@@ -480,6 +552,9 @@ def run(
     # pointers are attached only after plugin reporting has completed.
     run_result.artifacts["core_agent_analysis"] = run_analysis.to_dict()
     if isinstance(payload, dict):
+        if "run_abort" in run_result.artifacts:
+            payload["status"] = "aborted"
+            payload["run_abort"] = dict(run_result.artifacts["run_abort"])
         payload.setdefault(
             "agent_session_degraded",
             getattr(

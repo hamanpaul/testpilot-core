@@ -211,14 +211,22 @@ def test_verify_install_missing_skill_exits_nonzero(tmp_path: Path) -> None:
     assert exc_info.value.code != 0
 
 
-def test_verify_install_healthy_exits_zero(tmp_path: Path) -> None:
-    """_handle_verify_install should exit 0 and print OK when skill dir is present."""
+def test_verify_install_healthy_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A known healthy wheel installation exits zero without probing host plugins."""
     from testpilot.cli import _handle_verify_install
 
     skill_root = tmp_path / ".agents" / "skills"
     skill_dir = skill_root / "testpilot-normal-test"
     skill_dir.mkdir(parents=True)
 
+    monkeypatch.setattr("testpilot.cli._get_managed_src", lambda: tmp_path / "no-checkout")
+    monkeypatch.setattr(
+        "testpilot.cli._probe_wheel_install",
+        lambda: {"core_version": "0.4.0", "plugins": [], "skill_packaged": True},
+    )
+    monkeypatch.setattr("testpilot.cli._check_installed_plugin_health", lambda: [])
     mock_console = MagicMock()
     with patch("testpilot.cli._get_skills_root", return_value=skill_root):
         with patch("testpilot.cli.console", mock_console):

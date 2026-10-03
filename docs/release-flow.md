@@ -59,6 +59,35 @@ Prepare releases in a dedicated branch and PR:
 7. Open the release PR with the `release:vX.Y.Z` label. Use `skip-changelog` on the release-prep PR because the pending fragments have already been moved into the dated release section.
 8. Merge the release PR into `main`.
 
+Source landing and artifact publication are separate: merging an API feature
+publishes source on `main`, while only the later tag-triggered release job
+builds and publishes an installable wheel.
+
+### One-time v0.4.0 sequencing exception
+
+The release owner approved this exception for v0.4.0 only. It replaces the
+usual seven-day MINOR-release wait and the normal immediate post-merge tag with
+two complete reference-plugin runs. It changes only the order of those release
+steps; all other release gates remain in force, and later releases follow the
+standard policy.
+
+After the fixes are merged, deploy the exact Core/plugin artifact pair and the
+same approved effective configuration for both runs. Each run must complete the
+full official case inventory across all applicable bands and produce its final
+JSON. Before tagging, verify that both JSON files contain the same complete
+case/band matrix and that both runs use the same pinned software and
+configuration identities. The final overall verdict, diagnostic verdicts, and
+every per-band verdict must agree exactly between the two runs. Keep `FailEnv`
+and `Skip` as distinct final verdicts; retain retry and remediation histories
+separately, even when those histories differ between runs. This is not an
+all-PASS requirement. Missing rows, incomplete runs, or any difference in the
+final verdict fields block the release.
+
+Do not create or push the v0.4.0 tag, or publish its GitHub Release, when the
+fixes are merged. Create and publish the tag only after both complete run
+results have been reviewed and found to agree on the required final verdict
+fields.
+
 Recommended PR title:
 
 ```text
@@ -67,12 +96,16 @@ chore(release): prepare vX.Y.Z
 
 ## 5. Tagging and publication
 
-After the release PR is merged:
+For releases other than v0.4.0, after the release PR is merged:
 
 1. Create tag `vX.Y.Z` on the merged `main` commit.
 2. Push the tag.
 3. `.github/workflows/release.yml` runs the project policy gate and release validation.
 4. The release job verifies tag/version consistency, runs tests, builds the wheel, creates the GitHub Release, and uploads the wheel asset.
+
+For v0.4.0, follow the one-time sequencing exception above before creating or
+pushing the tag. The release workflow and its normal validation still apply
+after that tag is created.
 
 GitHub Releases are the canonical published release surface. `CHANGELOG.md` remains the curated in-repository history.
 
@@ -98,6 +131,7 @@ Do not tag a release until all of the following are true:
 - README CLI help marker blocks are synchronized when CLI help changed
 - the manifest API-compatibility gate passes
 - the offline installer integration gate passes in CI
+- for v0.4.0, both complete reference-plugin runs satisfy the one-time gate above
 
 The repository CI currently includes the core test suite, a real install/discovery/run smoke for `examples/sample_echo`, release-governance tests, manifest SDK compatibility checks, and an offline installer integration smoke.
 

@@ -9,6 +9,44 @@ preparation.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-03
+
+### Fixed
+
+- Fail closed when a selected serialwrap session is ambiguous or conflicts with a configured profile or physical port; revalidate binding before recovery and safe attach/retry, and include metadata lookup deadlines in the execute budget while preserving serial-port-only legacy discovery.
+
+- Abort before retry or cleanup when serial command acceptance/execution is unknown or explicitly non-replayable; preserve structured command evidence in attempt traces and avoid automatic attach after an accepted-command status timeout.
+
+- Honor identity-matched plugin terminal failure snapshots at any attempt, discard stale snapshots before remediation hooks, and support explicit unsafe-teardown suppression; merge structured transport uncertainty across failure results, exceptions, hook payloads, and current-attempt metadata without letting benign projections erase it.
+
+- Attach operator-bound logical serialwrap selectors without rebinding them by physical port enumeration; reject missing or ambiguous explicit identities before session writes.
+
+- Stop the sequential run after an explicit unrecovered-environment remediation abort, preserving the failed attempt and listing unexecuted cases in an abort artifact.
+
+- Preserve serialwrap broker rejection and terminal-command safety metadata for plugin readiness policies; stop long-command staging after a failed or ambiguous script write.
+
+- Expose a side-effect-free serialwrap execute-budget estimator for every staged-script transaction, including one bounded known-safe session attach/retry per submit and final status RPC; stop staged writes and retries when structured accepted/unknown/partial/ambiguous evidence makes the outcome unsafe.
+
+- Frame staged serial `printf` and script-shell exit statuses independently of broker completion status; preserve the original receipt and exact stdout, separate cleanup failure, and stop on missing or malformed producer markers. Count the UART-appended LF in the 120-byte wire budget and avoid double-counting an explicit terminal LF.
+
+- Wheel-mode `--verify-install` and the post-update rollback gate execute each installed plugin's `verify_install()` checks; post-update uses the updated managed venv in an isolated process. False or malformed results, raised hook errors, and entry-point shim or Plugin class module ownership that cannot be verified against the distribution RECORD or PEP 610 editable source root fail closed; plugin WARN results remain advisory.
+
+- Add optional SDK API 1.3 project-root binding before run dispatch and `prepare_run`; default CLI and orchestrator roots to the operator working directory so preflight artifacts from installed plugins stay with the project.
+
+- Bind run-level serialwrap logging to the selected DUT/STA transport binary and endpoint, disabling capture on conflicts; page fixed WAL ranges with overlapping full-row continuity checks and fixed-range anchor rechecks, expose that serialwrap 0.3.0 has no generation token, and release the logger lease when pre-case setup fails.
+
+- Normalize wrapped and flat testbed settings for logger setup, and preserve non-Unix endpoint schemes when checking device/broker target conflicts.
+
+- Map serialwrap case log intervals against the exact concatenated DUT/STA text: payload fragments no longer invent lines, and the reported end line includes the complete final WAL payload.
+
+- Keep approximate serialwrap log-range endpoints within the requested case sequence interval; emit no citation when a COM has no records inside it or the sequence range is reversed.
+
+- Save decoded serialwrap logs as exact UTF-8 payload bytes without platform newline translation, and report the encoded byte length.
+
+### Changed
+
+- Increment the plugin SDK contract to API 1.4 and add `PreparedRun.no_io`; empty selections automatically skip run-level DUT/STA capture and firmware-version queries, while plugins can explicitly opt out for an entirely no-I/O prepared selection without skipping per-case results.
+
 ## [0.3.9] - 2026-09-22
 
 ### Fixed

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
-import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -116,6 +116,66 @@ class TestBuildSeqToLineMap:
         mapping = log_capture.build_seq_to_line_map(records, com_filter="COM0")
         assert mapping[10] == 1
 
+    def test_fragments_map_to_lines_in_concatenated_log(self):
+        records = [
+            _make_record(1, "COM0", "first"),
+            _make_record(2, "COM0", "-second\nthird"),
+            _make_record(3, "COM0", "-fourth\n"),
+        ]
+
+        assert log_capture.decode_log(records, com_filter="COM0") == (
+            "first-second\nthird-fourth\n"
+        )
+        assert log_capture.build_seq_to_line_map(records, com_filter="COM0") == {
+            1: 1,
+            2: 1,
+            3: 2,
+        }
+
+    def test_line_spans_include_multiline_end_record(self):
+        records = [
+            _make_record(10, "COM0", "start\n"),
+            _make_record(11, "COM0", "end-a\nend-b\nend-c\n"),
+        ]
+
+        spans = log_capture.build_seq_to_line_span_map(records, com_filter="COM0")
+
+        assert spans == {10: (1, 1), 11: (2, 4)}
+        assert log_capture.seq_range_to_line_range(10, 11, spans) == "L1-L4"
+
+    def test_line_spans_follow_global_crlf_boundary_across_records(self):
+        records = [
+            _make_record(1, "COM0", "a\r"),
+            _make_record(2, "COM0", "\nb\n"),
+        ]
+
+        assert log_capture.decode_log(records, com_filter="COM0").splitlines() == [
+            "a",
+            "b",
+        ]
+        assert log_capture.build_seq_to_line_span_map(records, com_filter="COM0") == {
+            1: (1, 1),
+            2: (1, 2),
+        }
+
+    def test_line_spans_are_independent_per_com_and_skip_invalid_payload(self):
+        records = [
+            _make_record(1, "COM0", "dut-first"),
+            _make_record(2, "COM1", "sta-first\n"),
+            {"seq": 3, "com": "COM0", "payload_b64": "%%%not-base64%%%"},
+            _make_record(4, "COM0", "-dut-last\n"),
+            _make_record(5, "COM1", "sta-second\nsta-third\n"),
+        ]
+
+        dut_spans = log_capture.build_seq_to_line_span_map(records, com_filter="COM0")
+        sta_spans = log_capture.build_seq_to_line_span_map(records, com_filter="COM1")
+
+        assert log_capture.decode_log(records, com_filter="COM0") == "dut-first-dut-last\n"
+        assert dut_spans == {1: (1, 1), 4: (1, 1)}
+        assert sta_spans == {2: (1, 1), 5: (2, 3)}
+        assert log_capture.seq_range_to_line_range(1, 4, dut_spans) == "L1-L1"
+        assert log_capture.seq_range_to_line_range(1, 5, sta_spans) == "L1-L3"
+
 
 # ---------------------------------------------------------------------------
 # seq_range_to_line_range
@@ -145,6 +205,37 @@ class TestSeqRangeToLineRange:
         seq_map = {10: 1, 20: 2}
         assert log_capture.seq_range_to_line_range(30, 40, seq_map) == ""
 
+    def test_cross_com_records_outside_case_interval_do_not_supply_lines(self):
+        records = [
+            _make_record(5, "COM1", "sta-before\n"),
+            _make_record(10, "COM0", "dut-case-start\n"),
+            _make_record(20, "COM0", "dut-case-end\n"),
+            _make_record(25, "COM1", "sta-after\n"),
+        ]
+
+        sta_spans = log_capture.build_seq_to_line_span_map(records, com_filter="COM1")
+        sta_start_lines = log_capture.build_seq_to_line_map(records, com_filter="COM1")
+
+        assert log_capture.seq_range_to_line_range(10, 20, sta_spans) == ""
+        assert log_capture.seq_range_to_line_range(10, 20, sta_start_lines) == ""
+
+    def test_approximate_match_stays_inside_requested_interval(self):
+        span_map = {5: (1, 2), 12: (3, 4), 18: (5, 7), 25: (8, 9)}
+        int_map = {5: 1, 12: 3, 18: 5, 25: 8}
+
+        assert log_capture.seq_range_to_line_range(10, 20, span_map) == "L3-L7"
+        assert log_capture.seq_range_to_line_range(10, 20, int_map) == "L3-L5"
+
+    @pytest.mark.parametrize(
+        "seq_map",
+        [
+            {10: (1, 3), 20: (4, 6)},
+            {10: 1, 20: 4},
+        ],
+    )
+    def test_reversed_sequence_interval_fails_closed(self, seq_map):
+        assert log_capture.seq_range_to_line_range(20, 10, seq_map) == ""
+
 
 # ---------------------------------------------------------------------------
 # save_decoded_log
@@ -156,6 +247,45 @@ class TestSaveDecodedLog:
         result = log_capture.save_decoded_log("hello world\n", out)
         assert result == out
         assert out.read_text() == "hello world\n"
+
+    def test_preserves_exact_utf8_newline_bytes_on_windows(
+        self, tmp_path: Path, monkeypatch, caplog
+    ):
+        original_io_open = io.open
+
+        def windows_text_output_open(
+            file,
+            mode="r",
+            buffering=-1,
+            encoding=None,
+            errors=None,
+            newline=None,
+            closefd=True,
+            opener=None,
+        ):
+            if "b" not in mode and "w" in mode and newline is None:
+                newline = "\r\n"
+            return original_io_open(
+                file,
+                mode,
+                buffering,
+                encoding,
+                errors,
+                newline,
+                closefd,
+                opener,
+            )
+
+        monkeypatch.setattr(io, "open", windows_text_output_open)
+        caplog.set_level(20, logger=log_capture.logger.name)
+        text = "β\r\nlast\n"
+        expected = text.encode("utf-8")
+        out = tmp_path / "DUT.log"
+
+        result = log_capture.save_decoded_log(text, out)
+
+        assert result.read_bytes() == expected
+        assert f"({len(expected)} bytes)" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -170,15 +300,17 @@ class TestGetCurrentSeq:
             json.dumps({"seq": 200, "com": "COM1", "payload_b64": "dGVzdA=="}),
         ]
         wal.write_text("\n".join(records) + "\n")
-        assert log_capture.get_current_seq(wal) == 200
+        assert log_capture.get_current_seq(wal, same_host_wal_path=True) == 200
 
     def test_empty_file(self, tmp_path: Path):
         wal = tmp_path / "empty.ndjson"
         wal.write_text("")
-        assert log_capture.get_current_seq(wal) is None
+        assert log_capture.get_current_seq(wal, same_host_wal_path=True) is None
 
     def test_missing_file(self, tmp_path: Path):
-        assert log_capture.get_current_seq(tmp_path / "nonexistent.ndjson") is None
+        assert log_capture.get_current_seq(
+            tmp_path / "nonexistent.ndjson", same_host_wal_path=True
+        ) is None
 
 
 # ---------------------------------------------------------------------------
@@ -263,12 +395,15 @@ class TestExportRecords:
 
     @patch("testpilot.runtime._serialwrap_log._run_sw")
     def test_export_without_to_seq(self, mock_run):
-        mock_run.return_value = {"ok": True, "records": []}
+        mock_run.side_effect = [
+            {"ok": True, "seq": 10},
+            {"ok": True, "records": []},
+        ]
         log_capture.export_records(from_seq=1)
         call_args = mock_run.call_args[0][0]
         assert "--from-seq" in call_args
-        assert "--to-seq" not in call_args
-        assert "--limit" not in call_args
+        assert call_args[call_args.index("--to-seq") + 1] == "10"
+        assert call_args[call_args.index("--limit") + 1] == "1000"
 
     @patch("testpilot.runtime._serialwrap_log._run_sw")
     def test_export_with_unlimited_limit(self, mock_run):
@@ -283,12 +418,15 @@ class TestExportRecords:
             "--to-seq",
             "200",
             "--limit",
-            "0",
+            "1000",
         ]
 
     @patch("testpilot.runtime._serialwrap_log._run_sw")
     def test_export_missing_records(self, mock_run):
-        mock_run.return_value = {"ok": True}
+        mock_run.side_effect = [
+            {"ok": True, "seq": 10},
+            {"ok": True},
+        ]
         result = log_capture.export_records(from_seq=1)
         assert result == []
 

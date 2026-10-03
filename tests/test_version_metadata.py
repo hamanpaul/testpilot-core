@@ -94,11 +94,11 @@ def test_version_file_matches_runtime() -> None:
     assert _version_file_version() == _runtime_version()
 
 
-def test_all_versions_are_0_3_6() -> None:
-    """Release target: VERSION, pyproject.toml, and __init__.py must all be 0.3.9."""
-    assert _version_file_version() == "0.3.9"
-    assert _pyproject_version() == "0.3.9"
-    assert _runtime_version() == "0.3.9"
+def test_all_versions_match_release_version() -> None:
+    """VERSION is canonical and its package/runtime mirrors stay aligned."""
+    expected_version = _version_file_version()
+    assert _pyproject_version() == expected_version
+    assert _runtime_version() == expected_version
 
 
 # --- Task 1.1: source-ref-aware testpilot --version ---
@@ -107,6 +107,7 @@ def test_all_versions_are_0_3_6() -> None:
 def test_version_output_branch_format() -> None:
     """--version should print 'TestPilot X.Y.Z (branch@short-sha)' on a branch."""
     runner = CliRunner()
+    expected_version = _version_file_version()
 
     def _fake_run(cmd, **kwargs):
         class _R:
@@ -126,7 +127,7 @@ def test_version_output_branch_format() -> None:
         result = runner.invoke(main, ["--version"])
 
     assert result.exit_code == 0
-    assert re.search(r"TestPilot 0.3.9 \(main@abcdef1\)", result.output)
+    assert f"TestPilot {expected_version} (main@abcdef1)" in result.output
 
 
 def test_version_git_commands_use_source_checkout_cwd() -> None:
@@ -164,6 +165,7 @@ def test_version_git_commands_use_source_checkout_cwd() -> None:
 def test_version_output_tag_format() -> None:
     """--version should print 'TestPilot X.Y.Z (tag@short-sha)' when on a tag."""
     runner = CliRunner()
+    expected_version = _version_file_version()
 
     def _fake_run(cmd, **kwargs):
         class _R:
@@ -187,12 +189,13 @@ def test_version_output_tag_format() -> None:
         result = runner.invoke(main, ["--version"])
 
     assert result.exit_code == 0
-    assert re.search(r"TestPilot 0.3.9 \(v0.3.9@2f7caf8\)", result.output)
+    assert f"TestPilot {expected_version} (v0.3.9@2f7caf8)" in result.output
 
 
 def test_version_output_detached_head_format() -> None:
     """--version should fall back to 'commit@short-sha' on detached HEAD."""
     runner = CliRunner()
+    expected_version = _version_file_version()
 
     def _fake_run(cmd, **kwargs):
         class _R:
@@ -208,7 +211,7 @@ def test_version_output_detached_head_format() -> None:
         result = runner.invoke(main, ["--version"])
 
     assert result.exit_code == 0
-    assert re.search(r"TestPilot 0.3.9 \(commit@deadbee\)", result.output)
+    assert f"TestPilot {expected_version} (commit@deadbee)" in result.output
 
 
 def test_version_output_when_git_absent() -> None:
@@ -220,12 +223,13 @@ def test_version_output_when_git_absent() -> None:
     import subprocess as _sp
 
     runner = CliRunner()
+    expected_version = _version_file_version()
 
     with patch.object(_sp, "run", side_effect=FileNotFoundError("git not found")):
         result = runner.invoke(main, ["--version"])
 
     assert result.exit_code == 0
-    assert re.search(r"TestPilot 0.3.9 \(commit@unknown\)", result.output)
+    assert f"TestPilot {expected_version} (commit@unknown)" in result.output
 
 
 def test_version_lists_discovered_plugins(monkeypatch) -> None:
@@ -282,5 +286,5 @@ def test_version_plugin_failures_are_isolated(monkeypatch) -> None:
     result = CliRunner().invoke(main, ["--version"])
 
     assert result.exit_code == 0
-    assert result.output.startswith("TestPilot 0.3.9 (")
+    assert result.output.startswith(f"TestPilot {_version_file_version()} (")
     assert "plugin broken unknown (api unknown)" in result.output

@@ -14,8 +14,18 @@ from pathlib import Path
 from typing import Any
 
 from testpilot.core import run_loop
+from testpilot.core.case_planning import CasePlanningResult
+from testpilot.core.execution_engine import RetryResult
 from testpilot.core.prepared_run import PreparedRun
 from testpilot.core.usage_ledger import UsageLedger
+
+
+_CAPTURE_CASE = {
+    "id": "D001",
+    "source": {"row": 1},
+    "steps": [],
+    "pass_criteria": [],
+}
 
 
 class _FakeReporter:
@@ -39,14 +49,22 @@ class _FakePlugin:
         *,
         capture_exception: Exception | None = None,
         events: list[str] | None = None,
+        cases: list[dict[str, Any]] | None = None,
     ) -> None:
         self.captured_version = captured_version
         self.capture_exception = capture_exception
         self.capture_calls = 0
         self.events = events
+        self.cases = list(cases or [])
+        self.bound_project_root: Path | None = None
+        self.project_root_at_prepare: Path | None = None
+
+    def bind_project_root(self, project_root: Path | str | None) -> None:
+        self.bound_project_root = Path(project_root) if project_root is not None else None
 
     def prepare_run(self, case_ids: Any) -> PreparedRun:
-        return PreparedRun(cases=[], artifacts={})
+        self.project_root_at_prepare = self.bound_project_root
+        return PreparedRun(cases=self.cases, artifacts={})
 
     def execution_policy(self, case: Any) -> dict[str, Any]:
         return {}
@@ -84,9 +102,36 @@ class _FakeRunnerSelector:
     def build_execution_policy(self, agent_config: dict[str, Any]) -> dict[str, Any]:
         return {"mode": "sequential", "max_concurrency": 1}
 
+    def select_case_runner(
+        self,
+        *,
+        plugin_name: str,
+        case: dict[str, Any],
+        agent_config: dict[str, Any],
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        del plugin_name, case, agent_config
+        return {"cli_agent": "fake", "model": "fake", "effort": "low"}, {
+            "selected": "fake"
+        }
+
+
+class _FakeExecutionEngine:
+    def execute_with_retry(self, **kwargs: Any) -> RetryResult:
+        del kwargs
+        return RetryResult(
+            verdict=True,
+            comment="",
+            commands=[],
+            outputs=[],
+            attempts=[{"verdict": True}],
+            attempts_used=1,
+            max_attempts=1,
+            failure_snapshot={},
+        )
+
 
 class _StubOrchestrator:
-    """Minimal orchestrator surface exercised by run_loop.run with zero cases."""
+    """Minimal orchestrator surface exercised by run_loop.run."""
 
     def __init__(
         self,
@@ -97,10 +142,12 @@ class _StubOrchestrator:
         events: list[str] | None = None,
     ) -> None:
         self.plugins_dir = plugins_dir
+        self.root = plugins_dir.parent
         self.config = {}
         self.loader = _FakeLoader(plugin or _FakePlugin())
         self.run_backend = _FakeRunBackend()
         self.runner_selector = _FakeRunnerSelector()
+        self.execution_engine = _FakeExecutionEngine()
         self.run_handle = None
         self.agent_session_degraded = degraded
         self.events = events
@@ -121,8 +168,13 @@ class _StubOrchestrator:
     def _stop_run_capture(self) -> None:
         return None
 
-    def _build_execution_engine(self, *, plugin_name: str, plugin: Any, agent_config: dict) -> None:
+    def _build_execution_engine(self, **kwargs: Any) -> None:
+        del kwargs
         return None
+
+    def _plan_case(self, **kwargs: Any) -> CasePlanningResult:
+        del kwargs
+        return CasePlanningResult(status="skipped_no_agent")
 
     def _export_run_logs(self, **kwargs: Any) -> dict[str, str]:
         return {}
@@ -138,6 +190,21 @@ def test_run_payload_carries_agent_session_degraded(tmp_path: Path) -> None:
     }
 
 
+def test_run_loop_binds_orchestrator_project_root_before_prepare_run(tmp_path: Path) -> None:
+    plugin = _FakePlugin()
+    project_root = tmp_path / "operator-project"
+    orch = _StubOrchestrator(
+        project_root / "plugins",
+        {"degraded": False, "reason": ""},
+        plugin=plugin,
+    )
+
+    run_loop.run(orch, "fake", None, None)
+
+    assert plugin.bound_project_root == project_root
+    assert plugin.project_root_at_prepare == project_root
+
+
 def test_run_payload_degraded_true_when_sessions_fail(tmp_path: Path) -> None:
     # session foundation 在 run 中失敗後 orchestrator.agent_session_degraded 被標記；
     # payload 必須原樣攜出。
@@ -148,7 +215,10 @@ def test_run_payload_degraded_true_when_sessions_fail(tmp_path: Path) -> None:
 
 
 def test_run_payload_uses_manifest_git_for_naming_and_metadata(tmp_path: Path) -> None:
-    plugin = _FakePlugin({"git": "deadbeef", "image": "BGW720"})
+    plugin = _FakePlugin(
+        {"git": "deadbeef", "image": "BGW720"},
+        cases=[_CAPTURE_CASE],
+    )
     orch = _StubOrchestrator(
         tmp_path,
         {"degraded": False, "reason": ""},
@@ -165,7 +235,7 @@ def test_run_payload_uses_manifest_git_for_naming_and_metadata(tmp_path: Path) -
 
 def test_run_starts_capture_before_version_manifest_probe(tmp_path: Path) -> None:
     events: list[str] = []
-    plugin = _FakePlugin({"git": "deadbeef"}, events=events)
+    plugin = _FakePlugin({"git": "deadbeef"}, events=events, cases=[_CAPTURE_CASE])
     orch = _StubOrchestrator(
         tmp_path,
         {"degraded": False, "reason": ""},
@@ -220,7 +290,10 @@ def test_plugin_reporter_receives_run_result_before_core_analysis_attachment(
 
 
 def test_run_payload_preserves_manifest_when_cli_fw_ver_wins_naming(tmp_path: Path) -> None:
-    plugin = _FakePlugin({"git": "deadbeef", "image": "BGW720"})
+    plugin = _FakePlugin(
+        {"git": "deadbeef", "image": "BGW720"},
+        cases=[_CAPTURE_CASE],
+    )
     orch = _StubOrchestrator(
         tmp_path,
         {"degraded": False, "reason": ""},
@@ -236,7 +309,7 @@ def test_run_payload_preserves_manifest_when_cli_fw_ver_wins_naming(tmp_path: Pa
 
 
 def test_run_payload_falls_back_when_manifest_has_no_git(tmp_path: Path) -> None:
-    plugin = _FakePlugin({"build": "2026.07.08"})
+    plugin = _FakePlugin({"build": "2026.07.08"}, cases=[_CAPTURE_CASE])
     orch = _StubOrchestrator(
         tmp_path,
         {"degraded": False, "reason": ""},
@@ -251,7 +324,7 @@ def test_run_payload_falls_back_when_manifest_has_no_git(tmp_path: Path) -> None
 
 
 def test_run_payload_normalizes_legacy_string_version_manifest(tmp_path: Path) -> None:
-    plugin = _FakePlugin("legacy-git-sha")
+    plugin = _FakePlugin("legacy-git-sha", cases=[_CAPTURE_CASE])
     orch = _StubOrchestrator(
         tmp_path,
         {"degraded": False, "reason": ""},
@@ -271,6 +344,7 @@ def test_run_payload_fails_soft_when_manifest_capture_raises_with_cli_override(
 ) -> None:
     plugin = _FakePlugin(
         capture_exception=RuntimeError("capture boom"),
+        cases=[_CAPTURE_CASE],
     )
     orch = _StubOrchestrator(
         tmp_path,
@@ -293,6 +367,7 @@ def test_run_payload_fails_soft_when_manifest_capture_raises_without_cli_overrid
 ) -> None:
     plugin = _FakePlugin(
         capture_exception=RuntimeError("capture boom"),
+        cases=[_CAPTURE_CASE],
     )
     orch = _StubOrchestrator(
         tmp_path,

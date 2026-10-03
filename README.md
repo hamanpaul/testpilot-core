@@ -129,6 +129,8 @@ testbed:
 
 > Current serialwrap resolution order: `SERIALWRAP_BIN` env var → `testbed.yaml` config → error exit when a serialwrap-backed workflow requires it.
 
+Run-level RAW log capture follows the selected DUT/STA serial transport binary and socket. The logger uses the effective testbed settings whether they are nested under `testbed` or at the YAML root. For a custom wrapper or socket, configure matching `binary` and `socket` values on both device records; conflicting device or backend overrides disable capture with a recorded reason instead of silently querying a PATH-local daemon. Endpoint schemes such as `tcp://` are preserved when targets are compared, so they cannot alias a Unix socket path. Each run writes a WAL export manifest with the fixed sequence range, pagination, gaps, rotation, loss flags, and overlapping full-row content-anchor checks. The manifest sets `generation_available` to `false` because serialwrap 0.3.0 exposes no WAL generation token; matching anchors establish content continuity only, not server-generation identity, and a byte-identical row recreation could still alias an anchor. Case log-line references are omitted when the range or any anchor check is incomplete.
+
 ### Quick Start
 
 The repository's managed installer is designed around the maintainer's current QC/TEST deployment profile. It resolves the core plus the plugin repositories declared in `install-manifest.yaml`, and therefore may require credentials for non-public plugin repositories present in that manifest.
@@ -200,7 +202,7 @@ testpilot --verify-install    # report managed install health
 
 Use the installed `testpilot` command for normal operation. Developer checkouts can still use `python -m testpilot.cli` when debugging the repository.
 
-Plugin-owned CLI commands are registered from installed plugin packages when `testpilot.cli` is imported. `--root <path>` selects the runtime project root for cases/configs/reports; it does not dynamically replace the registered plugin CLI surface with commands from `<path>/plugins`.
+Plugin-owned CLI commands are registered from installed plugin packages when `testpilot.cli` is imported. `--root <path>` selects the runtime project root for cases/configs/reports; when omitted, TestPilot uses the current working directory, matching the context-free API default. It does not dynamically replace the registered plugin CLI surface with commands from `<path>/plugins`.
 
 The core host commands are:
 
@@ -325,6 +327,8 @@ testpilot list-plugins
 
 Implement the `PluginBase` contract: declare `api_version`, `name`, `discover_cases()`, `execute_step()`, and `evaluate()`; override optional hooks such as `setup_env()`, `verify_env()`, `teardown()`, `create_reporter()`, `create_runner()`, `register_cli()`, and remediation hooks as needed.
 
+Plugins using SDK API 1.4 may return `PreparedRun(cases=cases, no_io=True)` when the entire prepared selection needs no Core DUT/STA capture, sequence markers, log export, or firmware-version query. This keeps per-case planning, execution, and reporting intact. Empty selections skip those Core environment queries automatically; mixed selections must leave `no_io=False`.
+
 Plugins import the public SDK surface from `testpilot.api`; they must not reach into `testpilot.core`, `testpilot.schema`, `testpilot.reporting`, `testpilot.transport`, or `testpilot.runtime` internals. See `plugins/_template/README.md` and `docs/plugin-dev-guide.md` for the current contract.
 
 For a complete runnable zero-hardware reference, see `examples/sample_echo/`.
@@ -424,6 +428,8 @@ export SERIALWRAP_BIN=/path/to/serialwrap
 testbed:
   serialwrap_binary: /path/to/serialwrap
 ```
+
+Run-level RAW log capture follows the selected DUT/STA serial transport binary and socket. Logger setup uses the effective testbed settings whether they are nested under `testbed` or at the YAML root. For a custom wrapper or socket, set matching `binary` and `socket` values on both device records; conflicting targets disable capture and are recorded in the run artifacts. Endpoint schemes such as `tcp://` are preserved during comparison and cannot alias Unix socket paths. Each run writes a WAL export manifest with its fixed sequence range, pagination, gaps, rotation, loss flags, and overlapping full-row content-anchor checks. The manifest sets `generation_available` to `false` because serialwrap 0.3.0 exposes no WAL generation token; matching anchors establish content continuity only, not server-generation identity, and a byte-identical row recreation could still alias an anchor. Case log-line references are omitted when the range or any anchor check is incomplete.
 
 ### 快速開始
 
@@ -543,6 +549,8 @@ my_plugin = "my_plugin.plugin:Plugin"
 ```
 
 必要 contract 包含 `api_version`、`name`、`discover_cases()`、`execute_step()`、`evaluate()`；依需求可覆寫 `setup_env()`、`verify_env()`、`teardown()`、`create_reporter()`、`create_runner()`、`register_cli()` 與 remediation hooks。
+
+使用 SDK API 1.4 的 plugin 可在整個 prepared selection 都不需要 Core DUT/STA capture、sequence marker、log export 與 firmware version query 時回傳 `PreparedRun(cases=cases, no_io=True)`。這不會略過 per-case planning、execution 或 reporting。空 selection 會由 Core 自動略過上述環境查詢；含有一般可執行 case 的混合 selection 必須維持 `no_io=False`。
 
 完整 contract 請見 `plugins/_template/README.md` 與 `docs/plugin-dev-guide.md`；零硬體 runnable example 請見 `examples/sample_echo/`。
 

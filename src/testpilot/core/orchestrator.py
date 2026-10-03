@@ -135,13 +135,14 @@ class Orchestrator(OrchestratorRunBackendCompat):
         config_path: Path | str | None = None,
         agent_runtime: AzureAgentRuntime | None = None,
     ) -> None:
-        self.root = Path(project_root) if project_root else Path(__file__).resolve().parents[3]
+        self.root = Path(project_root) if project_root is not None else Path.cwd()
         self.plugins_dir = Path(plugins_dir) if plugins_dir else self.root / DEFAULT_PLUGINS_DIR
         config = config_path or self.root / DEFAULT_CONFIG_DIR / "testbed.yaml"
         self.config = TestbedConfig(config)
+        testbed_config = self.config.raw.get("testbed", self.config.raw)
         self.run_backend = create_run_backend(
-            self.config.raw.get("testbed", {}).get("run_backend"),
-            self.config.raw.get("testbed", {}),
+            testbed_config.get("run_backend"),
+            testbed_config,
         )
         self._run_handle: RunHandle | None = None
         self.loader = PluginLoader(self.plugins_dir)
@@ -743,6 +744,9 @@ class Orchestrator(OrchestratorRunBackendCompat):
         """
         self._reset_run_state()
         plugin = self.loader.load(plugin_name)
+        bind_project_root = getattr(plugin, "bind_project_root", None)
+        if callable(bind_project_root):
+            bind_project_root(self.root)
         create_runner = getattr(plugin, "create_runner", None)
         runner = create_runner() if callable(create_runner) else None
         if runner is not None and hasattr(runner, "run"):
