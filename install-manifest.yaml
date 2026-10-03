@@ -10,7 +10,7 @@ core:
 plugins:
   - name: wifi_llapi
     repo: hamanpaul/wifi_llapi
-    api_version: "1.3"        # minimum SDK contract core must satisfy
+    api_version: "1.4"        # minimum SDK contract core must satisfy
     private: true
   - name: brcm_fw_upgrade
     repo: hamanpaul/brcm_fw_upgrade

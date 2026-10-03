@@ -9,6 +9,9 @@ preparation.
 
 ## [Unreleased]
 
+
+## [0.4.0] - 2026-10-03
+
 ### Fixed
 
 - Abort before retry or cleanup when serial command acceptance/execution is unknown or explicitly non-replayable; preserve structured command evidence in attempt traces and avoid automatic attach after an accepted-command status timeout.

@@ -59,6 +59,16 @@ Prepare releases in a dedicated branch and PR:
 7. Open the release PR with the `release:vX.Y.Z` label. Use `skip-changelog` on the release-prep PR because the pending fragments have already been moved into the dated release section.
 8. Merge the release PR into `main`.
 
+Source landing and artifact publication are separate: merging an API feature
+publishes source on `main`, while only the later tag-triggered release job
+builds and publishes an installable wheel. The flat MINOR policy requires the
+feature group to be landed and seven days without a hotfix. The generic agent
+checklist separately says a deferred release bump must be completed immediately
+when the feature PR merges; it does not define how that timing interacts with
+the seven-day MINOR gate. This sequencing point remains unresolved. Keep both
+rules in force; neither a source merge nor this document waives either rule, and
+do not tag or claim release readiness until the sequence satisfies both.
+
 Recommended PR title:
 
 ```text
