@@ -524,16 +524,22 @@ def test_export_records_paginates_with_fixed_inclusive_end_and_keeps_loss_marker
         from_seq=0, to_seq=2005, page_size=1000, max_records=3000
     )
 
-    assert [int(call[call.index("--from-seq") + 1]) for call in calls] == [0, 1000, 2000]
+    assert [
+        (int(call[call.index("--from-seq") + 1]), int(call[call.index("--limit") + 1]))
+        for call in calls
+    ] == [(0, 1000), (999, 1000), (1998, 1000), (0, 1), (2004, 1)]
     assert all(
         call[call.index("--to-seq") + 1] == "2005"
-        and call[call.index("--limit") + 1] == "1000"
         for call in calls
     )
     assert [record["seq"] for record in result.records] == list(range(1, 2006))
     assert result.records[1000]["loss_flag"] is True
     assert result.complete is False
     assert "loss_flag" in result.incomplete_reasons
+    metadata = result.to_dict()
+    assert metadata["continuity_kind"] == "content_anchor"
+    assert metadata["generation_available"] is False
+    assert "no WAL generation token" in metadata["continuity_note"]
 
 
 def test_export_records_marks_sequence_holes_rotations_and_bound_exhaustion(
@@ -569,13 +575,195 @@ def test_export_records_marks_sequence_holes_rotations_and_bound_exhaustion(
         from_seq=0, to_seq=10, page_size=3, max_records=4
     )
 
-    assert len(calls) == 2
+    assert len(calls) == 3
     assert all(call[call.index("--to-seq") + 1] == "10" for call in calls)
     assert result.complete is False
     assert {"rotated_out", "sequence_gap", "record_limit"}.issubset(
         set(result.incomplete_reasons)
     )
     assert result.requested_to_seq == 10
+
+
+def _wal_row(seq: int, generation: str) -> dict[str, Any]:
+    return {
+        "seq": seq,
+        "mono_ts_ns": seq * 10 + (0 if generation == "A" else 1000),
+        "wall_ts": f"2026-10-03T00:00:{seq:02d}+00:00",
+        "com": "COM0",
+        "dir": "rx",
+        "source": "reader",
+        "cmd_id": None,
+        "len": 1,
+        "crc32": "00000000",
+        "payload_b64": "eA==",
+        "loss_flag": False,
+        "meta": {"generation": generation},
+    }
+
+
+def _set_export_cli(monkeypatch: pytest.MonkeyPatch, fake_run: Any) -> None:
+    monkeypatch.setattr(_serialwrap_log, "_run_sw", fake_run)
+    monkeypatch.setattr(_serialwrap_log, "_configured_bin", "/fake/serialwrap")
+    monkeypatch.setattr(_serialwrap_log, "_configured_socket", None, raising=False)
+    monkeypatch.setattr(_serialwrap_log, "_configured_enabled", True, raising=False)
+    monkeypatch.setattr(_serialwrap_log, "_configured_reason", "", raising=False)
+    monkeypatch.setattr(_serialwrap_log, "_resolve_bin", lambda: "/fake/serialwrap")
+
+
+def test_export_records_rejects_reset_and_regrowth_between_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page_calls = 0
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> dict[str, Any]:
+        nonlocal page_calls
+        del kwargs
+        from_seq = int(cmd[cmd.index("--from-seq") + 1])
+        to_seq = int(cmd[cmd.index("--to-seq") + 1])
+        limit = int(cmd[cmd.index("--limit") + 1])
+        if limit > 1:
+            page_calls += 1
+            generation = "A" if page_calls == 1 else "B"
+        else:
+            generation = "B" if page_calls > 1 else "A"
+        rows = [
+            _wal_row(seq, generation)
+            for seq in range(from_seq + 1, min(from_seq + limit, to_seq) + 1)
+        ]
+        return {"ok": True, "records": rows, "available_from_seq": 1, "rotated_out": False}
+
+    _set_export_cli(monkeypatch, fake_run)
+    result = _serialwrap_log.export_records_with_metadata(
+        from_seq=0, to_seq=4, page_size=2, max_records=10
+    )
+
+    assert [row["seq"] for row in result.records] == [1, 2]
+    assert result.complete is False
+    assert "page_overlap_anchor_changed" in result.incomplete_reasons
+    assert result.to_dict()["generation_available"] is False
+
+
+def test_export_records_rechecks_first_and_end_anchors_after_final_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page_calls = 0
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> dict[str, Any]:
+        nonlocal page_calls
+        del kwargs
+        from_seq = int(cmd[cmd.index("--from-seq") + 1])
+        to_seq = int(cmd[cmd.index("--to-seq") + 1])
+        limit = int(cmd[cmd.index("--limit") + 1])
+        if limit > 1:
+            page_calls += 1
+            generation = "A"
+        else:
+            generation = "B" if page_calls >= 2 else "A"
+        rows = [
+            _wal_row(seq, generation)
+            for seq in range(from_seq + 1, min(from_seq + limit, to_seq) + 1)
+        ]
+        return {"ok": True, "records": rows, "available_from_seq": 1, "rotated_out": False}
+
+    _set_export_cli(monkeypatch, fake_run)
+    result = _serialwrap_log.export_records_with_metadata(
+        from_seq=0, to_seq=4, page_size=2, max_records=10
+    )
+
+    assert [row["seq"] for row in result.records] == [1, 2, 3, 4]
+    assert result.complete is False
+    assert {"range_first_anchor_changed", "range_end_anchor_changed"}.issubset(
+        set(result.incomplete_reasons)
+    )
+
+
+def test_export_records_marks_pruned_first_anchor_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(cmd: list[str], **kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        from_seq = int(cmd[cmd.index("--from-seq") + 1])
+        to_seq = int(cmd[cmd.index("--to-seq") + 1])
+        limit = int(cmd[cmd.index("--limit") + 1])
+        if limit == 1 and from_seq == 0:
+            rows: list[dict[str, Any]] = []
+        else:
+            rows = [
+                _wal_row(seq, "A")
+                for seq in range(from_seq + 1, min(from_seq + limit, to_seq) + 1)
+            ]
+        return {"ok": True, "records": rows, "available_from_seq": 1, "rotated_out": False}
+
+    _set_export_cli(monkeypatch, fake_run)
+    result = _serialwrap_log.export_records_with_metadata(
+        from_seq=0, to_seq=4, page_size=2, max_records=10
+    )
+
+    assert result.complete is False
+    assert "range_first_anchor_missing" in result.incomplete_reasons
+
+
+def test_export_records_marks_missing_page_overlap_anchor_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page_calls = 0
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> dict[str, Any]:
+        nonlocal page_calls
+        del kwargs
+        from_seq = int(cmd[cmd.index("--from-seq") + 1])
+        to_seq = int(cmd[cmd.index("--to-seq") + 1])
+        limit = int(cmd[cmd.index("--limit") + 1])
+        page_calls += int(limit > 1)
+        # Simulate the previous overlap row being pruned before page two.
+        rows = [
+            _wal_row(seq, "A")
+            for seq in range(from_seq + 1, min(from_seq + limit, to_seq) + 1)
+            if not (page_calls == 2 and seq == 2)
+        ]
+        return {"ok": True, "records": rows, "available_from_seq": 1, "rotated_out": False}
+
+    _set_export_cli(monkeypatch, fake_run)
+    result = _serialwrap_log.export_records_with_metadata(
+        from_seq=0, to_seq=4, page_size=2, max_records=10
+    )
+
+    assert result.complete is False
+    assert "page_overlap_anchor_missing" in result.incomplete_reasons
+
+
+@pytest.mark.parametrize("page_size", [1, 2])
+def test_export_records_accepts_append_after_fixed_end_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+    page_size: int,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        calls.append(cmd)
+        from_seq = int(cmd[cmd.index("--from-seq") + 1])
+        to_seq = int(cmd[cmd.index("--to-seq") + 1])
+        limit = int(cmd[cmd.index("--limit") + 1])
+        # The current WAL has appended 5 and 6 since the fixed range was chosen,
+        # but wal.range must continue to return only the captured 1..4 interval.
+        current_rows = [_wal_row(seq, "A") for seq in range(1, 7)]
+        rows = [
+            row
+            for row in current_rows
+            if from_seq < row["seq"] <= to_seq
+        ][:limit]
+        return {"ok": True, "records": rows, "available_from_seq": 1, "rotated_out": False}
+
+    _set_export_cli(monkeypatch, fake_run)
+    result = _serialwrap_log.export_records_with_metadata(
+        from_seq=0, to_seq=4, page_size=page_size, max_records=10
+    )
+
+    assert [row["seq"] for row in result.records] == [1, 2, 3, 4]
+    assert result.complete is True
+    assert result.to_dict()["continuity_kind"] == "content_anchor"
+    assert all(call[call.index("--to-seq") + 1] == "4" for call in calls)
 
 
 def test_export_records_rejects_rpc_error_response(monkeypatch: pytest.MonkeyPatch) -> None:

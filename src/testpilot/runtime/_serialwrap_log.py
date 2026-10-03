@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 # WAL 目錄的清理/輪替只能透過 daemon 自己的 RPC `wal reset` 進行，本檔
 # 不再對任何 WAL 路徑做本地 rmtree。
 _WAL_PATH_FALLBACK = Path("/tmp/serialwrap/wal/raw.wal.ndjson")
+_WAL_CONTINUITY_NOTE = (
+    "serialwrap 0.3.0 exposes no WAL generation token; content anchors check row "
+    "continuity but cannot prove server-generation identity"
+)
 
 _configured_bin: str | None = None
 _configured_socket: str | None = None
@@ -412,6 +416,8 @@ class WalExportResult:
     rotated_out: bool
     missing_sequence_ranges: list[tuple[int, int]]
     incomplete_reasons: list[str]
+    continuity_kind: str = "content_anchor"
+    generation_available: bool = False
 
     @property
     def complete(self) -> bool:
@@ -425,6 +431,9 @@ class WalExportResult:
             "pages_fetched": self.pages_fetched,
             "available_from_seq": self.available_from_seq,
             "rotated_out": self.rotated_out,
+            "continuity_kind": self.continuity_kind,
+            "generation_available": self.generation_available,
+            "continuity_note": _WAL_CONTINUITY_NOTE,
             "complete": self.complete,
             "incomplete_reasons": list(self.incomplete_reasons),
             "missing_sequence_ranges": [list(item) for item in self.missing_sequence_ranges],
@@ -479,13 +488,20 @@ def export_records_with_metadata(
         if remaining <= 0:
             reasons.add("record_limit")
             break
-        request_limit = min(page_size, remaining)
+        # Every page after the first repeats its preceding row.  The broker's
+        # range cursor is exclusive, so asking from cursor - 1 provides a
+        # content anchor without adding another RPC or relying on a WAL epoch
+        # field (which serialwrap 0.3.0 does not expose).
+        has_overlap = bool(records)
+        request_from_seq = max(cursor - 1, 0) if has_overlap else cursor
+        bounded_page_size = max(page_size, 1 + int(has_overlap))
+        request_limit = min(bounded_page_size, remaining + int(has_overlap))
         payload = _run_sw(
             [
                 "wal",
                 "export",
                 "--from-seq",
-                str(cursor),
+                str(request_from_seq),
                 "--to-seq",
                 str(requested_to_seq),
                 "--limit",
@@ -519,9 +535,26 @@ def export_records_with_metadata(
             reasons.add("page_limit_exceeded")
             break
 
+        page_offset = 0
+        if has_overlap:
+            previous = records[-1]
+            overlap = page_records[0] if page_records else None
+            if not isinstance(overlap, dict) or overlap.get("seq") != cursor:
+                reasons.add("page_overlap_anchor_missing")
+                break
+            try:
+                overlap_matches = _row_fingerprint(overlap) == _row_fingerprint(previous)
+            except (TypeError, ValueError):
+                reasons.add("page_overlap_anchor_malformed")
+                break
+            if not overlap_matches:
+                reasons.add("page_overlap_anchor_changed")
+                break
+            page_offset = 1
+
         prior_cursor = cursor
         last_seq = cursor
-        for record in page_records:
+        for record in page_records[page_offset:]:
             if not isinstance(record, dict):
                 reasons.add("malformed_record")
                 continue
@@ -546,6 +579,46 @@ def export_records_with_metadata(
             break
         if len(page_records) < request_limit and payload.get("truncated") is not True:
             break
+
+    if from_seq < requested_to_seq:
+        first_seq = from_seq + 1
+        first_record = next(
+            (
+                record
+                for record in records
+                if record.get("seq") == first_seq
+            ),
+            None,
+        )
+        end_seq = requested_to_seq
+        end_record = next(
+            (
+                record
+                for record in reversed(records)
+                if record.get("seq") == end_seq
+            ),
+            None,
+        )
+        if isinstance(first_record, dict):
+            _verify_range_anchor(
+                first_seq,
+                first_record,
+                reason_prefix="range_first_anchor",
+                requested_to_seq=requested_to_seq,
+                reasons=reasons,
+            )
+        else:
+            reasons.add("range_first_anchor_missing")
+        if isinstance(end_record, dict):
+            _verify_range_anchor(
+                end_seq,
+                end_record,
+                reason_prefix="range_end_anchor",
+                requested_to_seq=requested_to_seq,
+                reasons=reasons,
+            )
+        else:
+            reasons.add("range_end_anchor_missing")
 
     valid_sequences = sorted(
         {
@@ -579,6 +652,70 @@ def export_records_with_metadata(
         missing_sequence_ranges=missing_ranges,
         incomplete_reasons=sorted(reasons),
     )
+
+
+def _row_fingerprint(record: dict[str, Any]) -> str:
+    """Return a deterministic full-row representation for content continuity.
+
+    The fingerprint includes timestamps, command metadata, CRC, and payload.
+    It detects normal WAL reset/regrow races, but is not a server generation ID:
+    the 0.3.0 protocol exposes no generation token.
+    """
+    return json.dumps(
+        record,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def _verify_range_anchor(
+    seq: int,
+    expected: dict[str, Any],
+    *,
+    reason_prefix: str,
+    requested_to_seq: int,
+    reasons: set[str],
+) -> None:
+    if seq <= 0 or seq > requested_to_seq:
+        reasons.add(f"{reason_prefix}_out_of_range")
+        return
+    try:
+        payload = _run_sw(
+            [
+                "wal",
+                "export",
+                "--from-seq",
+                str(seq - 1),
+                "--to-seq",
+                str(requested_to_seq),
+                "--limit",
+                "1",
+            ],
+            timeout=60.0,
+        )
+    except Exception:
+        reasons.add(f"{reason_prefix}_error")
+        return
+    if not isinstance(payload, dict) or payload.get("ok") is not True:
+        reasons.add(f"{reason_prefix}_error")
+        return
+    rows = payload.get("records")
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+        reasons.add(f"{reason_prefix}_missing")
+        return
+    actual = rows[0]
+    if actual.get("seq") != seq:
+        reasons.add(f"{reason_prefix}_missing")
+        return
+    try:
+        matches = _row_fingerprint(actual) == _row_fingerprint(expected)
+    except (TypeError, ValueError):
+        reasons.add(f"{reason_prefix}_malformed")
+        return
+    if not matches:
+        reasons.add(f"{reason_prefix}_changed")
 
 
 def export_records(

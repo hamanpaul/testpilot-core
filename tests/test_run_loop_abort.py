@@ -14,6 +14,9 @@ from testpilot.core.execution_engine import RetryResult
 from testpilot.core.prepared_run import PreparedRun
 from testpilot.core.usage_ledger import UsageLedger
 import testpilot.reporting.usage_reporter as usage_reporter
+from testpilot.runtime import _serialwrap_log
+from testpilot.runtime.orchestrator_run_backend_compat import OrchestratorRunBackendCompat
+from testpilot.runtime.serialwrap_backend import SerialwrapBackend
 
 
 def _retry_result(*, verdict: bool) -> RetryResult:
@@ -156,6 +159,28 @@ class _AbortOrchestrator:
         return {}
 
 
+class _RecordingSerialwrapBackend(SerialwrapBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setup_metadata: list[dict[str, Any]] = []
+
+    def setup_run(self, run_id: str, config: dict[str, Any]) -> Any:
+        handle = super().setup_run(run_id, config)
+        self.setup_metadata.append(dict(handle.meta.get("serialwrap_binding", {})))
+        return handle
+
+
+class _LeaseAbortOrchestrator(_AbortOrchestrator, OrchestratorRunBackendCompat):
+    def _start_run_capture(self, run_id: str) -> Any:
+        return OrchestratorRunBackendCompat._start_run_capture(self, run_id)
+
+    def _stop_run_capture(self) -> None:
+        OrchestratorRunBackendCompat._stop_run_capture(self)
+
+    def _export_run_logs(self, **kwargs: Any) -> dict[str, str]:
+        return OrchestratorRunBackendCompat._export_run_logs(self, **kwargs)
+
+
 def test_run_writes_aborted_cost_artifacts_before_reraising(tmp_path: Path) -> None:
     plugin = _Plugin(
         [
@@ -208,3 +233,66 @@ def test_run_survives_core_cost_report_builder_failure(
     assert payload["status"] == "ok"
     assert payload["core_cost_report"]["status"] == "failed"
     assert payload["core_cost_report"]["error_type"] == "RuntimeError"
+
+
+def test_pre_case_setup_failure_releases_serialwrap_owner_for_next_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "serialwrap-fake"
+    binary.write_text("fake cli", encoding="utf-8")
+    device = {
+        "transport": "serialwrap",
+        "binary": str(binary),
+        "socket": str(tmp_path / "serialwrapd.sock"),
+    }
+    testbed = {
+        "serialwrap_binary": str(binary),
+        "devices": {"DUT": dict(device), "STA": dict(device)},
+    }
+    plugin = _Plugin([])
+    backend = _RecordingSerialwrapBackend()
+    orchestrator = _LeaseAbortOrchestrator(
+        tmp_path,
+        plugin,
+        _ExecutionEngine([]),
+    )
+    orchestrator.run_backend = backend
+    orchestrator._run_handle = None
+    orchestrator.config = SimpleNamespace(raw={"testbed": testbed}, devices=testbed["devices"])
+
+    monkeypatch.delenv("SERIALWRAP_BIN", raising=False)
+    monkeypatch.delenv("SERIALWRAP_ENDPOINT", raising=False)
+    monkeypatch.setattr(_serialwrap_log, "daemon_status", lambda: {"ok": True, "pid": 123})
+    monkeypatch.setattr(_serialwrap_log, "wal_reset", lambda: {"ok": True})
+    monkeypatch.setattr(_serialwrap_log, "get_wal_path", lambda: tmp_path / "raw.wal.ndjson")
+    monkeypatch.setattr(
+        _serialwrap_log,
+        "get_current_seq",
+        lambda **kwargs: 0,
+    )
+
+    load_calls = 0
+
+    def fail_once(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal load_calls
+        del args, kwargs
+        load_calls += 1
+        if load_calls == 1:
+            raise RuntimeError("pre-case setup failed")
+        return {}
+
+    monkeypatch.setattr(orchestrator.runner_selector, "load_agent_config", fail_once)
+    with pytest.raises(RuntimeError, match="pre-case setup failed"):
+        run_loop.run(orchestrator, "fake", None, None)
+
+    assert backend.setup_metadata[0]["enabled"] is True
+    assert _serialwrap_log._configured_owner is None
+    assert backend._run_bindings == {}
+
+    payload = run_loop.run(orchestrator, "fake", None, None)
+
+    assert payload["status"] == "ok"
+    assert len(backend.setup_metadata) == 2
+    assert backend.setup_metadata[1]["enabled"] is True
+    assert _serialwrap_log._configured_owner is None

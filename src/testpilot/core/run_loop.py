@@ -210,12 +210,50 @@ def _build_case_trace_payload(
         "tier2_audit": retry_result.tier2_audit or [],
         "agent_recovered": bool(retry_result.agent_recovered),
     }
+
+
+def _stop_run_capture_once(orchestrator: Any, capture_state: dict[str, bool]) -> None:
+    if not capture_state.get("capture_attempted") or capture_state.get("capture_stopped"):
+        return
+    orchestrator._stop_run_capture()
+    capture_state["capture_stopped"] = True
+
+
 def run(
     orchestrator: Any,
     plugin_name: str,
     case_ids: list[str] | None,
     dut_fw_ver: str | None,
     provider_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    capture_state = {"capture_attempted": False, "capture_stopped": False}
+    try:
+        return _run_with_capture(
+            orchestrator,
+            plugin_name,
+            case_ids,
+            dut_fw_ver,
+            provider_config,
+            capture_state=capture_state,
+        )
+    finally:
+        if capture_state["capture_attempted"] and not capture_state["capture_stopped"]:
+            try:
+                _stop_run_capture_once(orchestrator, capture_state)
+            except Exception:
+                # Preserve a setup/run exception while making the failed cleanup
+                # visible. The normal export-path cleanup still propagates errors.
+                log.warning("run capture cleanup failed", exc_info=True)
+
+
+def _run_with_capture(
+    orchestrator: Any,
+    plugin_name: str,
+    case_ids: list[str] | None,
+    dut_fw_ver: str | None,
+    provider_config: dict[str, Any] | None,
+    *,
+    capture_state: dict[str, bool],
 ) -> dict[str, Any]:
     plugin = orchestrator.loader.load(plugin_name)
     bind_project_root = getattr(plugin, "bind_project_root", None)
@@ -228,6 +266,9 @@ def run(
     reports_root = Path(orchestrator.plugins_dir) / plugin_name / "reports"
     run_date = date.today()
     run_id = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    # Mark the attempt before calling into the orchestrator: a transport setup
+    # may acquire its owner lease and then raise while binding sessions.
+    capture_state["capture_attempted"] = True
     capture_path = orchestrator._start_run_capture(run_id)
     run_handle = _seq_tracking_handle(
         orchestrator,
@@ -386,7 +427,7 @@ def run(
     except Exception:
         log.warning("run log export failed", exc_info=True)
     finally:
-        orchestrator._stop_run_capture()
+        _stop_run_capture_once(orchestrator, capture_state)
 
     run_result = RunResult(
         cases=case_records,

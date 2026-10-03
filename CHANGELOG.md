@@ -27,7 +27,7 @@ preparation.
 
 - Add optional SDK API 1.3 project-root binding before run dispatch and `prepare_run`; default CLI and orchestrator roots to the operator working directory so preflight artifacts from installed plugins stay with the project.
 
-- Bind run-level serialwrap logging to the selected DUT/STA transport binary and endpoint, disabling capture on conflicts; page fixed WAL ranges with sequence-gap, rotation, and loss provenance, and avoid local-file seq fallback for broker-reported WAL paths.
+- Bind run-level serialwrap logging to the selected DUT/STA transport binary and endpoint, disabling capture on conflicts; page fixed WAL ranges with overlapping full-row continuity checks and fixed-range anchor rechecks, expose that serialwrap 0.3.0 has no generation token, and release the logger lease when pre-case setup fails.
 
 - Normalize wrapped and flat testbed settings for logger setup, and preserve non-Unix endpoint schemes when checking device/broker target conflicts.
 
