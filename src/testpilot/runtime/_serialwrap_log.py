@@ -845,30 +845,24 @@ def seq_range_to_line_range(
 
     Integer values retain the legacy first-line mapping behavior. Tuple values
     are inclusive ``(first_line, last_line)`` spans and include all lines
-    touched by the final seq payload. Returns empty string if the mapping is
-    insufficient.
+    touched by the final seq payload. Approximate endpoints use only mapped
+    seqs inside the requested interval. Returns empty string if the interval is
+    reversed or contains no mapped seq.
     """
     if seq_start is None or seq_end is None:
         return ""
-    if not seq_to_line:
+    if seq_start > seq_end or not seq_to_line:
         return ""
 
-    start_value = seq_to_line.get(seq_start)
-    end_value = seq_to_line.get(seq_end)
-
-    if start_value is None:
-        seqs_at_or_after = [s for s in seq_to_line if s >= seq_start]
-        if seqs_at_or_after:
-            start_value = seq_to_line[min(seqs_at_or_after)]
-    if end_value is None:
-        seqs_at_or_before = [s for s in seq_to_line if s <= seq_end]
-        if seqs_at_or_before:
-            end_value = seq_to_line[max(seqs_at_or_before)]
-
-    if start_value is None or end_value is None:
+    interval_seqs = [seq for seq in seq_to_line if seq_start <= seq <= seq_end]
+    if not interval_seqs:
         return ""
+    start_seq = seq_start if seq_start in seq_to_line else min(interval_seqs)
+    end_seq = seq_end if seq_end in seq_to_line else max(interval_seqs)
+    start_value = seq_to_line[start_seq]
+    end_value = seq_to_line[end_seq]
     start_line = start_value[0] if isinstance(start_value, tuple) else start_value
     end_line = end_value[1] if isinstance(end_value, tuple) else end_value
     if start_line > end_line:
-        start_line, end_line = end_line, start_line
+        return ""
     return f"L{start_line}-L{end_line}"

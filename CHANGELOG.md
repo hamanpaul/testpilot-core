@@ -35,6 +35,8 @@ preparation.
 
 - Map serialwrap case log intervals against the exact concatenated DUT/STA text: payload fragments no longer invent lines, and the reported end line includes the complete final WAL payload.
 
+- Keep approximate serialwrap log-range endpoints within the requested case sequence interval; emit no citation when a COM has no records inside it or the sequence range is reversed.
+
 ### Changed
 
 - Increment the plugin SDK contract to API 1.4 and add `PreparedRun.no_io`; empty selections automatically skip run-level DUT/STA capture and firmware-version queries, while plugins can explicitly opt out for an entirely no-I/O prepared selection without skipping per-case results.

@@ -204,6 +204,37 @@ class TestSeqRangeToLineRange:
         seq_map = {10: 1, 20: 2}
         assert log_capture.seq_range_to_line_range(30, 40, seq_map) == ""
 
+    def test_cross_com_records_outside_case_interval_do_not_supply_lines(self):
+        records = [
+            _make_record(5, "COM1", "sta-before\n"),
+            _make_record(10, "COM0", "dut-case-start\n"),
+            _make_record(20, "COM0", "dut-case-end\n"),
+            _make_record(25, "COM1", "sta-after\n"),
+        ]
+
+        sta_spans = log_capture.build_seq_to_line_span_map(records, com_filter="COM1")
+        sta_start_lines = log_capture.build_seq_to_line_map(records, com_filter="COM1")
+
+        assert log_capture.seq_range_to_line_range(10, 20, sta_spans) == ""
+        assert log_capture.seq_range_to_line_range(10, 20, sta_start_lines) == ""
+
+    def test_approximate_match_stays_inside_requested_interval(self):
+        span_map = {5: (1, 2), 12: (3, 4), 18: (5, 7), 25: (8, 9)}
+        int_map = {5: 1, 12: 3, 18: 5, 25: 8}
+
+        assert log_capture.seq_range_to_line_range(10, 20, span_map) == "L3-L7"
+        assert log_capture.seq_range_to_line_range(10, 20, int_map) == "L3-L5"
+
+    @pytest.mark.parametrize(
+        "seq_map",
+        [
+            {10: (1, 3), 20: (4, 6)},
+            {10: 1, 20: 4},
+        ],
+    )
+    def test_reversed_sequence_interval_fails_closed(self, seq_map):
+        assert log_capture.seq_range_to_line_range(20, 10, seq_map) == ""
+
 
 # ---------------------------------------------------------------------------
 # save_decoded_log
