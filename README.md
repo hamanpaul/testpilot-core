@@ -129,6 +129,8 @@ testbed:
 
 > Current serialwrap resolution order: `SERIALWRAP_BIN` env var → `testbed.yaml` config → error exit when a serialwrap-backed workflow requires it.
 
+Run-level RAW log capture follows the selected DUT/STA serial transport binary and socket. For a custom wrapper or socket, configure matching `binary` and `socket` values on both device records; conflicting device or backend overrides disable capture with a recorded reason instead of silently querying a PATH-local daemon. Each run writes a WAL export manifest with the fixed sequence range, pagination, gaps, rotation, and loss flags. Case log-line references are omitted when that range is incomplete.
+
 ### Quick Start
 
 The repository's managed installer is designed around the maintainer's current QC/TEST deployment profile. It resolves the core plus the plugin repositories declared in `install-manifest.yaml`, and therefore may require credentials for non-public plugin repositories present in that manifest.
@@ -424,6 +426,8 @@ export SERIALWRAP_BIN=/path/to/serialwrap
 testbed:
   serialwrap_binary: /path/to/serialwrap
 ```
+
+Run-level RAW log capture follows the selected DUT/STA serial transport binary and socket. For a custom wrapper or socket, set matching `binary` and `socket` values on both device records; conflicting targets disable capture and are recorded in the run artifacts. Each run writes a WAL export manifest with its fixed sequence range and any pagination gaps, WAL rotation, or loss flags. Case log-line references are omitted when the exported range is incomplete.
 
 ### 快速開始
 

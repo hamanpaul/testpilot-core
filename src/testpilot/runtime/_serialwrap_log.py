@@ -8,6 +8,7 @@ import logging
 import subprocess
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,17 +23,45 @@ logger = logging.getLogger(__name__)
 _WAL_PATH_FALLBACK = Path("/tmp/serialwrap/wal/raw.wal.ndjson")
 
 _configured_bin: str | None = None
+_configured_socket: str | None = None
+_configured_enabled = True
+_configured_reason = ""
 
 
-def configure(binary: str | None = None) -> None:
-    """Set serialwrap binary path from config. Called once during init."""
-    global _configured_bin  # noqa: PLW0603
-    if binary:
-        _configured_bin = binary
+def configure(
+    *,
+    binary: str | None,
+    socket: str | None,
+    enabled: bool = True,
+    reason: str = "",
+) -> None:
+    """Set the run logger target, including an explicit disabled state."""
+    global _configured_bin, _configured_socket, _configured_enabled, _configured_reason  # noqa: PLW0603
+    _configured_bin = binary
+    _configured_socket = socket
+    _configured_enabled = bool(enabled)
+    _configured_reason = str(reason)
+
+
+def _cli_prefix() -> list[str]:
+    if not _configured_enabled:
+        raise RuntimeError(
+            "serialwrap run logging is disabled: "
+            + (_configured_reason or "device target could not be resolved")
+        )
+    command = [_resolve_bin()]
+    if _configured_socket:
+        command.extend(["--socket", _configured_socket])
+    return command
 
 
 def _resolve_bin() -> str:
     """Resolve serialwrap binary: ENV → configure() value → PATH."""
+    if not _configured_enabled:
+        raise RuntimeError(
+            "serialwrap run logging is disabled: "
+            + (_configured_reason or "device target could not be resolved")
+        )
     return resolve_serialwrap_binary(
         _configured_bin,
         config_label="'serialwrap_binary' in testbed config",
@@ -41,7 +70,7 @@ def _resolve_bin() -> str:
 
 def _run_sw(args: list[str], timeout: float = 10.0) -> dict[str, Any]:
     """Run a serialwrap CLI command and return parsed JSON response."""
-    cmd = [_resolve_bin(), *args]
+    cmd = [*_cli_prefix(), *args]
     # serialwrap always emits UTF-8; never fall back to the host locale (#51).
     completed = subprocess.run(
         cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -124,7 +153,13 @@ def wal_reset() -> dict[str, Any]:
 def wal_current_seq() -> int:
     """透過 RPC 取得目前 WAL seq。"""
     payload = _run_sw(["wal", "current-seq"], timeout=5.0)
-    return int(payload.get("seq", 0))
+    if payload.get("ok") is not True:
+        code = payload.get("error_code") or payload.get("message") or "RPC_ERROR"
+        raise RuntimeError(f"serialwrap WAL current-seq failed: {code}")
+    seq = payload.get("seq")
+    if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+        raise RuntimeError("serialwrap WAL current-seq returned an invalid sequence")
+    return seq
 
 
 def _list_devices() -> list[dict[str, Any]]:
@@ -225,7 +260,7 @@ def setup_sessions(
             session = selected[selector]
             session_id = str(session.get("session_id") or selector)
             by_id = str(session["device_by_id"])
-            command = [_resolve_bin(), "session", "attach", "--selector", session_id]
+            command = [*_cli_prefix(), "session", "attach", "--selector", session_id]
         else:
             by_id = _match_device_by_id(hw_devices, serial_port) if serial_port else None
         if not by_id and not selector:
@@ -238,7 +273,7 @@ def setup_sessions(
             continue
 
         if not selector:
-            command = [_resolve_bin(), "session", "bind", "--selector", session_id, "--device-by-id", by_id]
+            command = [*_cli_prefix(), "session", "bind", "--selector", session_id, "--device-by-id", by_id]
 
         proc = subprocess.Popen(
             command,
@@ -294,19 +329,28 @@ def get_wal_path() -> Path:
     return _WAL_PATH_FALLBACK
 
 
-def get_current_seq(wal_path: Path | None = None) -> int | None:
-    """Return the latest WAL seq number via RPC (preferred) or file tail fallback.
+def get_current_seq(
+    wal_path: Path | None = None,
+    *,
+    same_host_wal_path: bool = False,
+) -> int | None:
+    """Return the current seq by RPC, optionally falling back to a local file.
 
-    Returns None if WAL file doesn't exist or is empty.
+    A daemon-reported WAL path can be on a remote host behind a serialwrap
+    wrapper. Run-level tracking therefore uses RPC only. Local file access
+    requires the caller to attest that the supplied path is same-host.
     """
-    if wal_path is None:
-        # 無指定路徑：優先走 RPC（無 race condition）
+    if same_host_wal_path and wal_path is not None:
+        # This flag is an explicit caller assertion, not inferred from the path.
+        path = wal_path
+    else:
         try:
             return wal_current_seq()
         except Exception:
-            pass
-    # 指定路徑或 RPC 失敗：讀檔案
-    path = wal_path or get_wal_path()
+            if not same_host_wal_path or wal_path is None:
+                return None
+        # RPC failed for a caller that explicitly accepts this supplied path.
+        path = wal_path
     if not path.is_file():
         return None
     try:
@@ -327,25 +371,198 @@ def get_current_seq(wal_path: Path | None = None) -> int | None:
 # Log export & decode
 # ---------------------------------------------------------------------------
 
-def export_records(
-    from_seq: int = 1,
-    to_seq: int | None = None,
-    limit: int | None = None,
-) -> list[dict[str, Any]]:
-    """Export WAL records in a seq range.
+_WAL_EXPORT_PAGE_SIZE = 1000
+_WAL_EXPORT_MAX_RECORDS = 100_000
 
-    If to_seq is None, exports from from_seq to end of WAL.
+
+@dataclass(frozen=True)
+class WalExportResult:
+    """Bounded WAL export plus explicit coverage and loss provenance."""
+
+    records: list[dict[str, Any]]
+    requested_from_seq: int
+    requested_to_seq: int
+    pages_fetched: int
+    available_from_seq: int | None
+    rotated_out: bool
+    missing_sequence_ranges: list[tuple[int, int]]
+    incomplete_reasons: list[str]
+
+    @property
+    def complete(self) -> bool:
+        return not self.incomplete_reasons
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "requested_from_seq_exclusive": self.requested_from_seq,
+            "requested_to_seq_inclusive": self.requested_to_seq,
+            "record_count": len(self.records),
+            "pages_fetched": self.pages_fetched,
+            "available_from_seq": self.available_from_seq,
+            "rotated_out": self.rotated_out,
+            "complete": self.complete,
+            "incomplete_reasons": list(self.incomplete_reasons),
+            "missing_sequence_ranges": [list(item) for item in self.missing_sequence_ranges],
+            "records": self.records,
+        }
+
+
+def export_records_with_metadata(
+    from_seq: int = 0,
+    to_seq: int | None = None,
+    limit: int | None = 0,
+    *,
+    page_size: int = _WAL_EXPORT_PAGE_SIZE,
+    max_records: int = _WAL_EXPORT_MAX_RECORDS,
+) -> WalExportResult:
+    """Export a fixed sequence range with bounded pages and coverage evidence.
+
+    ``from_seq`` is the exclusive cursor used by serialwrap's ``wal.range``;
+    ``to_seq`` is inclusive. A zero or omitted limit means the configured hard
+    cap, not a request for an unbounded RPC response. The service currently
+    defaults a zero RPC limit to 1000, so every page sends an explicit positive
+    limit and advances from the last returned sequence.
     """
-    args = ["wal", "export", "--from-seq", str(from_seq)]
-    if to_seq is not None:
-        args.extend(["--to-seq", str(to_seq)])
-    if limit is not None:
-        args.extend(["--limit", str(limit)])
-    payload = _run_sw(args, timeout=60.0)
-    records = payload.get("records", [])
-    if not isinstance(records, list):
-        return []
-    return records
+    if from_seq < 0:
+        raise ValueError("from_seq must be a non-negative exclusive cursor")
+    if page_size <= 0:
+        raise ValueError("page_size must be positive")
+    page_size = min(int(page_size), _WAL_EXPORT_PAGE_SIZE)
+    hard_cap = min(max(int(max_records), 0), _WAL_EXPORT_MAX_RECORDS)
+    if limit is not None and int(limit) > 0:
+        hard_cap = min(hard_cap, int(limit))
+
+    if to_seq is None:
+        # Freeze the moving end before the first page; each page below then
+        # carries the exact same inclusive --to-seq value.
+        to_seq = wal_current_seq()
+    requested_to_seq = int(to_seq)
+    if requested_to_seq < 0:
+        raise ValueError("to_seq must be a non-negative inclusive end")
+
+    records: list[dict[str, Any]] = []
+    reasons: set[str] = set()
+    cursor = int(from_seq)
+    pages_fetched = 0
+    available_from_seq: int | None = None
+    rotated_out = False
+    if requested_to_seq < from_seq:
+        reasons.add("sequence_range_reversed")
+
+    while cursor < requested_to_seq:
+        remaining = hard_cap - len(records)
+        if remaining <= 0:
+            reasons.add("record_limit")
+            break
+        request_limit = min(page_size, remaining)
+        payload = _run_sw(
+            [
+                "wal",
+                "export",
+                "--from-seq",
+                str(cursor),
+                "--to-seq",
+                str(requested_to_seq),
+                "--limit",
+                str(request_limit),
+            ],
+            timeout=60.0,
+        )
+        pages_fetched += 1
+        if payload.get("ok") is not True:
+            code = payload.get("error_code") or payload.get("message") or "INVALID_RESPONSE"
+            raise RuntimeError(f"serialwrap WAL export failed: {code}")
+
+        candidate_available = payload.get("available_from_seq")
+        if (
+            available_from_seq is None
+            and isinstance(candidate_available, int)
+            and not isinstance(candidate_available, bool)
+        ):
+            available_from_seq = candidate_available
+        rotated_out = rotated_out or payload.get("rotated_out") is True
+        if rotated_out:
+            reasons.add("rotated_out")
+
+        page_records = payload.get("records")
+        if not isinstance(page_records, list):
+            reasons.add("malformed_records_response")
+            break
+        if len(page_records) > request_limit:
+            # Do not let a daemon/wrapper that ignored --limit defeat the
+            # client-side record bound or produce a complete-looking export.
+            reasons.add("page_limit_exceeded")
+            break
+
+        prior_cursor = cursor
+        last_seq = cursor
+        for record in page_records:
+            if not isinstance(record, dict):
+                reasons.add("malformed_record")
+                continue
+            seq = record.get("seq")
+            if isinstance(seq, bool) or not isinstance(seq, int):
+                reasons.add("malformed_sequence")
+                records.append(record)
+                continue
+            if seq <= last_seq or seq > requested_to_seq:
+                reasons.add("out_of_range_sequence")
+                records.append(record)
+                continue
+            records.append(record)
+            last_seq = seq
+            cursor = seq
+            if record.get("loss_flag") is True:
+                reasons.add("loss_flag")
+
+        if cursor <= prior_cursor:
+            # Avoid an infinite retry loop if a remote response contains no
+            # valid sequence advancement.
+            break
+        if len(page_records) < request_limit and payload.get("truncated") is not True:
+            break
+
+    valid_sequences = sorted(
+        {
+            record["seq"]
+            for record in records
+            if isinstance(record.get("seq"), int)
+            and not isinstance(record.get("seq"), bool)
+            and from_seq < record["seq"] <= requested_to_seq
+        }
+    )
+    missing_ranges: list[tuple[int, int]] = []
+    next_expected = from_seq + 1
+    for seq in valid_sequences:
+        if seq > next_expected:
+            missing_ranges.append((next_expected, seq - 1))
+        next_expected = max(next_expected, seq + 1)
+    if next_expected <= requested_to_seq:
+        missing_ranges.append((next_expected, requested_to_seq))
+    if missing_ranges:
+        reasons.add("sequence_gap")
+    if cursor < requested_to_seq and len(records) >= hard_cap:
+        reasons.add("record_limit")
+
+    return WalExportResult(
+        records=records,
+        requested_from_seq=int(from_seq),
+        requested_to_seq=requested_to_seq,
+        pages_fetched=pages_fetched,
+        available_from_seq=available_from_seq,
+        rotated_out=rotated_out,
+        missing_sequence_ranges=missing_ranges,
+        incomplete_reasons=sorted(reasons),
+    )
+
+
+def export_records(
+    from_seq: int = 0,
+    to_seq: int | None = None,
+    limit: int | None = 0,
+) -> list[dict[str, Any]]:
+    """Compatibility wrapper returning the bounded, paginated records only."""
+    return export_records_with_metadata(from_seq, to_seq, limit).records
 
 
 def decode_log(

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import json
-import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -170,15 +169,17 @@ class TestGetCurrentSeq:
             json.dumps({"seq": 200, "com": "COM1", "payload_b64": "dGVzdA=="}),
         ]
         wal.write_text("\n".join(records) + "\n")
-        assert log_capture.get_current_seq(wal) == 200
+        assert log_capture.get_current_seq(wal, same_host_wal_path=True) == 200
 
     def test_empty_file(self, tmp_path: Path):
         wal = tmp_path / "empty.ndjson"
         wal.write_text("")
-        assert log_capture.get_current_seq(wal) is None
+        assert log_capture.get_current_seq(wal, same_host_wal_path=True) is None
 
     def test_missing_file(self, tmp_path: Path):
-        assert log_capture.get_current_seq(tmp_path / "nonexistent.ndjson") is None
+        assert log_capture.get_current_seq(
+            tmp_path / "nonexistent.ndjson", same_host_wal_path=True
+        ) is None
 
 
 # ---------------------------------------------------------------------------
@@ -263,12 +264,15 @@ class TestExportRecords:
 
     @patch("testpilot.runtime._serialwrap_log._run_sw")
     def test_export_without_to_seq(self, mock_run):
-        mock_run.return_value = {"ok": True, "records": []}
+        mock_run.side_effect = [
+            {"ok": True, "seq": 10},
+            {"ok": True, "records": []},
+        ]
         log_capture.export_records(from_seq=1)
         call_args = mock_run.call_args[0][0]
         assert "--from-seq" in call_args
-        assert "--to-seq" not in call_args
-        assert "--limit" not in call_args
+        assert call_args[call_args.index("--to-seq") + 1] == "10"
+        assert call_args[call_args.index("--limit") + 1] == "1000"
 
     @patch("testpilot.runtime._serialwrap_log._run_sw")
     def test_export_with_unlimited_limit(self, mock_run):
@@ -283,12 +287,15 @@ class TestExportRecords:
             "--to-seq",
             "200",
             "--limit",
-            "0",
+            "1000",
         ]
 
     @patch("testpilot.runtime._serialwrap_log._run_sw")
     def test_export_missing_records(self, mock_run):
-        mock_run.return_value = {"ok": True}
+        mock_run.side_effect = [
+            {"ok": True, "seq": 10},
+            {"ok": True},
+        ]
         result = log_capture.export_records(from_seq=1)
         assert result == []
 
