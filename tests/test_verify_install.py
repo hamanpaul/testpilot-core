@@ -298,12 +298,16 @@ class TestVersionMirrorCheck:
 class TestManagedCheckoutReport:
     """_handle_verify_install reports managed checkout status without failing."""
 
-    def test_missing_checkout_does_not_fail(self, tmp_path: Path) -> None:
+    def test_missing_checkout_does_not_fail(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Missing managed checkout is informational, not a hard failure."""
         skill_dir = tmp_path / "skills" / "testpilot-normal-test"
         skill_dir.mkdir(parents=True)
 
         nonexistent_src = tmp_path / "nonexistent" / "managed" / "src"
+        monkeypatch.setattr("testpilot.cli._probe_wheel_install", _healthy_wheel_probe)
+        monkeypatch.setattr("testpilot.cli._check_installed_plugin_health", lambda: [])
         mock_console = MagicMock()
         with patch("testpilot.cli._get_managed_src", return_value=nonexistent_src):
             with patch(
