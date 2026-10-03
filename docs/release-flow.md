@@ -61,13 +61,31 @@ Prepare releases in a dedicated branch and PR:
 
 Source landing and artifact publication are separate: merging an API feature
 publishes source on `main`, while only the later tag-triggered release job
-builds and publishes an installable wheel. The flat MINOR policy requires the
-feature group to be landed and seven days without a hotfix. The generic agent
-checklist separately says a deferred release bump must be completed immediately
-when the feature PR merges; it does not define how that timing interacts with
-the seven-day MINOR gate. This sequencing point remains unresolved. Keep both
-rules in force; neither a source merge nor this document waives either rule, and
-do not tag or claim release readiness until the sequence satisfies both.
+builds and publishes an installable wheel.
+
+### One-time v0.4.0 sequencing exception
+
+The release owner approved this exception for v0.4.0 only. It replaces the
+usual seven-day MINOR-release wait and the normal immediate post-merge tag with
+two complete reference-plugin runs. It changes only the order of those release
+steps; all other release gates remain in force, and later releases follow the
+standard policy.
+
+After the fixes are merged, deploy the exact Core/plugin artifact pair and the
+same approved effective configuration for both runs. Each run must complete the
+full official case inventory across all applicable bands and produce its final
+JSON. Before tagging, verify that both JSON files contain the complete expected
+case/band matrix, that both runs use the same pinned software and configuration
+identities, and that each result matches the predeclared per-case/per-band
+release gate. The two runs must have no unexplained outcome drift. This is not
+an all-PASS requirement: an explicitly approved expected environment verdict,
+including a clock-related `FailEnv`, remains acceptable when it matches that
+gate. Missing rows, incomplete runs, or any result outside the gate block the
+release.
+
+Do not create or push the v0.4.0 tag, or publish its GitHub Release, when the
+fixes are merged. Create and publish the tag only after both complete run
+results have been reviewed and found consistent with the same release gate.
 
 Recommended PR title:
 
@@ -77,12 +95,16 @@ chore(release): prepare vX.Y.Z
 
 ## 5. Tagging and publication
 
-After the release PR is merged:
+For releases other than v0.4.0, after the release PR is merged:
 
 1. Create tag `vX.Y.Z` on the merged `main` commit.
 2. Push the tag.
 3. `.github/workflows/release.yml` runs the project policy gate and release validation.
 4. The release job verifies tag/version consistency, runs tests, builds the wheel, creates the GitHub Release, and uploads the wheel asset.
+
+For v0.4.0, follow the one-time sequencing exception above before creating or
+pushing the tag. The release workflow and its normal validation still apply
+after that tag is created.
 
 GitHub Releases are the canonical published release surface. `CHANGELOG.md` remains the curated in-repository history.
 
@@ -108,6 +130,7 @@ Do not tag a release until all of the following are true:
 - README CLI help marker blocks are synchronized when CLI help changed
 - the manifest API-compatibility gate passes
 - the offline installer integration gate passes in CI
+- for v0.4.0, both complete reference-plugin runs satisfy the one-time gate above
 
 The repository CI currently includes the core test suite, a real install/discovery/run smoke for `examples/sample_echo`, release-governance tests, manifest SDK compatibility checks, and an offline installer integration smoke.
 
