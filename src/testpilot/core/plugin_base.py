@@ -22,6 +22,8 @@ from testpilot.core.run_start_gate import (
     PrepareRunAfterCaptureContext,
     PrepareRunGateResult,
     RunCapability,
+    RunCapabilityAdmissionOutcome,
+    admit_run_capabilities,
 )
 
 _ABORT_REASON_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
@@ -293,6 +295,14 @@ class PluginBase(ABC):
         additional phases.  The default implementation mirrors the
         ExecutionEngine contract.
         """
+        admission = admit_run_capabilities(
+            self,
+            None,
+            default_gate_hook=PluginBase.prepare_run_after_capture,
+        )
+        if admission.outcome is not RunCapabilityAdmissionOutcome.LEGACY:
+            raise RuntimeError("strict run requires Core-owned context-bearing lifecycle")
+
         commands: list[str] = []
         outputs: list[str] = []
         verdict = False

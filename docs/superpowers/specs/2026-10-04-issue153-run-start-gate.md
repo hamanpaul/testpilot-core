@@ -26,11 +26,21 @@ provider and dual-channel transport binding belong to a separate Core task.
   default returns `None`.
 - Add `PreparedRun.run_start_gate`, defaulting to `None`, to retain the accepted
   typed result with the prepared selection.
-- Strict capability declarations use typed enum members. Unknown, malformed,
-  unsupported, or API-incompatible declarations fail closed before
-  `bind_project_root()` and `prepare_run()`.
+- Strict capability declarations use typed enum members. The public
+  `Orchestrator.run()` entry point performs shared admission after API-checked
+  plugin loading and before `bind_project_root()` or runner construction.
+  Unknown, malformed, unsupported, or API-incompatible declarations fail
+  closed before either callback.
 - The active `RunBackend` must supply the context from the actual run capture
   handle. Configuration values cannot prove capture binding.
+
+An admitted strict plugin runs through the Core-owned context-bearing loop.
+Until Core defines an equivalent context-bearing runner contract, strict
+plugins with a custom `create_runner()` are rejected before the factory runs.
+The inherited `PluginBase.run_pipeline()` has no capture-context parameter and
+raises before setup, steps, cleanup, or verdict evaluation when called directly
+by a strict plugin. Legacy plugins with no required capability keep their
+existing custom-runner and direct-pipeline behavior.
 
 The context contains the run ID, an actual non-negative start sequence (zero is
 valid), and an opaque safe-token binding ID. Gate results contain finite
@@ -42,6 +52,7 @@ evidence item is not accepted.
 
 ```text
 host capability preflight
+  -> Core-owned loop
   -> bind project root
   -> pure prepare selection
   -> strict capture setup and handle binding
@@ -93,6 +104,12 @@ outcomes, legacy opt-out, old-host rejection, zero start markers, and invalid en
 markers/case ranges. Tests use only fake plugin, backend, runner, and reporter
 objects; they do not invoke subprocesses, networks, SSH, serialwrap, hardware,
 or real capture.
+
+Public-entry tests call the actual `Orchestrator.run()` and inherited
+`PluginBase.run_pipeline()` methods. They cover missing-provider and malformed
+capability rejection before bind/factory, strict custom-runner rejection with a
+fake supported provider, the accepted Core-owned path, and legacy custom/direct
+controls.
 
 This specification and its tests establish only the SDK/Core lifecycle
 prototype. They do not establish production capture binding, plugin-side hybrid

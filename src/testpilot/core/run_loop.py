@@ -8,7 +8,6 @@ from datetime import date, datetime
 import json
 import logging
 from pathlib import Path
-import re
 import time
 from typing import Any
 
@@ -21,7 +20,8 @@ from testpilot.core.execution_engine import ExecutionEngine
 from testpilot.core.plugin_base import PluginBase
 from testpilot.core.run_start_gate import (
     PrepareRunGateOutcome,
-    RunCapability,
+    RunCapabilityAdmissionOutcome,
+    admit_run_capabilities,
     is_valid_capture_context,
     is_valid_gate_result,
     is_valid_sequence_marker,
@@ -228,40 +228,6 @@ def _stop_run_capture_once(orchestrator: Any, capture_state: dict[str, bool]) ->
     capture_state["capture_stopped"] = True
 
 
-def _required_capture_gate_problem(plugin: Any, run_backend: Any) -> tuple[bool, str | None]:
-    """Validate strict gate declarations before any plugin preparation hook."""
-    plugin_type = type(plugin)
-    raw_capabilities = getattr(plugin_type, "required_run_capabilities", frozenset())
-    if type(raw_capabilities) is not frozenset:
-        return True, "required_capabilities_invalid"
-    if not raw_capabilities:
-        return False, None
-
-    values: set[str] = set()
-    for capability in raw_capabilities:
-        if type(capability) is not RunCapability:
-            return True, "required_capabilities_invalid"
-        values.add(capability.value)
-    strict_capture = RunCapability.STRICT_CAPTURE_BINDING.value
-    if values != {strict_capture}:
-        return True, "required_capability_unsupported"
-
-    declared_api = getattr(plugin_type, "api_version", None)
-    if not isinstance(declared_api, str) or not re.fullmatch(r"\d+\.\d+", declared_api):
-        return True, "required_capability_api_invalid"
-    api_major, api_minor = (int(part) for part in declared_api.split("."))
-    if api_major != 1 or api_minor < 6:
-        return True, "required_capability_api_incompatible"
-
-    hook = getattr(plugin_type, "prepare_run_after_capture", None)
-    if not callable(hook) or hook is PluginBase.prepare_run_after_capture:
-        return True, "post_capture_gate_missing"
-    provider = getattr(type(run_backend), "get_strict_capture_context", None)
-    if not callable(provider):
-        return True, "capture_capability_unavailable"
-    return True, None
-
-
 def _safe_case_ids(cases: list[dict[str, Any]] | None, requested_ids: list[str] | None) -> list[str]:
     raw_ids = (
         [case.get("id", "?") for case in cases]
@@ -323,6 +289,27 @@ def _run_start_abort(
     }
 
 
+def abort_run_start_before_capture(
+    orchestrator: Any,
+    plugin_name: str,
+    requested_ids: list[str] | None,
+    reason_code: str,
+) -> dict[str, Any]:
+    """Create a sanitized terminal artifact for public-entry capability rejection."""
+    run_id = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    reports_root = Path(orchestrator.plugins_dir) / plugin_name / "reports"
+    return _run_start_abort(
+        plugin_name=plugin_name,
+        reports_root=reports_root,
+        run_id=run_id,
+        reason_code=reason_code,
+        outcome=PrepareRunGateOutcome.UNKNOWN.value,
+        cases=None,
+        requested_ids=requested_ids,
+        capture_attempted=False,
+    )
+
+
 def _strict_capture_ranges_problem(
     *,
     run_seq_start: int,
@@ -351,6 +338,8 @@ def run(
     case_ids: list[str] | None,
     dut_fw_ver: str | None,
     provider_config: dict[str, Any] | None = None,
+    *,
+    preloaded_plugin: Any | None = None,
 ) -> dict[str, Any]:
     capture_state = {
         "capture_attempted": False,
@@ -364,6 +353,7 @@ def run(
             case_ids,
             dut_fw_ver,
             provider_config,
+            preloaded_plugin=preloaded_plugin,
             capture_state=capture_state,
         )
     finally:
@@ -387,12 +377,24 @@ def _run_with_capture(
     dut_fw_ver: str | None,
     provider_config: dict[str, Any] | None,
     *,
+    preloaded_plugin: Any | None,
     capture_state: dict[str, bool],
 ) -> dict[str, Any]:
-    plugin = orchestrator.loader.load(plugin_name)
-    strict_capture_gate, capability_problem = _required_capture_gate_problem(
+    plugin = (
+        preloaded_plugin
+        if preloaded_plugin is not None
+        else orchestrator.loader.load(plugin_name)
+    )
+    admission = admit_run_capabilities(
         plugin,
         getattr(orchestrator, "run_backend", None),
+        default_gate_hook=PluginBase.prepare_run_after_capture,
+    )
+    strict_capture_gate = admission.outcome is not RunCapabilityAdmissionOutcome.LEGACY
+    capability_problem = (
+        admission.reason_code
+        if admission.outcome is RunCapabilityAdmissionOutcome.REJECTED
+        else None
     )
     if capability_problem is not None:
         run_id = datetime.now().strftime("%Y%m%dT%H%M%S%f")

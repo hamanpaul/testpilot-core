@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import inspect
 import re
+from typing import Any
 
 
 _SAFE_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
@@ -16,6 +18,109 @@ class RunCapability(str, Enum):
     """Host capabilities a plugin may require before preparing a run."""
 
     STRICT_CAPTURE_BINDING = "strict_capture_binding"
+
+
+class RunCapabilityAdmissionOutcome(str, Enum):
+    """Finite result of checking a plugin's host-required capabilities."""
+
+    LEGACY = "legacy"
+    ADMITTED = "admitted"
+    REJECTED = "rejected"
+
+
+_CAPABILITY_REJECTION_REASONS = frozenset(
+    {
+        "required_capabilities_invalid",
+        "required_capability_unsupported",
+        "required_capability_api_invalid",
+        "required_capability_api_incompatible",
+        "post_capture_gate_missing",
+        "capture_capability_unavailable",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RunCapabilityAdmissionResult:
+    """Finite, side-effect-free admission result shared by Core entry points."""
+
+    outcome: RunCapabilityAdmissionOutcome
+    reason_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.outcome) is not RunCapabilityAdmissionOutcome:
+            raise ValueError("capability admission outcome is invalid")
+        if self.outcome is RunCapabilityAdmissionOutcome.REJECTED:
+            if type(self.reason_code) is not str or self.reason_code not in _CAPABILITY_REJECTION_REASONS:
+                raise ValueError("capability admission reason is invalid")
+        elif self.reason_code is not None:
+            raise ValueError("only rejected capability admission has a reason")
+
+
+def admit_run_capabilities(
+    plugin: Any,
+    run_backend: Any,
+    *,
+    default_gate_hook: Any,
+) -> RunCapabilityAdmissionResult:
+    """Check declared capabilities without invoking plugin or backend hooks."""
+    plugin_type = type(plugin)
+    raw_capabilities = inspect.getattr_static(
+        plugin_type,
+        "required_run_capabilities",
+        frozenset(),
+    )
+    if type(raw_capabilities) is not frozenset:
+        return RunCapabilityAdmissionResult(
+            RunCapabilityAdmissionOutcome.REJECTED,
+            "required_capabilities_invalid",
+        )
+    if not raw_capabilities:
+        return RunCapabilityAdmissionResult(RunCapabilityAdmissionOutcome.LEGACY)
+    if any(type(capability) is not RunCapability for capability in raw_capabilities):
+        return RunCapabilityAdmissionResult(
+            RunCapabilityAdmissionOutcome.REJECTED,
+            "required_capabilities_invalid",
+        )
+    if (
+        len(raw_capabilities) != 1
+        or next(iter(raw_capabilities)) is not RunCapability.STRICT_CAPTURE_BINDING
+    ):
+        return RunCapabilityAdmissionResult(
+            RunCapabilityAdmissionOutcome.REJECTED,
+            "required_capability_unsupported",
+        )
+
+    declared_api = inspect.getattr_static(plugin_type, "api_version", None)
+    if type(declared_api) is not str or re.fullmatch(r"\d+\.\d+", declared_api) is None:
+        return RunCapabilityAdmissionResult(
+            RunCapabilityAdmissionOutcome.REJECTED,
+            "required_capability_api_invalid",
+        )
+    api_major, api_minor = (int(part) for part in declared_api.split("."))
+    if api_major != 1 or api_minor < 6:
+        return RunCapabilityAdmissionResult(
+            RunCapabilityAdmissionOutcome.REJECTED,
+            "required_capability_api_incompatible",
+        )
+
+    hook = inspect.getattr_static(plugin_type, "prepare_run_after_capture", None)
+    if not callable(hook) or hook is default_gate_hook:
+        return RunCapabilityAdmissionResult(
+            RunCapabilityAdmissionOutcome.REJECTED,
+            "post_capture_gate_missing",
+        )
+    provider = inspect.getattr_static(
+        type(run_backend),
+        "get_strict_capture_context",
+        None,
+    )
+    if not callable(provider):
+        return RunCapabilityAdmissionResult(
+            RunCapabilityAdmissionOutcome.REJECTED,
+            "capture_capability_unavailable",
+        )
+    return RunCapabilityAdmissionResult(RunCapabilityAdmissionOutcome.ADMITTED)
 
 
 class PrepareRunGateOutcome(str, Enum):

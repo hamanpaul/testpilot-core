@@ -21,6 +21,8 @@ preparation.
 
 - Treat SSH subprocess timeouts, exit status 255, and local signal termination as structured, non-replayable unknown outcomes; stop Engine retries and teardown without exposing command argv in exception formatting.
 
+- Enforce strict run-capability admission at public `Orchestrator.run()` before plugin binding or runner construction; route accepted strict plugins through Core's context-bearing loop and reject legacy custom/direct pipeline paths before setup or verdict work.
+
 ## [0.4.0] - 2026-10-03
 
 ### Fixed
