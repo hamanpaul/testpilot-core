@@ -11,6 +11,7 @@ This module keeps the public API identical to pre-split versions so that
 
 from __future__ import annotations
 
+import inspect
 import logging
 import math
 from pathlib import Path
@@ -50,6 +51,7 @@ from testpilot.core.execution_engine import ExecutionEngine
 from testpilot.core.advisory import AdvisoryCollector
 from testpilot.core.hook_policy import HookDispatcher, build_hook_policy
 from testpilot.core.plugin_loader import PluginLoader
+from testpilot.core.plugin_base import PluginBase
 from testpilot.core.remediation import RuntimeRemediationCoordinator, tier2_support
 from testpilot.core.tier2_recovery import (
     Tier2RecoveryContext,
@@ -73,6 +75,10 @@ from testpilot.core.run_analysis import (
 from testpilot.core.runner_selector import (
     DEFAULT_EXECUTION_POLICY,
     RunnerSelector,
+)
+from testpilot.core.run_start_gate import (
+    RunCapabilityAdmissionOutcome,
+    admit_run_capabilities,
 )
 from testpilot.core.testbed_config import TestbedConfig
 from testpilot.runtime.factory import create_run_backend
@@ -734,8 +740,9 @@ class Orchestrator(OrchestratorRunBackendCompat):
     ) -> dict[str, Any]:
         """執行測試。
 
-        If the plugin provides a runner (create_runner() returns non-None),
-        the full run/report pipeline is delegated to it.
+        Strict-capability plugins are admitted before binding or runner
+        construction and use the Core-owned context-bearing run loop. Legacy
+        plugins may delegate their full run/report pipeline to a custom runner.
 
         Other plugins:
         - runner override if create_runner() returns non-None with run()
@@ -744,6 +751,44 @@ class Orchestrator(OrchestratorRunBackendCompat):
         """
         self._reset_run_state()
         plugin = self.loader.load(plugin_name)
+        admission = admit_run_capabilities(
+            plugin,
+            getattr(self, "run_backend", None),
+            default_gate_hook=PluginBase.prepare_run_after_capture,
+        )
+        if admission.outcome is RunCapabilityAdmissionOutcome.REJECTED:
+            from testpilot.core.run_loop import abort_run_start_before_capture
+
+            return abort_run_start_before_capture(
+                self,
+                plugin_name,
+                case_ids,
+                admission.reason_code or "required_capabilities_invalid",
+            )
+        if admission.outcome is RunCapabilityAdmissionOutcome.ADMITTED:
+            if (
+                inspect.getattr_static(plugin, "create_runner", None)
+                is not PluginBase.create_runner
+            ):
+                from testpilot.core.run_loop import abort_run_start_before_capture
+
+                return abort_run_start_before_capture(
+                    self,
+                    plugin_name,
+                    case_ids,
+                    "strict_custom_runner_unsupported",
+                )
+            from testpilot.core.run_loop import run as core_run
+
+            return core_run(
+                self,
+                plugin_name,
+                case_ids,
+                dut_fw_ver,
+                provider_config=provider_config,
+                preloaded_plugin=plugin,
+            )
+
         bind_project_root = getattr(plugin, "bind_project_root", None)
         if callable(bind_project_root):
             bind_project_root(self.root)

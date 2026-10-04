@@ -23,6 +23,8 @@ preparation.
 
 - Treat SSH subprocess timeouts, exit status 255, and local signal termination as structured, non-replayable unknown outcomes; stop Engine retries and teardown without exposing command argv in exception formatting.
 
+- Enforce strict run-capability admission at public `Orchestrator.run()` before plugin binding or runner construction; route accepted strict plugins through Core's context-bearing loop and reject legacy custom/direct pipeline paths before setup or verdict work.
+
 ## [0.4.0] - 2026-10-03
 
 ### Fixed
@@ -58,6 +60,8 @@ preparation.
 - Save decoded serialwrap logs as exact UTF-8 payload bytes without platform newline translation, and report the encoded byte length.
 
 ### Changed
+
+- SDK API 1.6 adds an opt-in host-enforced post-capture/pre-version run-start gate with frozen typed context/results, strict sequence-marker checks, and terminal artifacts listing unexecuted cases. Unsupported strict capture fails closed before plugin preparation; API 1.4/1.5 plugins retain the legacy path. See `docs/superpowers/specs/2026-10-04-issue153-run-start-gate.md`.
 
 - SDK API 1.5：`PluginBase.teardown()` 可回報失敗／未知的 cleanup 結果；Core 會產生 terminal `FailEnv` 並停止 retry，舊 plugin 回傳 `None` 維持相容。[Issue #61](https://github.com/hamanpaul/testpilot-core/issues/61)
 
