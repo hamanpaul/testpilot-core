@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 import inspect
 from pathlib import Path
+import re
 from typing import Any, Sequence
 
 from testpilot.core.case_utils import case_matches_requested_ids, stringify_step_command
@@ -17,6 +18,9 @@ from testpilot.core.cleanup_result import (
     project_transport_evidence,
 )
 from testpilot.core.prepared_run import PreparedRun
+
+_ABORT_REASON_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_DEFAULT_PLUGIN_ABORT_REASON = "plugin_failure_abort"
 
 
 class IncompatiblePluginError(Exception):
@@ -282,7 +286,7 @@ class PluginBase(ABC):
             failure = runtime_case.get("_last_failure")
             if not isinstance(failure, Mapping):
                 return None
-            if str(failure.get("case_id", "")) != str(runtime_case.get("id", "")):
+            if failure.get("case_id") != str(runtime_case.get("id", "")):
                 return None
             attempt_index = failure.get("attempt_index")
             if (
@@ -293,7 +297,22 @@ class PluginBase(ABC):
                 return None
             return failure
 
+        def current_explicit_failure_abort() -> tuple[bool, str, bool, Mapping[str, Any] | None]:
+            failure = current_failure_snapshot()
+            if failure is None or failure.get("abort_run") is not True:
+                return False, "", False, None
+
+            raw_reason = failure.get("abort_reason") or failure.get("reason_code")
+            reason = str(raw_reason or _DEFAULT_PLUGIN_ABORT_REASON).strip()[:128]
+            if _ABORT_REASON_PATTERN.fullmatch(reason) is None:
+                reason = _DEFAULT_PLUGIN_ABORT_REASON
+            return True, reason, failure.get("skip_teardown") is True, dict(failure)
+
         unknown_outcome = False
+        plugin_abort_run = False
+        plugin_abort_reason = ""
+        skip_teardown = False
+        plugin_failure_snapshot: Mapping[str, Any] | None = None
         transport_evidence: dict[str, Any] = {}
         cleanup_result: dict[str, Any] | None = None
         try:
@@ -302,11 +321,23 @@ class PluginBase(ABC):
                 failure = current_failure_snapshot()
                 unknown_outcome = has_unknown_transport_outcome(failure)
                 transport_evidence = project_transport_evidence(failure)
+                (
+                    plugin_abort_run,
+                    plugin_abort_reason,
+                    skip_teardown,
+                    plugin_failure_snapshot,
+                ) = current_explicit_failure_abort()
             elif not self.verify_env(runtime_case, topology):
                 comment = "env_verify gate failed"
                 failure = current_failure_snapshot()
                 unknown_outcome = has_unknown_transport_outcome(failure)
                 transport_evidence = project_transport_evidence(failure)
+                (
+                    plugin_abort_run,
+                    plugin_abort_reason,
+                    skip_teardown,
+                    plugin_failure_snapshot,
+                ) = current_explicit_failure_abort()
             else:
                 step_results: dict[str, Any] = {}
                 raw_steps = runtime_case.get("steps", [])
@@ -335,23 +366,41 @@ class PluginBase(ABC):
                         break
                     if not result.get("success", False):
                         comment = f"step failed: {step_id}"
+                        (
+                            plugin_abort_run,
+                            plugin_abort_reason,
+                            skip_teardown,
+                            plugin_failure_snapshot,
+                        ) = current_explicit_failure_abort()
                         break
 
                 if not comment:
                     verdict = self.evaluate(runtime_case, {"steps": step_results})
                     if not verdict:
                         comment = "pass_criteria not satisfied"
+                        (
+                            plugin_abort_run,
+                            plugin_abort_reason,
+                            skip_teardown,
+                            plugin_failure_snapshot,
+                        ) = current_explicit_failure_abort()
 
         except Exception as exc:
             failure = current_failure_snapshot()
             unknown_outcome = has_unknown_transport_outcome(exc, failure)
             transport_evidence = project_transport_evidence(exc, failure)
             comment = "command outcome unknown" if unknown_outcome else f"exception: {exc}"
+            (
+                plugin_abort_run,
+                plugin_abort_reason,
+                skip_teardown,
+                plugin_failure_snapshot,
+            ) = current_explicit_failure_abort()
         finally:
             unknown_outcome = unknown_outcome or has_unknown_transport_outcome(
                 current_failure_snapshot()
             )
-            if not unknown_outcome:
+            if not unknown_outcome and not skip_teardown:
                 try:
                     cleanup_result = normalize_cleanup_result(
                         self.teardown(runtime_case, topology)
@@ -399,6 +448,30 @@ class PluginBase(ABC):
                     "abort_run": True,
                     "abort_reason": cleanup_result["reason_code"],
                     "transport_result": dict(cleanup_result["transport_result"]),
+                }
+            )
+        elif plugin_abort_run and plugin_failure_snapshot is not None:
+            category = str(plugin_failure_snapshot.get("category", "")).strip().lower()
+            if category in {"environment", "session"}:
+                diagnostic_status = "FailEnv"
+            elif category in {"configuration", "config"}:
+                diagnostic_status = "FailConfig"
+            elif category in {"test", "semantic"}:
+                diagnostic_status = "FailTest"
+            else:
+                diagnostic_status = "Inconclusive"
+            transport_evidence = project_transport_evidence(
+                transport_evidence,
+                plugin_failure_snapshot,
+            )
+            result_payload.update(
+                {
+                    "verdict": False,
+                    "failure_snapshot": dict(plugin_failure_snapshot),
+                    "diagnostic_status": diagnostic_status,
+                    "abort_run": True,
+                    "abort_reason": plugin_abort_reason,
+                    "transport_result": transport_evidence,
                 }
             )
         return result_payload

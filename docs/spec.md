@@ -166,6 +166,7 @@ sequenceDiagram
 
 - failure 後預設執行 `teardown()`；只有未知／歧義 command receipt，或 matching current-attempt failure snapshot 明確標示 `skip_teardown: true` 時才抑制清理。
 - plugin 可在 matching current-attempt `_last_failure` snapshot 設定 `abort_run: true` 結束整個 run；snapshot 必須帶 exact `case_id` 與整數 `attempt_index`，避免舊 attempt 的狀態誤停後續 case。此 terminal abort 在 `on_retry` 以外的路徑也有效。
+- `PluginBase.run_pipeline()` 直接執行時遵循相同的 snapshot 身分與 literal-boolean 規則：有效的 `abort_run: true` 會回傳 terminal abort reason 與 failure snapshot；只有同一 snapshot 也明確設為 `skip_teardown: true` 才跳過 cleanup。未知 command receipt 仍優先，無效或過期的 abort metadata 不改變 cleanup 或結果形狀。
 - remediation 只允許發生在 **attempt 與 attempt 之間** 的 `on_retry` 期間。
 - tier-1 使用 plugin-owned deterministic allowlist。tier-2 必須明確 opt-in，且只接受 plugin capability catalog 中通過 schema/budget 的 environment actions。
 - tier-2 的 SDK/provider/plan/execution/gate 任一失敗都保留 audit 並 fail-closed；LLM 或 executor 自稱成功不能取代 core-owned `verify_env`。
