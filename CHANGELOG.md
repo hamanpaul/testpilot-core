@@ -9,6 +9,11 @@ preparation.
 
 ## [Unreleased]
 
+### Changed
+
+- 升級 Plugin SDK 契約至 API 1.7，新增 `PluginBase.project_hook_payload()` 的 identity 預設與 detached `data` / `context` 投影 envelope；Core 以投影副本呼叫 lifecycle hooks，保留原始 evaluator evidence，並在投影失敗時 fail closed。
+- 將 unknown transport classification 移到 action hook 邊界前；unknown evidence 不再觸發 `post_step`、`on_failure`、`on_retry` 或 `post_case`，也不會 teardown 或 replay。已知的 completed 非零結果仍沿用一般 hook 與 retry 流程。
+
 ### Fixed
 
 - Classify direct `PluginBase.run_pipeline()` transport receipts before reading or rendering step output; preserve the submitted command slot and safe receipt identity, and stop with sanitized `FailEnv` before evaluation or teardown on accepted, partial, or unreadable outcomes.

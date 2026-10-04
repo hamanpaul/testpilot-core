@@ -244,9 +244,7 @@ def test_throwing_exception_receipt_property_aborts_without_leaking_message(
     assert "secret-marker" not in result.comment
     assert "synthetic local error" not in result.comment
     assert "secret-marker" not in str(result.attempts[0]["transport_result"])
-    assert len(hook_payloads) == 1
-    assert "exception" not in hook_payloads[0]
-    assert "secret-marker" not in str(hook_payloads[0])
+    assert hook_payloads == []
 
 
 def test_direct_pipeline_keeps_unreadable_receipt_fail_closed() -> None:
@@ -296,13 +294,10 @@ def test_unreadable_receipt_is_classified_before_result_rendering() -> None:
     assert plugin.step_calls == 1
     assert plugin.teardown_calls == 0
     assert "secret-marker" not in result.comment
-    assert len(hook_payloads) == 1
-    assert "exception" not in hook_payloads[0]
-    assert hook_payloads[0]["result"] == {
-        "transport_result": {
-            "status": "accepted",
-            "cmd_id": "accepted-render-id",
-        }
+    assert hook_payloads == []
+    assert result.attempts[0]["transport_result"] == {
+        "status": "accepted",
+        "cmd_id": "accepted-render-id",
     }
 
 

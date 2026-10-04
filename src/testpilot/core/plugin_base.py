@@ -94,6 +94,28 @@ class PluginBase(ABC):
         """
         return True
 
+    def project_hook_payload(
+        self, hook_name: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Project a detached lifecycle-hook envelope for public observation.
+
+        ``payload`` has exactly two top-level keys: ``data`` contains the
+        lifecycle hook payload and ``context`` contains plain fields matching
+        :class:`HookContext` (``hook_name``, ``case_id``, ``plugin_name``,
+        ``attempt_index``, ``step_id``, ``runner``, and ``extra``). Return the
+        same two-part shape. Core never gives this method the evaluator's live
+        case or step-result objects, and it passes only the returned context to
+        the hook callback.
+
+        The default is an identity projection for legacy plugins. Plugins that
+        hold private evidence should override this method and remove or replace
+        sensitive fields from both parts of the envelope. Core fails closed
+        with a finite reason if copying or projection fails or returns a
+        malformed envelope; it does not fall back to the raw payload.
+        """
+        del hook_name
+        return payload
+
     @abstractmethod
     def execute_step(self, case: dict[str, Any], step: dict[str, Any], topology: Any) -> dict[str, Any]:
         """執行單一測試步驟。
