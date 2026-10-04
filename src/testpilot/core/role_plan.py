@@ -86,6 +86,8 @@ def _freeze_value(value: object, depth: int = 0) -> Any:
         for key, item in value.items():
             if not isinstance(key, str) or _utf8_length(key, "provider option key") > 256:
                 raise RolePlanError("provider option mapping has an invalid key")
+            if _SENSITIVE_OPTION_PATTERN.search(key):
+                raise RolePlanError("sensitive data is not allowed in a provider option mapping key")
             frozen[key] = _freeze_value(item, depth + 1)
         return MappingProxyType(dict(sorted(frozen.items())))
     if isinstance(value, (list, tuple)):
@@ -117,6 +119,42 @@ def _digest(value: Any) -> str:
     if len(encoded) > _MAX_PLAN_BYTES:
         raise RolePlanError("role-plan projection exceeds its size limit")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _physical_role_payload(roles: Sequence[RolePlanIdentity]) -> list[dict[str, Any]]:
+    return [
+        {
+            "role": role.role,
+            "selector": role.selector,
+            "expected_device_by_id": role.expected_device_by_id,
+            "expected_profile": role.expected_profile,
+            "serial_port": role.serial_port,
+        }
+        for role in roles
+    ]
+
+
+def _provider_option_payload(
+    options: Sequence[RolePlanProviderOption],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "namespace": option.namespace,
+            "role": option.role,
+            "key": option.key,
+            "value": _json_value(option.value),
+        }
+        for option in options
+    ]
+
+
+def _whole_plan_digest(physical_digest: str, provider_digest: str) -> str:
+    return _digest(
+        {
+            "physical_identity_digest": physical_digest,
+            "provider_options_digest": provider_digest,
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -232,12 +270,32 @@ class EffectiveRolePlan:
     digest: str
 
     def __post_init__(self) -> None:
-        roles = tuple(self.roles)
-        options = tuple(self.provider_options)
+        roles = _sequence(self.roles, "role plan identities", _MAX_ROLES)
+        options = _sequence(
+            self.provider_options, "role plan provider options", _MAX_PROVIDER_OPTIONS
+        )
         if any(not isinstance(role, RolePlanIdentity) for role in roles):
             raise RolePlanError("role plan identities must use typed values")
         if any(not isinstance(option, RolePlanProviderOption) for option in options):
             raise RolePlanError("role plan options must use typed values")
+
+        role_names = tuple(role.role for role in roles)
+        if len(set(role_names)) != len(role_names):
+            raise RolePlanError("duplicate role in effective role plan")
+        if role_names != tuple(sorted(role_names)):
+            raise RolePlanError("role order is not canonical")
+
+        option_keys = tuple(
+            (option.namespace, option.role, option.key) for option in options
+        )
+        if len(set(option_keys)) != len(option_keys):
+            raise RolePlanError("duplicate provider option in effective role plan")
+        if option_keys != tuple(sorted(option_keys)):
+            raise RolePlanError("provider option order is not canonical")
+        role_set = set(role_names)
+        if any(option.role not in role_set for option in options):
+            raise RolePlanError("provider option role is not present in the role plan")
+
         for value in (
             self.physical_identity_digest,
             self.provider_options_digest,
@@ -245,6 +303,17 @@ class EffectiveRolePlan:
         ):
             if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
                 raise RolePlanError("role-plan digest is invalid")
+
+        physical_digest = _digest(_physical_role_payload(roles))
+        provider_digest = _digest(_provider_option_payload(options))
+        whole_digest = _whole_plan_digest(physical_digest, provider_digest)
+        if (
+            self.physical_identity_digest != physical_digest
+            or self.provider_options_digest != provider_digest
+            or self.digest != whole_digest
+        ):
+            raise RolePlanError("role-plan digest does not match canonical contents")
+
         object.__setattr__(self, "roles", roles)
         object.__setattr__(self, "provider_options", options)
 
@@ -358,35 +427,9 @@ def project_capture_role_plan(
     provider_options = tuple(
         sorted(options, key=lambda item: (item.namespace, item.role, item.key))
     )
-    physical_digest = _digest(
-        [
-            {
-                "role": role.role,
-                "selector": role.selector,
-                "expected_device_by_id": role.expected_device_by_id,
-                "expected_profile": role.expected_profile,
-                "serial_port": role.serial_port,
-            }
-            for role in roles
-        ]
-    )
-    provider_digest = _digest(
-        [
-            {
-                "namespace": option.namespace,
-                "role": option.role,
-                "key": option.key,
-                "value": _json_value(option.value),
-            }
-            for option in provider_options
-        ]
-    )
-    plan_digest = _digest(
-        {
-            "physical_identity_digest": physical_digest,
-            "provider_options_digest": provider_digest,
-        }
-    )
+    physical_digest = _digest(_physical_role_payload(roles))
+    provider_digest = _digest(_provider_option_payload(provider_options))
+    plan_digest = _whole_plan_digest(physical_digest, provider_digest)
     return EffectiveRolePlan(
         roles=roles,
         provider_options=provider_options,

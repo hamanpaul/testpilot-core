@@ -196,6 +196,85 @@ def test_identity_and_provider_option_digests_are_independent(tmp_path: Path) ->
     assert changed_option.digest != changed_identity.digest
 
 
+def test_effective_plan_constructor_binds_all_digests_to_canonical_contents(
+    tmp_path: Path,
+) -> None:
+    module = _role_plan_module()
+    plan = module.project_capture_role_plan(
+        _testbed(tmp_path, _roles()),
+        _wifi_request(module),
+        allowed_provider_options=_wifi_allowlist(module),
+    )
+
+    assert module.EffectiveRolePlan(
+        plan.roles,
+        plan.provider_options,
+        plan.physical_identity_digest,
+        plan.provider_options_digest,
+        plan.digest,
+    ) == plan
+
+    with pytest.raises(module.RolePlanError, match="digest.*match"):
+        module.EffectiveRolePlan(
+            plan.roles, plan.provider_options, "0" * 64, "0" * 64, "0" * 64
+        )
+
+    changed_first_role = module.RolePlanIdentity(
+        role=plan.roles[0].role,
+        selector="different-selector",
+        expected_device_by_id=plan.roles[0].expected_device_by_id,
+        expected_profile=plan.roles[0].expected_profile,
+        serial_port=plan.roles[0].serial_port,
+    )
+    with pytest.raises(module.RolePlanError, match="digest.*match"):
+        module.EffectiveRolePlan(
+            (changed_first_role, *plan.roles[1:]),
+            plan.provider_options,
+            plan.physical_identity_digest,
+            plan.provider_options_digest,
+            plan.digest,
+        )
+
+    with pytest.raises(module.RolePlanError, match="duplicate.*role"):
+        module.EffectiveRolePlan(
+            (*plan.roles, plan.roles[0]),
+            plan.provider_options,
+            plan.physical_identity_digest,
+            plan.provider_options_digest,
+            plan.digest,
+        )
+
+    with pytest.raises(module.RolePlanError, match="role order.*canonical"):
+        module.EffectiveRolePlan(
+            tuple(reversed(plan.roles)),
+            plan.provider_options,
+            plan.physical_identity_digest,
+            plan.provider_options_digest,
+            plan.digest,
+        )
+
+    with pytest.raises(module.RolePlanError, match="duplicate.*provider option"):
+        module.EffectiveRolePlan(
+            plan.roles,
+            (*plan.provider_options, plan.provider_options[0]),
+            plan.physical_identity_digest,
+            plan.provider_options_digest,
+            plan.digest,
+        )
+
+    foreign_option = module.RolePlanProviderOption(
+        "wifi_llapi", "endpoint", "transport", "serial"
+    )
+    with pytest.raises(module.RolePlanError, match="not present in the role plan"):
+        module.EffectiveRolePlan(
+            plan.roles,
+            (*plan.provider_options[:1], foreign_option, *plan.provider_options[1:]),
+            plan.physical_identity_digest,
+            plan.provider_options_digest,
+            plan.digest,
+        )
+
+
 @pytest.mark.parametrize(
     ("role_config", "message"),
     [
@@ -325,6 +404,28 @@ def test_nested_provider_config_is_frozen_and_copied(tmp_path: Path) -> None:
     with pytest.raises(TypeError):
         projected["flags"][0] = "changed"
     assert "safe-mode-value" not in repr(plan)
+
+
+@pytest.mark.parametrize("sensitive_key", ["password", "token"])
+def test_nested_sensitive_provider_fields_are_rejected(
+    tmp_path: Path, sensitive_key: str
+) -> None:
+    module = _role_plan_module()
+    devices = _roles()
+    secret_value = "synthetic-secret-do-not-project"
+    devices["STA"]["transport"] = {
+        "mode": "serial",
+        "nested": {"credentials": {sensitive_key: secret_value}},
+    }
+    config = _testbed(tmp_path, devices)
+    option = module.RolePlanOptionRequest("wifi_llapi", "STA", "transport")
+    request = module.CaptureRolePlanRequest(roles=("STA",), provider_options=(option,))
+
+    with pytest.raises(module.RolePlanError, match="sensitive.*mapping key") as exc_info:
+        module.project_capture_role_plan(
+            config, request, allowed_provider_options=(option,)
+        )
+    assert secret_value not in str(exc_info.value)
 
 
 def test_invalid_unicode_identity_is_a_sanitized_role_plan_error(

@@ -95,22 +95,27 @@ capture capability does not imply any DUT, STA, or other role. `PreparedRun`
 has an optional `effective_role_plan` field at the end of its constructor so
 existing positional calls continue to work.
 
-`project_capture_role_plan()` consumes the exact already-loaded
-`TestbedConfig` object and projects only explicitly requested fields. A
+The Core-internal `project_capture_role_plan()` helper consumes the exact
+already-loaded `TestbedConfig` object and projects only explicitly requested
+fields; it is deliberately not re-exported from `testpilot.api`. A
 requested role requires a configured selector, expected device-by-id, and one
 unambiguous profile value; an optional configured serial port is copied only
 when present. Provider options are separate namespaced fields and are
 projected only when the host supplies a matching allowlist. The projection
 does not reload a file, read the current working directory, infer defaults,
-or query a broker. Nested option values are copied into immutable values.
+or query a broker. Nested option values are copied into immutable values, and
+credential-like mapping keys are rejected at any nesting depth.
 Physical-identity and provider-option digests are computed separately, and the
 overall digest binds both. Type representations do not display configured
 identity or option values.
 
 This additive type surface does not wire the request into the run lifecycle,
 create a provider contract, or establish physical capture binding or broker
-ownership. `PrepareRunAfterCaptureContext` remains exactly its existing three
-fields. Runtime freezing, drift checks, and backend proof require a later
+ownership. `EffectiveRolePlan` construction verifies canonical ordering,
+uniqueness, role relationships, and that every digest matches its contents;
+those checks establish internal consistency only, not host provenance.
+`PrepareRunAfterCaptureContext` remains exactly its existing three fields.
+Runtime freezing, drift checks, and backend proof require a later
 jointly reviewed task; until then these types are configuration projection
 only and do not make strict capture usable.
 
