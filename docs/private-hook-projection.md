@@ -82,3 +82,7 @@ snapshot, and trace values derived from those results. It does not redact raw
 UART/WAL capture files and does not guarantee that a plugin-generated report
 sanitizes the plugin's private evidence. Plugins remain responsible for their
 own report and transport-retention boundaries.
+
+Core hook-dispatch logs record only fixed halt or failure status messages. They
+do not include `HookResult.advice` or handler exception text; those values
+remain available to the Engine's normal projected control path.

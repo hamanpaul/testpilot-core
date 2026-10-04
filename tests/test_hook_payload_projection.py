@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict
+import logging
 from typing import Any, Mapping
 
 import pytest
@@ -357,3 +358,93 @@ def test_projector_failure_while_handling_plugin_exception_is_finite_and_stops()
     assert plugin.teardown_calls == 0
     assert called == []
     assert _CANARY not in str(asdict(result))
+
+
+@pytest.mark.parametrize("evaluate_success", [True, False])
+def test_private_hook_halt_advice_is_projected_and_never_logged(
+    evaluate_success: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    dispatcher = HookDispatcher(HookPolicyConfig(enabled_hooks={"post_case"}))
+    dispatcher.register(
+        "post_case",
+        lambda _ctx, _data: HookResult(
+            proceed=False,
+            advice=f"halted by private evidence {_CANARY}",
+        ),
+    )
+    plugin = _ProjectionPlugin(evaluate_success=evaluate_success)
+
+    result = _run(plugin, dispatcher)
+
+    assert result.verdict is evaluate_success
+    assert plugin.evaluation_captures == [
+        {"private_value": _CANARY, "nested": {"value": _CANARY}}
+    ]
+    assert "hook post_case halted execution" in caplog.text
+    assert _CANARY not in caplog.text
+    assert _CANARY not in str(asdict(result))
+
+
+def test_halted_hook_advice_remains_a_projected_execution_control(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    dispatcher = HookDispatcher(HookPolicyConfig(enabled_hooks={"pre_case"}))
+    dispatcher.register(
+        "pre_case",
+        lambda _ctx, _data: HookResult(
+            proceed=False,
+            advice=f"halted by private evidence {_CANARY}",
+        ),
+    )
+    plugin = _ProjectionPlugin()
+
+    result = _run(plugin, dispatcher)
+
+    assert result.verdict is False
+    assert result.comment == "halted by private evidence [private]"
+    assert result.attempts == []
+    assert plugin.setup_calls == 0
+    assert "hook pre_case halted execution" in caplog.text
+    assert _CANARY not in caplog.text
+    assert _CANARY not in str(asdict(result))
+
+
+@pytest.mark.parametrize("fail_open", [True, False])
+def test_private_handler_exception_is_not_logged_before_engine_projection(
+    fail_open: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    dispatcher = HookDispatcher(
+        HookPolicyConfig(enabled_hooks={"pre_case"}, fail_open=fail_open)
+    )
+
+    def fail_with_private_message(_ctx: HookContext, _data: dict[str, Any]) -> HookResult:
+        raise RuntimeError(f"handler failed with private evidence {_CANARY}")
+
+    dispatcher.register("pre_case", fail_with_private_message)
+    plugin = _ProjectionPlugin()
+
+    result = _run(plugin, dispatcher)
+
+    assert _CANARY not in caplog.text
+    assert _CANARY not in str(asdict(result))
+    expected_log = (
+        "hook pre_case failed (fail_open=True)"
+        if fail_open
+        else "hook pre_case failed (fail_open=False)"
+    )
+    assert expected_log in caplog.text
+    if fail_open:
+        assert result.verdict is True
+        assert plugin.evaluation_captures == [
+            {"private_value": _CANARY, "nested": {"value": _CANARY}}
+        ]
+    else:
+        assert result.verdict is False
+        assert result.comment == "hook error: handler failed with private evidence [private]"
+        assert result.attempts == []
+        assert plugin.setup_calls == 0

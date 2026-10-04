@@ -16,6 +16,8 @@ preparation.
 
 ### Fixed
 
+- Keep hook dispatch logs to fixed halt/failure status messages; advice and handler exception text remain available only through the projected control path.
+
 - Classify direct `PluginBase.run_pipeline()` transport receipts before reading or rendering step output; preserve the submitted command slot and safe receipt identity, and stop with sanitized `FailEnv` before evaluation or teardown on accepted, partial, or unreadable outcomes.
 
 - Stop after unreadable receipt fields or over-budget transport receipt traversal with sanitized unknown, non-replayable evidence; keep ordinary local exceptions without receipt evidence on the existing retry path.

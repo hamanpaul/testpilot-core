@@ -97,7 +97,8 @@ class HookDispatcher:
 
     Hooks are registered per hook-point name.  When ``dispatch()`` is called,
     all registered hooks for that point run sequentially.  If any hook raises
-    and ``fail_open`` is True, the error is logged and execution continues.
+    and ``fail_open`` is True, a fixed status message is logged and execution
+    continues.
     """
 
     def __init__(self, policy: HookPolicyConfig | None = None) -> None:
@@ -130,13 +131,13 @@ class HookDispatcher:
                 if result is not None:
                     last_result = result
                     if not result.proceed:
-                        log.info("hook %s halted execution: %s", hook_name, result.advice)
+                        log.info("hook %s halted execution", hook_name)
                         return result
             except Exception as exc:
                 if self.policy.fail_open:
-                    log.warning("hook %s failed (fail_open=True): %s", hook_name, exc)
+                    log.warning("hook %s failed (fail_open=True)", hook_name)
                 else:
-                    log.error("hook %s failed (fail_open=False): %s", hook_name, exc)
+                    log.error("hook %s failed (fail_open=False)", hook_name)
                     return HookResult(proceed=False, advice=f"hook error: {exc}")
 
         return last_result
