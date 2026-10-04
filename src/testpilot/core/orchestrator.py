@@ -789,6 +789,20 @@ class Orchestrator(OrchestratorRunBackendCompat):
                 preloaded_plugin=plugin,
             )
 
+        bind_testbed_config = getattr(plugin, "bind_testbed_config", None)
+        if callable(bind_testbed_config):
+            try:
+                bind_testbed_config(self.config)
+            except Exception:
+                from testpilot.core.run_loop import abort_run_start_before_capture
+
+                return abort_run_start_before_capture(
+                    self,
+                    plugin_name,
+                    case_ids,
+                    "testbed_config_binding_failed",
+                )
+
         bind_project_root = getattr(plugin, "bind_project_root", None)
         if callable(bind_project_root):
             bind_project_root(self.root)
@@ -818,4 +832,5 @@ class Orchestrator(OrchestratorRunBackendCompat):
             case_ids,
             dut_fw_ver,
             provider_config=provider_config,
+            prebound_plugin=plugin,
         )

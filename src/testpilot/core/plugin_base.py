@@ -230,6 +230,15 @@ class PluginBase(ABC):
         """
         del project_root
 
+    def bind_testbed_config(self, topology: Any) -> None:
+        """Receive the active, already-loaded testbed configuration for a run.
+
+        Core calls this after run-capability admission and before custom runner
+        construction or plugin preparation. The default is a no-op so existing
+        plugins retain their behavior.
+        """
+        del topology
+
     def verify_install(self) -> list[tuple[bool, str]]:
         """Return plugin-owned install-health checks for testpilot --verify-install."""
         return []

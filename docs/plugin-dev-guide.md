@@ -117,6 +117,7 @@ implementation detail；若有新 core/schema symbol 要成為穩定契約，必
 | `create_reporter()` | 回傳 plugin 專屬 reporter（`IReporter`） | `None`（用 orchestrator 預設） |
 | `register_cli(registrar)` | 透過 `CliRegistrar` 註冊 installed plugin 自己的 Click 命令/群組 | no-op |
 | `bind_project_root(project_root)` | 接收本次執行選定的 operator project root，供 run-start preflight 或其 artifact 使用 | no-op |
+| `bind_testbed_config(topology)` | 接收 Orchestrator 已載入並選定的同一個 `TestbedConfig` 物件，供 plugin 的 run-local configuration 使用 | no-op |
 | `required_run_capabilities` | 由 host 在 Plugin preparation 前驗證必要的 run-level host 能力 | `frozenset()` |
 | `prepare_run_after_capture(prepared, context)` | 嚴格 capture 與 run-start marker 驗證後、firmware-version probe 前的 opt-in gate | `None` |
 | `verify_install()` | 回傳 plugin-owned install health 診斷；checkout/wheel `testpilot --verify-install` 與更新後回滾閘都會執行（更新後由新 managed venv 的 isolated process 驗證）。Wheel 的 entry-point 模組與 `Plugin` class 實作模組都需由所屬 distribution 的 RECORD 證明；editable install 需由 PEP 610 local source URL 證明；無法驗證時會阻擋驗證。`False`、例外、格式錯誤診斷也會阻擋驗證，`WARN` 維持提醒 | `[]` |
@@ -133,6 +134,15 @@ SDK API `1.2` 新增的 tier-2 hooks 為選配；既有宣告 `api_version = "1.
 SDK API `1.3` 新增 optional `bind_project_root(project_root)` run-context hook，
 預設為 no-op 且不改變既有 plugin method signatures；需要此 root-binding 行為的
 plugin 應宣告 `api_version = "1.3"`，避免舊 core 靜默忽略它。
+Core 另提供 optional `bind_testbed_config(topology)` hook，將目前
+`Orchestrator.config` 的同一個已載入物件交給 plugin；不會重讀路徑、依 CWD
+重建設定或複製設定。Core 在 run-capability admission 後、custom runner 建構及
+`prepare_run()` 前呼叫它；同一個 plugin instance 在同一 run 不會因 public fallback
+再次載入而重複綁定，若 fallback 載入了不同 instance，該 instance 也會收到所選設定。
+Plugin 可在 hook 中更新自己的 run-local reference；每次新 binding 都應重設
+run-local state。Hook 例外會以有限的 `testbed_config_binding_failed` 原因碼建立
+sanitized run-start abort，並停止後續 preparation。這個設定交付 hook 不代表 DUT/STA
+實體身分驗證，也不構成 capture binding evidence。
 SDK API `1.4` 新增 `PreparedRun.no_io`（預設 `False`）。Plugin 只有在整個 prepared
 selection 都不需要 Core 的 DUT/STA capture、sequence marker、log export 與 firmware
 version query 時才設為 `True`，例如透過 `PreparedRun(cases=cases, no_io=True)` 標示全為

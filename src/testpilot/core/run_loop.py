@@ -340,6 +340,7 @@ def run(
     provider_config: dict[str, Any] | None = None,
     *,
     preloaded_plugin: Any | None = None,
+    prebound_plugin: Any | None = None,
 ) -> dict[str, Any]:
     capture_state = {
         "capture_attempted": False,
@@ -354,6 +355,7 @@ def run(
             dut_fw_ver,
             provider_config,
             preloaded_plugin=preloaded_plugin,
+            prebound_plugin=prebound_plugin,
             capture_state=capture_state,
         )
     finally:
@@ -378,6 +380,7 @@ def _run_with_capture(
     provider_config: dict[str, Any] | None,
     *,
     preloaded_plugin: Any | None,
+    prebound_plugin: Any | None,
     capture_state: dict[str, bool],
 ) -> dict[str, Any]:
     plugin = (
@@ -409,6 +412,19 @@ def _run_with_capture(
             requested_ids=case_ids,
             capture_attempted=False,
         )
+
+    if plugin is not prebound_plugin:
+        bind_testbed_config = getattr(plugin, "bind_testbed_config", None)
+        if callable(bind_testbed_config):
+            try:
+                bind_testbed_config(getattr(orchestrator, "config", None))
+            except Exception:
+                return abort_run_start_before_capture(
+                    orchestrator,
+                    plugin_name,
+                    case_ids,
+                    "testbed_config_binding_failed",
+                )
 
     bind_project_root = getattr(plugin, "bind_project_root", None)
     if callable(bind_project_root):

@@ -28,9 +28,15 @@ provider and dual-channel transport binding belong to a separate Core task.
   typed result with the prepared selection.
 - Strict capability declarations use typed enum members. The public
   `Orchestrator.run()` entry point performs shared admission after API-checked
-  plugin loading and before `bind_project_root()` or runner construction.
-  Unknown, malformed, unsupported, or API-incompatible declarations fail
-  closed before either callback.
+  plugin loading and before testbed configuration binding,
+  `bind_project_root()`, or runner construction. Unknown, malformed, unsupported,
+  or API-incompatible declarations fail closed before those steps.
+- After admission, Core calls the optional `PluginBase.bind_testbed_config()` hook
+  when available, with the exact already-loaded `Orchestrator.config` object before custom
+  runner construction or plugin preparation. Its default is a no-op. A hook
+  exception stops startup with the finite sanitized
+  `testbed_config_binding_failed` reason. This delivers configuration only; it
+  is not capture or physical-identity evidence.
 - The active `RunBackend` must supply the context from the actual run capture
   handle. Configuration values cannot prove capture binding.
 
@@ -53,6 +59,7 @@ evidence item is not accepted.
 ```text
 host capability preflight
   -> Core-owned loop
+  -> bind selected testbed config
   -> bind project root
   -> pure prepare selection
   -> strict capture setup and handle binding
@@ -149,3 +156,21 @@ This specification and its tests establish only the SDK/Core lifecycle
 prototype. They do not establish production capture binding, plugin-side hybrid
 routing or identity verification, live hardware behavior, EIT results, or issue
 closure.
+
+## Effective configuration delivery (#152 Core dependency)
+
+The separate effective-testbed binding task adds the optional
+`PluginBase.bind_testbed_config(topology)` lifecycle hook. The public Core entry
+passes its already-selected `Orchestrator.config` object after capability
+admission and before custom runner construction or plugin preparation. Direct
+Core-loop entry applies the same order. A Core-owned run-local identity reference
+prevents calling the hook twice for the same plugin instance when public dispatch
+falls back into the Core loop; if the loader returns a different plugin instance,
+Core binds that instance separately. Unsupported strict capabilities are still
+rejected before this hook. Binding failure produces a sanitized terminal
+run-start abort before capture or preparation.
+
+This is configuration delivery only. It does not reload or reconstruct the
+configuration, prove a DUT/STA identity, provide capture evidence, or make strict
+capture usable. The hook does not alter the three-field capture context, API
+version metadata, role-plan request default, or transport semantics.

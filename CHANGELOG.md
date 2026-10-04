@@ -29,6 +29,8 @@ preparation.
 
 - Add neutral API 1.6 role-plan request and immutable projection types with separate identity/provider digests; keep them opt-in and configuration-only until lifecycle and backend binding are implemented.
 
+- Deliver the selected, already-loaded `TestbedConfig` through the optional `PluginBase.bind_testbed_config()` hook after capability admission and before custom runner construction or plugin preparation. Binding failures stop startup with a sanitized finite reason; the default hook remains a no-op.
+
 ## [0.4.0] - 2026-10-03
 
 ### Fixed
