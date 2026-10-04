@@ -43,6 +43,18 @@ copy again before reading supported controls. Observer changes to `case`,
 `step`, `result`, command/output fields, captures, or prior attempts are not
 merged into evaluator state or retained attempt evidence.
 
+For each hook return projection, Core adds the reserved top-level data field
+`__testpilot_hook_result__` to carry `HookResult` controls back from the hook
+dispatcher. It contains exactly `proceed` (a bool) and `advice` (a string);
+Core validates their types, then removes the carrier before merging supported
+controls. The field is visible only to the projector during this return
+projection, not to the lifecycle callback or public result surfaces. A
+projector using a strict allowlist must preserve this field and its exact
+two-key shape on every return projection. It may redact `advice` while keeping
+it a string. If the field is missing or malformed, Core fails closed with
+`hook_payload_projection_failed`. Do not publish the reserved field or
+unredacted private values from it.
+
 The default implementation returns the envelope unchanged for compatibility.
 Plugins that need to keep private values out of hook and Engine result surfaces
 should declare `api_version = "1.7"` and override the method to remove or
@@ -83,6 +95,8 @@ UART/WAL capture files and does not guarantee that a plugin-generated report
 sanitizes the plugin's private evidence. Plugins remain responsible for their
 own report and transport-retention boundaries.
 
-Core hook-dispatch logs record only fixed halt or failure status messages. They
-do not include `HookResult.advice` or handler exception text; those values
-remain available to the Engine's normal projected control path.
+Hook halt and handler-failure outcome logs use fixed status messages and do not
+include `HookResult.advice` or handler exception text; those values remain
+available to the Engine's normal projected control path. Registering an
+unknown hook name also emits a warning containing the supplied name and the
+valid hook names.
