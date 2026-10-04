@@ -333,9 +333,9 @@ Implement the `PluginBase` contract: declare `api_version`, `name`, `discover_ca
 
 `PluginBase.run_pipeline()` applies the same current-case/current-attempt terminal-failure rules as the retry engine. A matching `_last_failure` with literal `abort_run: True` is returned as a terminal result; teardown is skipped only when that snapshot also has literal `skip_teardown: True`. Unknown command outcomes keep precedence over plugin-provided abort reasons.
 
-Transport receipts marked `outcome: accepted` or `status: accepted` mean the command was accepted but do not establish completion. Core stops retries and follow-up cleanup on that evidence; explicit completed success or failure keeps its existing behavior.
+Transport receipts marked `outcome: accepted` or `status: accepted` mean the command was accepted but do not establish completion. The retry engine stops retries and follow-up cleanup on that evidence. A direct `PluginBase.run_pipeline()` call returns terminal `FailEnv` before reading or rendering the step output, preserves the submitted command slot with a blank output, and skips evaluation and teardown. Explicit completed success or failure keeps its existing behavior.
 
-Unreadable receipt fields or receipt graphs beyond the bounded traversal limit produce sanitized unknown, non-replayable evidence and stop Engine follow-up. An ordinary local exception without receipt evidence keeps the existing failure and retry behavior.
+Unreadable receipt fields or receipt graphs beyond the bounded traversal limit produce sanitized unknown, non-replayable evidence and stop Engine follow-up. The direct pipeline applies the same rule before rendering result output and skips evaluation and teardown. An ordinary local exception without receipt evidence keeps the existing failure and retry behavior.
 
 Plugins using SDK API 1.4 may return `PreparedRun(cases=cases, no_io=True)` when the entire prepared selection needs no Core DUT/STA capture, sequence markers, log export, or firmware-version query. This keeps per-case planning, execution, and reporting intact. Empty selections skip those Core environment queries automatically; mixed selections must leave `no_io=False`.
 

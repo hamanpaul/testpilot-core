@@ -11,6 +11,8 @@ preparation.
 
 ### Fixed
 
+- Classify direct `PluginBase.run_pipeline()` transport receipts before reading or rendering step output; preserve the submitted command slot and safe receipt identity, and stop with sanitized `FailEnv` before evaluation or teardown on accepted, partial, or unreadable outcomes.
+
 - Stop after unreadable receipt fields or over-budget transport receipt traversal with sanitized unknown, non-replayable evidence; keep ordinary local exceptions without receipt evidence on the existing retry path.
 
 - Treat accepted transport receipts as uncertain across nested results, exceptions, and cleanup responses; preserve the accepted status and command identity while stopping retries and follow-up I/O.

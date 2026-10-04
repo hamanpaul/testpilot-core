@@ -353,8 +353,6 @@ class PluginBase(ABC):
                     # the wrong step (2026-09-17 EIT bench D259/D402 trace misread).
                     commands.append(cmd)
                     result = self.execute_step(runtime_case, step_data, topology)
-                    step_results[step_id] = result
-                    outputs.append(str(result.get("output", "")).strip())
                     failure = current_failure_snapshot()
                     if has_unknown_transport_outcome(result, failure):
                         unknown_outcome = True
@@ -362,8 +360,11 @@ class PluginBase(ABC):
                             result,
                             failure,
                         )
+                        outputs.append("")
                         comment = f"command outcome unknown: {step_id}"
                         break
+                    step_results[step_id] = result
+                    outputs.append(str(result.get("output", "")).strip())
                     if not result.get("success", False):
                         comment = f"step failed: {step_id}"
                         (
