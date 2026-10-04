@@ -23,6 +23,13 @@ from testpilot.cli_support import (
 )
 from testpilot.core.plugin_base import IncompatiblePluginError, PluginBase
 from testpilot.core.prepared_run import PreparedRun
+from testpilot.core.run_start_gate import (
+    PrepareRunAfterCaptureContext,
+    PrepareRunGateEvidence,
+    PrepareRunGateOutcome,
+    PrepareRunGateResult,
+    RunCapability,
+)
 from testpilot.core.testbed_config import TestbedConfig
 from testpilot.reporting.html_reporter import HtmlReporter
 from testpilot.reporting.reporter import (
@@ -61,13 +68,18 @@ from testpilot.core.tier2_recovery import (
 
 from testpilot.api import excel_adapter  # noqa: F401  (公開子模組)
 
-API_VERSION = "1.5"
+API_VERSION = "1.6"
 
 __all__ = [
     "API_VERSION",
     "IncompatiblePluginError",
     "PluginBase",
     "PreparedRun",
+    "PrepareRunAfterCaptureContext",
+    "PrepareRunGateEvidence",
+    "PrepareRunGateOutcome",
+    "PrepareRunGateResult",
+    "RunCapability",
     "IReporter",
     "MarkdownReporter",
     "JsonReporter",

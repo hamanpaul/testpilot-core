@@ -57,6 +57,8 @@ preparation.
 
 ### Changed
 
+- SDK API 1.6 adds an opt-in host-enforced post-capture/pre-version run-start gate with frozen typed context/results, strict sequence-marker checks, and terminal artifacts listing unexecuted cases. Unsupported strict capture fails closed before plugin preparation; API 1.4/1.5 plugins retain the legacy path. See `docs/superpowers/specs/2026-10-04-issue153-run-start-gate.md`.
+
 - SDK API 1.5：`PluginBase.teardown()` 可回報失敗／未知的 cleanup 結果；Core 會產生 terminal `FailEnv` 並停止 retry，舊 plugin 回傳 `None` 維持相容。[Issue #61](https://github.com/hamanpaul/testpilot-core/issues/61)
 
 - Increment the plugin SDK contract to API 1.4 and add `PreparedRun.no_io`; empty selections automatically skip run-level DUT/STA capture and firmware-version queries, while plugins can explicitly opt out for an entirely no-I/O prepared selection without skipping per-case results.

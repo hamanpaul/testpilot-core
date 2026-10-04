@@ -7,7 +7,7 @@ from collections.abc import Mapping
 import inspect
 from pathlib import Path
 import re
-from typing import Any, Sequence
+from typing import Any, ClassVar, Sequence
 
 from testpilot.core.case_utils import case_matches_requested_ids, stringify_step_command
 from testpilot.core.cleanup_result import (
@@ -18,6 +18,11 @@ from testpilot.core.cleanup_result import (
     project_transport_evidence,
 )
 from testpilot.core.prepared_run import PreparedRun
+from testpilot.core.run_start_gate import (
+    PrepareRunAfterCaptureContext,
+    PrepareRunGateResult,
+    RunCapability,
+)
 
 _ABORT_REASON_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _DEFAULT_PLUGIN_ABORT_REASON = "plugin_failure_abort"
@@ -39,6 +44,7 @@ class PluginBase(ABC):
     """
 
     api_version: str | None = None
+    required_run_capabilities: ClassVar[frozenset[RunCapability]] = frozenset()
 
     @property
     @abstractmethod
@@ -259,6 +265,20 @@ class PluginBase(ABC):
                 if case_matches_requested_ids(case, requested_ids)
             ]
         return PreparedRun(cases=cases, artifacts={})
+
+    def prepare_run_after_capture(
+        self,
+        prepared: PreparedRun,
+        context: PrepareRunAfterCaptureContext,
+    ) -> PrepareRunGateResult | None:
+        """Optionally validate identities after strict capture and before version probes.
+
+        The default is a no-op for existing plugins. A plugin that requires the
+        gate must declare ``RunCapability.STRICT_CAPTURE_BINDING`` and override
+        this method; Core rejects a missing or non-typed result before proceeding.
+        """
+        del prepared, context
+        return None
 
     # -- optional overridable pipeline -----------------------------------------
 

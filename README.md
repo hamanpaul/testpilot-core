@@ -62,6 +62,8 @@ TestPilot <core-version> (<source-ref>)
 
 It provides a versioned plugin SDK (`testpilot.api`), CLI host, lifecycle orchestration, evidence/trace capture, reporting contracts, transport/run-backend abstractions, and an optional agent-assisted control plane. Project-specific test logic belongs in independently developed plugins.
 
+SDK API 1.6 adds an opt-in strict run-start gate for plugins that require host-verified capture binding before firmware-version or case I/O. Unsupported strict capture aborts before plugin preparation; API 1.4/1.5 plugins retain their existing path, and API 1.5 hosts reject API 1.6 plugins before instantiation. The current production backend does not yet provide the strict capture context, so the opt-in fails closed until that support is added. See the [plugin development guide](docs/plugin-dev-guide.md#sdk-api-16-run-start-gate) for the lifecycle contract and example.
+
 ### Scope and current fit
 
 The core extension model is not tied to a single product domain, but the project has an embedded and real-hardware testing heritage. Current field usage, bundled transport support, managed-install assumptions, and most non-trivial examples are still concentrated around device verification.
@@ -375,6 +377,8 @@ User-facing pull requests should carry a changelog fragment or explicitly record
 ## 繁體中文
 
 **TestPilot Core 是一套 Plugin 化的測試自動化與驗證框架。**
+
+SDK API 1.6 新增 opt-in strict run-start gate，供必須先取得 host 驗證 capture binding 才能進行 firmware-version 或 case I/O 的 Plugin 使用。strict capture 不支援時，Core 會在 Plugin preparation 前 abort；API 1.4／1.5 Plugin 維持既有路徑，API 1.5 host 則會在 Plugin instance 建立前拒絕 API 1.6 Plugin。目前 production backend 尚未提供 strict capture context，因此 opt-in 會 fail closed，直到該支援完成。生命週期 contract 與範例見[Plugin 開發指南](docs/plugin-dev-guide.md#sdk-api-16-run-start-gate)。
 
 Core 提供具版本的 Plugin SDK（`testpilot.api`）、CLI host、測試生命週期編排、evidence / trace 蒐集、reporting contract、transport / run-backend abstraction，以及選配的 Agent-assisted control plane。各專案真正要測什麼、如何操作環境、如何判讀 domain-specific 條件，則由各自的 Plugin 實作。
 

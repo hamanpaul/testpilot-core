@@ -13,7 +13,7 @@ def test_api_version_is_semver():
     from testpilot.api import API_VERSION
 
     assert re.fullmatch(r"\d+\.\d+", API_VERSION)
-    assert API_VERSION == "1.5"
+    assert API_VERSION == "1.6"
 
 
 def test_tier2_recovery_contract_types_are_exported():
@@ -28,6 +28,38 @@ def test_prepared_run_no_io_is_public_and_opt_in():
 
     assert PreparedRun(cases=[]).no_io is False
     assert PreparedRun(cases=[], no_io=True).no_io is True
+    assert PreparedRun(cases=[]).run_start_gate is None
+
+
+def test_run_start_gate_contract_types_are_public_and_frozen():
+    from dataclasses import FrozenInstanceError
+
+    from testpilot.api import (
+        PrepareRunAfterCaptureContext,
+        PrepareRunGateEvidence,
+        PrepareRunGateOutcome,
+        PrepareRunGateResult,
+        RunCapability,
+    )
+
+    context = PrepareRunAfterCaptureContext("run-1", 0, "binding-1")
+    result = PrepareRunGateResult(
+        PrepareRunGateOutcome.ACCEPTED,
+        "identity_verified",
+        (PrepareRunGateEvidence("dut_identity", PrepareRunGateOutcome.ACCEPTED, "same_boot"),),
+    )
+
+    assert RunCapability.STRICT_CAPTURE_BINDING.value == "strict_capture_binding"
+    assert context.start_sequence == 0
+    assert result.to_payload() == {
+        "outcome": "accepted",
+        "reason_code": "identity_verified",
+        "evidence": [
+            {"check": "dut_identity", "outcome": "accepted", "reason_code": "same_boot"}
+        ],
+    }
+    with pytest.raises(FrozenInstanceError):
+        result.reason_code = "changed"
 
 
 def test_incompatible_error_exported():
@@ -44,10 +76,12 @@ def test_incompatible_error_exported():
         ("1.3", "1.4", True),
         ("1.4", "1.5", True),
         ("1.5", "1.5", True),
+        ("1.5", "1.6", True),
         ("1.4", "1.3", False),
         ("1.5", "1.4", False),
+        ("1.6", "1.5", False),
         ("1.3", "1.0", False),
-        ("2.0", "1.5", False),
+        ("2.0", "1.6", False),
         (None, "1.0", False),
     ],
 )
@@ -156,7 +190,7 @@ def test_loader_rejects_api_15_plugin_on_api_14_host(monkeypatch):
     assert loader.loaded == {}
 
 
-def test_loader_accepts_api_15_plugin_on_api_15_host():
+def test_loader_accepts_api_15_plugin_on_api_16_host():
     from testpilot.core.plugin_loader import PluginLoader
 
     loader = PluginLoader.from_entry_points([
@@ -166,7 +200,7 @@ def test_loader_accepts_api_15_plugin_on_api_15_host():
     assert loader.load("dummy").name == "dummy"
 
 
-@pytest.mark.parametrize("declared", [None, "1", 1.0, "1.6", "2.0"])
+@pytest.mark.parametrize("declared", [None, "1", 1.0, "1.7", "2.0"])
 def test_loader_rejects_incompatible_plugin_without_caching(declared):
     from testpilot.api import IncompatiblePluginError
     from testpilot.core.plugin_loader import PluginLoader
