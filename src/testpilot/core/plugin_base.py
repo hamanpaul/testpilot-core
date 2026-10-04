@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 import inspect
 from pathlib import Path
 from typing import Any, Sequence
 
 from testpilot.core.case_utils import case_matches_requested_ids, stringify_step_command
+from testpilot.core.cleanup_result import (
+    cleanup_exception_result,
+    cleanup_failure_snapshot,
+    has_unknown_transport_outcome,
+    normalize_cleanup_result,
+    project_transport_evidence,
+)
 from testpilot.core.prepared_run import PreparedRun
 
 
@@ -88,8 +96,14 @@ class PluginBase(ABC):
             True if all criteria pass.
         """
 
-    def teardown(self, case: dict[str, Any], topology: Any) -> None:
-        """清理測試環境。預設為 no-op；子類別可覆寫。"""
+    def teardown(
+        self, case: dict[str, Any], topology: Any
+    ) -> Mapping[str, Any] | None:
+        """Clean up test state.
+
+        API 1.5 plugins may return a bounded failure mapping with ``status``
+        ``failed`` or ``unknown``. ``None`` remains successful legacy cleanup.
+        """
 
     # -- optional live remediation hooks --------------------------------------
 
@@ -260,45 +274,131 @@ class PluginBase(ABC):
         verdict = False
         comment = ""
 
+        runtime_case = dict(case)
+        runtime_case.pop("_last_failure", None)
+        runtime_case["_attempt_index"] = 1
+
+        def current_failure_snapshot() -> Mapping[str, Any] | None:
+            failure = runtime_case.get("_last_failure")
+            if not isinstance(failure, Mapping):
+                return None
+            if str(failure.get("case_id", "")) != str(runtime_case.get("id", "")):
+                return None
+            attempt_index = failure.get("attempt_index")
+            if (
+                not isinstance(attempt_index, int)
+                or isinstance(attempt_index, bool)
+                or attempt_index != 1
+            ):
+                return None
+            return failure
+
+        unknown_outcome = False
+        transport_evidence: dict[str, Any] = {}
+        cleanup_result: dict[str, Any] | None = None
         try:
-            if not self.setup_env(case, topology):
-                return {"verdict": False, "comment": "setup_env failed", "commands": [], "outputs": []}
-            if not self.verify_env(case, topology):
-                return {"verdict": False, "comment": "env_verify gate failed", "commands": [], "outputs": []}
+            if not self.setup_env(runtime_case, topology):
+                comment = "setup_env failed"
+                failure = current_failure_snapshot()
+                unknown_outcome = has_unknown_transport_outcome(failure)
+                transport_evidence = project_transport_evidence(failure)
+            elif not self.verify_env(runtime_case, topology):
+                comment = "env_verify gate failed"
+                failure = current_failure_snapshot()
+                unknown_outcome = has_unknown_transport_outcome(failure)
+                transport_evidence = project_transport_evidence(failure)
+            else:
+                step_results: dict[str, Any] = {}
+                raw_steps = runtime_case.get("steps", [])
+                steps = raw_steps if isinstance(raw_steps, list) else []
+                for step in steps:
+                    step_data = dict(step) if isinstance(step, dict) else {"id": "step", "command": str(step)}
+                    step_id = str(step_data.get("id", "step"))
+                    cmd = stringify_step_command(step_data.get("command"))
+                    # Keep commands/outputs index-aligned per step: a step with no
+                    # command text or no output (e.g. a station verb with no key=value
+                    # lines) still occupies its slot in BOTH lists, otherwise every
+                    # later entry shifts up by one and evidence gets attributed to
+                    # the wrong step (2026-09-17 EIT bench D259/D402 trace misread).
+                    commands.append(cmd)
+                    result = self.execute_step(runtime_case, step_data, topology)
+                    step_results[step_id] = result
+                    outputs.append(str(result.get("output", "")).strip())
+                    failure = current_failure_snapshot()
+                    if has_unknown_transport_outcome(result, failure):
+                        unknown_outcome = True
+                        transport_evidence = project_transport_evidence(
+                            result,
+                            failure,
+                        )
+                        comment = f"command outcome unknown: {step_id}"
+                        break
+                    if not result.get("success", False):
+                        comment = f"step failed: {step_id}"
+                        break
 
-            step_results: dict[str, Any] = {}
-            raw_steps = case.get("steps", [])
-            steps = raw_steps if isinstance(raw_steps, list) else []
-            for step in steps:
-                step_data = dict(step) if isinstance(step, dict) else {"id": "step", "command": str(step)}
-                step_id = str(step_data.get("id", "step"))
-                cmd = stringify_step_command(step_data.get("command"))
-                # Keep commands/outputs index-aligned per step: a step with no
-                # command text or no output (e.g. a station verb with no key=value
-                # lines) still occupies its slot in BOTH lists, otherwise every
-                # later entry shifts up by one and evidence gets attributed to
-                # the wrong step (2026-09-17 EIT bench D259/D402 trace misread).
-                commands.append(cmd)
-                result = self.execute_step(case, step_data, topology)
-                step_results[step_id] = result
-                outputs.append(str(result.get("output", "")).strip())
-                if not result.get("success", False):
-                    comment = f"step failed: {step_id}"
-                    break
-
-            if not comment:
-                verdict = self.evaluate(case, {"steps": step_results})
-                if not verdict:
-                    comment = "pass_criteria not satisfied"
+                if not comment:
+                    verdict = self.evaluate(runtime_case, {"steps": step_results})
+                    if not verdict:
+                        comment = "pass_criteria not satisfied"
 
         except Exception as exc:
-            comment = f"exception: {exc}"
+            failure = current_failure_snapshot()
+            unknown_outcome = has_unknown_transport_outcome(exc, failure)
+            transport_evidence = project_transport_evidence(exc, failure)
+            comment = "command outcome unknown" if unknown_outcome else f"exception: {exc}"
         finally:
-            self.teardown(case, topology)
+            unknown_outcome = unknown_outcome or has_unknown_transport_outcome(
+                current_failure_snapshot()
+            )
+            if not unknown_outcome:
+                try:
+                    cleanup_result = normalize_cleanup_result(
+                        self.teardown(runtime_case, topology)
+                    )
+                except Exception:
+                    cleanup_result = cleanup_exception_result()
 
-        return {
+        result_payload: dict[str, Any] = {
             "verdict": verdict,
             "comment": comment,
             "commands": commands,
             "outputs": outputs,
         }
+        if unknown_outcome:
+            result_payload.update(
+                {
+                    "verdict": False,
+                    "comment": comment or "command outcome unknown",
+                    "failure_snapshot": {
+                        "case_id": str(runtime_case.get("id", "")),
+                        "attempt_index": 1,
+                        "category": "environment",
+                        "reason_code": "command_outcome_unknown",
+                        "comment": comment or "command outcome unknown",
+                        "transport_result": transport_evidence,
+                    },
+                    "diagnostic_status": "FailEnv",
+                    "abort_run": True,
+                    "abort_reason": "command_outcome_unknown",
+                    "transport_result": transport_evidence,
+                }
+            )
+        elif cleanup_result is not None:
+            snapshot = cleanup_failure_snapshot(
+                cleanup_result,
+                case_id=runtime_case.get("id", ""),
+                attempt_index=1,
+            )
+            result_payload.update(
+                {
+                    "verdict": False,
+                    "comment": cleanup_result["comment"],
+                    "failure_snapshot": snapshot,
+                    "diagnostic_status": "FailEnv",
+                    "abort_run": True,
+                    "abort_reason": cleanup_result["reason_code"],
+                    "transport_result": dict(cleanup_result["transport_result"]),
+                }
+            )
+        return result_payload

@@ -13,7 +13,7 @@ def test_api_version_is_semver():
     from testpilot.api import API_VERSION
 
     assert re.fullmatch(r"\d+\.\d+", API_VERSION)
-    assert API_VERSION == "1.4"
+    assert API_VERSION == "1.5"
 
 
 def test_tier2_recovery_contract_types_are_exported():
@@ -42,7 +42,10 @@ def test_incompatible_error_exported():
         ("1.0", "1.0", True),
         ("1.0", "1.3", True),
         ("1.3", "1.4", True),
+        ("1.4", "1.5", True),
+        ("1.5", "1.5", True),
         ("1.4", "1.3", False),
+        ("1.5", "1.4", False),
         ("1.3", "1.0", False),
         ("2.0", "1.5", False),
         (None, "1.0", False),
@@ -105,11 +108,12 @@ def _plugin_class(name: str, api_version: Any) -> type:
     return Plugin
 
 
-def test_loader_accepts_compatible_plugin_and_caches_it():
+@pytest.mark.parametrize("declared", ["1.3", "1.4"])
+def test_loader_accepts_compatible_plugin_and_caches_it(declared):
     from testpilot.core.plugin_loader import PluginLoader
 
     loader = PluginLoader.from_entry_points([
-        _FakeEntryPoint("dummy", _plugin_class("dummy", "1.3")),
+        _FakeEntryPoint("dummy", _plugin_class("dummy", declared)),
     ])
 
     plugin = loader.load("dummy")
@@ -135,7 +139,34 @@ def test_loader_rejects_api_14_plugin_on_api_13_host(monkeypatch):
     assert loader.loaded == {}
 
 
-@pytest.mark.parametrize("declared", [None, "1", 1.0, "1.5", "2.0"])
+def test_loader_rejects_api_15_plugin_on_api_14_host(monkeypatch):
+    import testpilot.api
+
+    from testpilot.api import IncompatiblePluginError
+    from testpilot.core.plugin_loader import PluginLoader
+
+    monkeypatch.setattr(testpilot.api, "API_VERSION", "1.4")
+    loader = PluginLoader.from_entry_points([
+        _FakeEntryPoint("dummy", _plugin_class("dummy", "1.5")),
+    ])
+
+    with pytest.raises(IncompatiblePluginError):
+        loader.load("dummy")
+
+    assert loader.loaded == {}
+
+
+def test_loader_accepts_api_15_plugin_on_api_15_host():
+    from testpilot.core.plugin_loader import PluginLoader
+
+    loader = PluginLoader.from_entry_points([
+        _FakeEntryPoint("dummy", _plugin_class("dummy", "1.5")),
+    ])
+
+    assert loader.load("dummy").name == "dummy"
+
+
+@pytest.mark.parametrize("declared", [None, "1", 1.0, "1.6", "2.0"])
 def test_loader_rejects_incompatible_plugin_without_caching(declared):
     from testpilot.api import IncompatiblePluginError
     from testpilot.core.plugin_loader import PluginLoader

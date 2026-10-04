@@ -11,6 +11,12 @@ import re
 from typing import Any
 
 from testpilot.core.case_utils import safe_float, safe_int, stringify_step_command
+from testpilot.core.cleanup_result import (
+    cleanup_exception_result,
+    cleanup_failure_snapshot,
+    has_unknown_transport_outcome,
+    normalize_cleanup_result,
+)
 from testpilot.core.hook_policy import HookContext, HookDispatcher
 from testpilot.core.runner_selector import RunnerSelector
 
@@ -131,14 +137,7 @@ class ExecutionEngine:
 
     @staticmethod
     def _unknown_outcome(evidence: dict[str, Any]) -> bool:
-        return (
-            str(evidence.get("outcome") or "").lower() in {"unknown", "ambiguous"}
-            or evidence.get("ambiguous") is True
-            or evidence.get("non_replayable") is True
-            or evidence.get("partial") is True
-            or str(evidence.get("input_integrity") or "").lower() == "uncertain"
-            or str(evidence.get("error_code") or "").upper() == "COMMAND_OUTCOME_UNKNOWN"
-        )
+        return has_unknown_transport_outcome(evidence)
 
     @staticmethod
     def _current_failure_snapshot(
@@ -313,6 +312,7 @@ class ExecutionEngine:
         plugin_abort_run = False
         plugin_abort_reason = ""
         skip_teardown = False
+        cleanup_result: dict[str, Any] | None = None
 
         runtime_case = dict(case)
         # Runtime failure metadata belongs to one case attempt. A caller may
@@ -477,11 +477,38 @@ class ExecutionEngine:
                 self._explicit_failure_abort(runtime_case)
             )
         finally:
+            transport_evidence = self._merge_transport_evidence(
+                transport_evidence,
+                self._failure_snapshot_evidence(runtime_case),
+            )
+            unknown_outcome = unknown_outcome or self._unknown_outcome(transport_evidence)
             if not unknown_outcome and not skip_teardown:
                 try:
-                    plugin.teardown(runtime_case, topology=self.config)
+                    cleanup_result = normalize_cleanup_result(
+                        plugin.teardown(runtime_case, topology=self.config)
+                    )
                 except Exception:
-                    log.exception("teardown failed: %s", runtime_case.get("id", "?"))
+                    log.error("teardown raised for case %s", runtime_case.get("id", "?"))
+                    cleanup_result = cleanup_exception_result()
+
+        if cleanup_result is not None:
+            prior_failure = self._current_failure_snapshot(runtime_case)
+            cleanup_snapshot = cleanup_failure_snapshot(
+                cleanup_result,
+                case_id=runtime_case.get("id", ""),
+                attempt_index=attempt_index,
+            )
+            if prior_failure is not None:
+                cleanup_snapshot["prior_failure_snapshot"] = dict(prior_failure)
+            failure_payload["failure_snapshot"] = cleanup_snapshot
+            transport_evidence = self._merge_transport_evidence(
+                transport_evidence,
+                cleanup_result.get("transport_result"),
+            )
+            verdict = False
+            comment = cleanup_result["comment"]
+            plugin_abort_run = True
+            plugin_abort_reason = cleanup_result["reason_code"]
 
         if unknown_outcome and not failure_payload.get("failure_snapshot"):
             failure_payload["failure_snapshot"] = {

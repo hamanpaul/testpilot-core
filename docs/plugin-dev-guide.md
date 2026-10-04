@@ -136,6 +136,26 @@ unsupported/N/A 的 selection；此宣告不會跳過 case planning、execution 
 空 selection 會由 Core 自動略過上述環境 I/O。
 需要宣告 `no_io=True` 的 plugin 應使用 `api_version = "1.4"`；一般既有 plugin
 維持預設值即可。
+SDK API `1.5` 讓 `teardown()` 回傳 cleanup 結果：`None` 保持既有成功語意；若 cleanup
+失敗或無法確認，回傳下列有限欄位的 mapping。需要 Core 消費這個 mapping 的 plugin
+必須宣告 `api_version = "1.5"`，API 1.4 Core 會在載入時拒絕它。
+
+```python
+{
+    "status": "failed",  # 或 "unknown"
+    "reason_code": "restore_verification_failed",
+    "comment": "the saved mode did not read back",
+    "transport_result": {"error_code": "SESSION_NOT_READY"},  # 選填
+}
+```
+
+`status="failed"` 表示 cleanup 已知失敗；`status="unknown"` 表示結果無法確認。
+Core 會以目前 case/attempt 建立 environment failure snapshot、將 verdict 設為失敗，
+並終止本次 run，不會再 retry 該 case。若 receipt 表示操作結果 uncertain，Core 會將
+狀態提升為 `unknown`。額外欄位、格式錯誤的 mapping 或一般 teardown exception 都會
+fail closed。`KeyboardInterrupt` 等 cancellation 仍會向上傳遞。Plugin 的 cleanup
+流程應在 mutation 結果不確定時停止後續 I/O；Core 在先前命令 receipt 已 uncertain
+時會略過 teardown。仍成功回傳 `None` 的舊 plugin 不需升級 API 宣告。
 每個 tier-2 capability 必須宣告 `executor_key`、`description`、
 `execution_boundary` 與 `params_schema`。core 會驗證 executor allowlist、參數名稱/
 型別/enum/長度與 action budget；`schema_validated` 只表示結構通過，不表示 core
