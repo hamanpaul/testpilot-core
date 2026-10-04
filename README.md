@@ -89,6 +89,10 @@ The default core-owned execution path is split into two concerns:
 
 Core principle: **agent assistance does not own the final verdict.**
 
+The built-in SSH transport treats subprocess timeouts, local exit status `255`,
+and local signal termination as unknown remote command outcomes. The Engine
+stops those attempts before retry and teardown; see [SSH outcome boundary](docs/ssh-outcome-boundary.md).
+
 Current landed control-plane subset:
 
 - per-case runner selection with `selection_trace`
@@ -394,6 +398,10 @@ Core wheel 本身不包含 domain test suite。目前公開 reference 包含：
 - **Copilot SDK control plane** — per-case session foundation、lifecycle hooks、advisory planning、分層 environment recovery，以及 custom agents / skills / selective MCP 等 extension surface。
 
 核心原則：**Agent 可以協助，但不擁有最終 verdict。**
+
+內建 SSH transport 會將 subprocess timeout、本機 exit status `255`，以及本機 signal
+termination 標記為遠端 command outcome 未知；Engine 會在 retry 與 teardown 前停止該次
+attempt。詳細限制與 receipt 欄位見 [SSH outcome boundary](docs/ssh-outcome-boundary.md)。
 
 目前已落地的 control-plane 子集：
 

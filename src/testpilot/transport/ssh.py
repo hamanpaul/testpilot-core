@@ -9,6 +9,15 @@ from typing import Any
 from .base import TransportBase
 
 
+class SshCommandOutcomeUnknown(RuntimeError):
+    """An SSH subprocess ended without proving remote command completion."""
+
+    def __init__(self, transport_result: dict[str, Any]) -> None:
+        super().__init__("ssh command outcome is unknown")
+        self.result = dict(transport_result)
+        self.transport_result = self.result
+
+
 class SshTransport(TransportBase):
     """Minimal SSH transport via subprocess."""
 
@@ -67,19 +76,73 @@ class SshTransport(TransportBase):
         cmd.extend([target, command])
 
         start = time.monotonic()
-        completed = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=max(float(timeout), 0.1),
-        )
+        try:
+            completed = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=max(float(timeout), 0.1),
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = self._captured_text(exc.stdout if exc.stdout is not None else exc.output)
+            stderr = self._captured_text(exc.stderr)
+            elapsed = max(0.0, time.monotonic() - start)
+            raise SshCommandOutcomeUnknown(
+                self._unknown_result(stdout=stdout, stderr=stderr, elapsed=elapsed)
+            ) from None
+
+        returncode = int(completed.returncode)
+        stdout = self._captured_text(completed.stdout)
+        stderr = self._captured_text(completed.stderr)
+        elapsed = max(0.0, time.monotonic() - start)
+        if returncode == 255 or returncode < 0:
+            raise SshCommandOutcomeUnknown(
+                self._unknown_result(
+                    stdout=stdout,
+                    stderr=stderr,
+                    elapsed=elapsed,
+                    returncode=returncode,
+                )
+            ) from None
         return {
-            "returncode": int(completed.returncode),
-            "stdout": (completed.stdout or "").strip(),
-            "stderr": (completed.stderr or "").strip(),
-            "elapsed": time.monotonic() - start,
+            "returncode": returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "elapsed": elapsed,
         }
+
+    @staticmethod
+    def _captured_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace").strip()
+        return str(value).strip()
+
+    @staticmethod
+    def _unknown_result(
+        *,
+        stdout: str,
+        stderr: str,
+        elapsed: float,
+        returncode: int | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "status": "unknown",
+            "outcome": "unknown",
+            "ambiguous": True,
+            "error_code": "COMMAND_OUTCOME_UNKNOWN",
+            "non_replayable": True,
+            "retryable": False,
+            "stdout": stdout,
+            "stderr": stderr,
+            "elapsed": elapsed,
+        }
+        if returncode is not None:
+            # This is the local SSH process status, not a proven remote status.
+            result["returncode"] = returncode
+        return result
 
     def _normalize_extra_args(self, value: Any) -> list[str]:
         if value is None:

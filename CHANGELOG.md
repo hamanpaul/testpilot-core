@@ -13,6 +13,8 @@ preparation.
 
 - Keep staged-command producer markers parseable when serial console echo inserts CR/LF wrapping inside commands by splitting the marker literal in generated shell commands; retain strict receipt validation, per-invocation nonces, separate script/cleanup statuses, and the 120-byte UART budget.
 
+- Treat SSH subprocess timeouts, exit status 255, and local signal termination as structured, non-replayable unknown outcomes; stop Engine retries and teardown without exposing command argv in exception formatting.
+
 ## [0.4.0] - 2026-10-03
 
 ### Fixed
