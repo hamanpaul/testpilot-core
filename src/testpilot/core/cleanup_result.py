@@ -44,6 +44,32 @@ _EXCEPTION_RESULT = {
 }
 
 
+def _is_accepted_receipt(value: Mapping[str, Any]) -> bool:
+    return (
+        str(value.get("outcome") or "").strip().lower() == "accepted"
+        or str(value.get("status") or "").strip().lower() == "accepted"
+    )
+
+
+def _promote_accepted_receipt(
+    evidence: dict[str, Any],
+    sources: list[Mapping[str, Any]],
+) -> None:
+    accepted_sources = [source for source in sources if _is_accepted_receipt(source)]
+    if not accepted_sources:
+        return
+
+    outcomes = [str(source.get("outcome") or "").strip().lower() for source in sources]
+    if "accepted" in outcomes and not {"unknown", "ambiguous"}.intersection(outcomes):
+        evidence["outcome"] = "accepted"
+    if any(str(source.get("status") or "").strip().lower() == "accepted" for source in sources):
+        evidence["status"] = "accepted"
+    for source in accepted_sources:
+        if source.get("cmd_id"):
+            evidence["cmd_id"] = source["cmd_id"]
+            break
+
+
 def has_unknown_transport_outcome(*values: Any) -> bool:
     """Find an explicit uncertain receipt on a result or its known wrappers."""
     pending = list(values)
@@ -84,6 +110,7 @@ def has_unknown_transport_outcome(*values: Any) -> bool:
             if (
                 str(value.get("outcome") or "").strip().lower()
                 in {"unknown", "ambiguous"}
+                or _is_accepted_receipt(value)
                 or value.get("ambiguous") is True
                 or value.get("non_replayable") is True
                 or value.get("partial") is True
@@ -104,6 +131,7 @@ def project_transport_evidence(*values: Any) -> dict[str, Any]:
     pending = list(values)
     seen: set[int] = set()
     projected_evidence: dict[str, Any] = {}
+    sources: list[Mapping[str, Any]] = []
     while pending:
         value = pending.pop(0)
         if isinstance(value, BaseException):
@@ -125,6 +153,7 @@ def project_transport_evidence(*values: Any) -> dict[str, Any]:
         if not isinstance(value, Mapping) or id(value) in seen:
             continue
         seen.add(id(value))
+        sources.append(value)
         try:
             projected = _project_transport_result(value)
             if projected is None:
@@ -142,6 +171,10 @@ def project_transport_evidence(*values: Any) -> dict[str, Any]:
             )
         except Exception:
             return {}
+    try:
+        _promote_accepted_receipt(projected_evidence, sources)
+    except Exception:
+        return {}
     return projected_evidence
 
 
@@ -179,11 +212,13 @@ def _project_wrapped_transport_result(value: Mapping[str, Any]) -> dict[str, Any
     pending: list[Mapping[str, Any]] = [value]
     seen: set[int] = set()
     projected_evidence: dict[str, Any] = {}
+    sources: list[Mapping[str, Any]] = []
     while pending:
         source = pending.pop(0)
         if id(source) in seen:
             continue
         seen.add(id(source))
+        sources.append(source)
         projected = _project_transport_result(source)
         if projected is None:
             return None
@@ -201,6 +236,10 @@ def _project_wrapped_transport_result(value: Mapping[str, Any]) -> dict[str, Any
             )
         except Exception:
             return None
+    try:
+        _promote_accepted_receipt(projected_evidence, sources)
+    except Exception:
+        return None
     return projected_evidence
 
 

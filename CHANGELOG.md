@@ -11,6 +11,8 @@ preparation.
 
 ### Fixed
 
+- Treat accepted transport receipts as uncertain across nested results, exceptions, and cleanup responses; preserve the accepted status and command identity while stopping retries and follow-up I/O.
+
 - Apply matching plugin terminal-abort snapshots consistently in direct `PluginBase.run_pipeline()` calls: preserve the abort evidence, honor literal teardown suppression, and keep unknown transport outcomes dominant.
 
 - Keep staged-command producer markers parseable when serial console echo inserts CR/LF wrapping inside commands by splitting the marker literal in generated shell commands; retain strict receipt validation, per-invocation nonces, separate script/cleanup statuses, and the 120-byte UART budget.

@@ -333,6 +333,8 @@ Implement the `PluginBase` contract: declare `api_version`, `name`, `discover_ca
 
 `PluginBase.run_pipeline()` applies the same current-case/current-attempt terminal-failure rules as the retry engine. A matching `_last_failure` with literal `abort_run: True` is returned as a terminal result; teardown is skipped only when that snapshot also has literal `skip_teardown: True`. Unknown command outcomes keep precedence over plugin-provided abort reasons.
 
+Transport receipts marked `outcome: accepted` or `status: accepted` mean the command was accepted but do not establish completion. Core stops retries and follow-up cleanup on that evidence; explicit completed success or failure keeps its existing behavior.
+
 Plugins using SDK API 1.4 may return `PreparedRun(cases=cases, no_io=True)` when the entire prepared selection needs no Core DUT/STA capture, sequence markers, log export, or firmware-version query. This keeps per-case planning, execution, and reporting intact. Empty selections skip those Core environment queries automatically; mixed selections must leave `no_io=False`.
 
 Plugins import the public SDK surface from `testpilot.api`; they must not reach into `testpilot.core`, `testpilot.schema`, `testpilot.reporting`, `testpilot.transport`, or `testpilot.runtime` internals. See `plugins/_template/README.md` and `docs/plugin-dev-guide.md` for the current contract.

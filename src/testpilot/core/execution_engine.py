@@ -67,8 +67,8 @@ class ExecutionEngine:
 
         Exceptions may expose both ``result`` and ``transport_result``. Plugin
         failure snapshots and hook payloads may also carry the same receipt.
-        Preserve the first ordinary value, but let any explicit unknown marker
-        dominate a conflicting benign projection.
+        Preserve the first ordinary value, but let accepted or unknown receipt
+        markers dominate a conflicting benign projection.
         """
         fields = (
             "error_code", "retry_after_s", "recommended_action", "cmd_id",
@@ -77,16 +77,35 @@ class ExecutionEngine:
             "newline_sent", "session_recovered", "recovery_error",
         )
         sources: list[Mapping[str, Any]] = []
-        for value in values:
+        pending: list[Any] = list(values)
+        seen: set[int] = set()
+        while pending:
+            value = pending.pop(0)
             if isinstance(value, BaseException):
+                if id(value) in seen:
+                    continue
+                seen.add(id(value))
                 result = getattr(value, "result", None)
                 transport_result = getattr(value, "transport_result", None)
-                if isinstance(result, Mapping):
-                    sources.append(result)
-                if isinstance(transport_result, Mapping):
-                    sources.append(transport_result)
-            elif isinstance(value, Mapping):
-                sources.append(value)
+                pending.extend(
+                    item
+                    for item in (result, transport_result)
+                    if isinstance(item, Mapping)
+                )
+                continue
+            if not isinstance(value, Mapping) or id(value) in seen:
+                continue
+            seen.add(id(value))
+            sources.append(value)
+            pending.extend(
+                item
+                for item in (
+                    value.get("result"),
+                    value.get("transport_result"),
+                    value.get("metadata"),
+                )
+                if isinstance(item, Mapping)
+            )
 
         evidence: dict[str, Any] = {}
         for source in sources:
@@ -98,6 +117,8 @@ class ExecutionEngine:
             source for source in sources
             if (
                 str(source.get("outcome") or "").strip().lower() in {"unknown", "ambiguous"}
+                or str(source.get("outcome") or "").strip().lower() == "accepted"
+                or str(source.get("status") or "").strip().lower() == "accepted"
                 or source.get("ambiguous") is True
                 or source.get("non_replayable") is True
                 or source.get("partial") is True
@@ -119,6 +140,11 @@ class ExecutionEngine:
             evidence["outcome"] = "unknown"
         elif "ambiguous" in outcomes:
             evidence["outcome"] = "ambiguous"
+        elif "accepted" in outcomes:
+            evidence["outcome"] = "accepted"
+
+        if any(str(source.get("status") or "").strip().lower() == "accepted" for source in sources):
+            evidence["status"] = "accepted"
 
         error_codes = [str(source.get("error_code") or "").strip().upper() for source in sources]
         if "COMMAND_OUTCOME_UNKNOWN" in error_codes:
@@ -398,6 +424,37 @@ class ExecutionEngine:
                     executed_command = str(result.get("command", "")).strip() or command
                     commands.append(executed_command)
                     outputs.append(str(result.get("output", "")).strip())
+
+                    step_evidence = self._merge_transport_evidence(
+                        result,
+                        self._failure_snapshot_evidence(runtime_case),
+                    )
+                    if self._unknown_outcome(step_evidence):
+                        transport_evidence = step_evidence
+                        unknown_outcome = True
+                        comment = f"command outcome unknown: {step_id}"
+                        failure_payload = self._dispatch_failure(
+                            runtime_case=runtime_case,
+                            runner=runner,
+                            attempt_index=attempt_index,
+                            phase="execute_step",
+                            comment=comment,
+                            step_id=step_id,
+                            step_payload=step_payload,
+                            result=result,
+                        )
+                        transport_evidence = self._merge_transport_evidence(
+                            transport_evidence,
+                            failure_payload.get("transport_result"),
+                            self._failure_snapshot_evidence(runtime_case),
+                        )
+                        unknown_outcome = unknown_outcome or self._unknown_outcome(
+                            transport_evidence
+                        )
+                        plugin_abort_run, plugin_abort_reason, skip_teardown = (
+                            self._explicit_failure_abort(runtime_case)
+                        )
+                        break
 
                     # post_step hook
                     self.hooks.dispatch(
