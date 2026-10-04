@@ -335,6 +335,8 @@ Implement the `PluginBase` contract: declare `api_version`, `name`, `discover_ca
 
 Transport receipts marked `outcome: accepted` or `status: accepted` mean the command was accepted but do not establish completion. Core stops retries and follow-up cleanup on that evidence; explicit completed success or failure keeps its existing behavior.
 
+Unreadable receipt fields or receipt graphs beyond the bounded traversal limit produce sanitized unknown, non-replayable evidence and stop Engine follow-up. An ordinary local exception without receipt evidence keeps the existing failure and retry behavior.
+
 Plugins using SDK API 1.4 may return `PreparedRun(cases=cases, no_io=True)` when the entire prepared selection needs no Core DUT/STA capture, sequence markers, log export, or firmware-version query. This keeps per-case planning, execution, and reporting intact. Empty selections skip those Core environment queries automatically; mixed selections must leave `no_io=False`.
 
 Plugins import the public SDK surface from `testpilot.api`; they must not reach into `testpilot.core`, `testpilot.schema`, `testpilot.reporting`, `testpilot.transport`, or `testpilot.runtime` internals. See `plugins/_template/README.md` and `docs/plugin-dev-guide.md` for the current contract.

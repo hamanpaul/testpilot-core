@@ -16,6 +16,7 @@ from testpilot.core.cleanup_result import (
     cleanup_failure_snapshot,
     has_unknown_transport_outcome,
     normalize_cleanup_result,
+    project_transport_evidence,
 )
 from testpilot.core.hook_policy import HookContext, HookDispatcher
 from testpilot.core.runner_selector import RunnerSelector
@@ -65,101 +66,10 @@ class ExecutionEngine:
     def _merge_transport_evidence(*values: Any) -> dict[str, Any]:
         """Project transport fields from all surfaces without losing uncertainty.
 
-        Exceptions may expose both ``result`` and ``transport_result``. Plugin
-        failure snapshots and hook payloads may also carry the same receipt.
-        Preserve the first ordinary value, but let accepted or unknown receipt
-        markers dominate a conflicting benign projection.
+        Receipt traversal and validation share the bounded fail-closed projection
+        used by the cleanup-result contract.
         """
-        fields = (
-            "error_code", "retry_after_s", "recommended_action", "cmd_id",
-            "outcome", "ambiguous", "non_replayable", "retryable", "partial", "status",
-            "input_integrity", "tx_bytes", "sent_chars", "acked_chars",
-            "newline_sent", "session_recovered", "recovery_error",
-        )
-        sources: list[Mapping[str, Any]] = []
-        pending: list[Any] = list(values)
-        seen: set[int] = set()
-        while pending:
-            value = pending.pop(0)
-            if isinstance(value, BaseException):
-                if id(value) in seen:
-                    continue
-                seen.add(id(value))
-                result = getattr(value, "result", None)
-                transport_result = getattr(value, "transport_result", None)
-                pending.extend(
-                    item
-                    for item in (result, transport_result)
-                    if isinstance(item, Mapping)
-                )
-                continue
-            if not isinstance(value, Mapping) or id(value) in seen:
-                continue
-            seen.add(id(value))
-            sources.append(value)
-            pending.extend(
-                item
-                for item in (
-                    value.get("result"),
-                    value.get("transport_result"),
-                    value.get("metadata"),
-                )
-                if isinstance(item, Mapping)
-            )
-
-        evidence: dict[str, Any] = {}
-        for source in sources:
-            for key in fields:
-                if key in source and key not in evidence:
-                    evidence[key] = source[key]
-
-        uncertain_sources = [
-            source for source in sources
-            if (
-                str(source.get("outcome") or "").strip().lower() in {"unknown", "ambiguous"}
-                or str(source.get("outcome") or "").strip().lower() == "accepted"
-                or str(source.get("status") or "").strip().lower() == "accepted"
-                or source.get("ambiguous") is True
-                or source.get("non_replayable") is True
-                or source.get("partial") is True
-                or str(source.get("input_integrity") or "").strip().lower() == "uncertain"
-                or str(source.get("error_code") or "").strip().upper() == "COMMAND_OUTCOME_UNKNOWN"
-            )
-        ]
-        for source in uncertain_sources:
-            if source.get("cmd_id"):
-                evidence["cmd_id"] = source["cmd_id"]
-                break
-
-        for key in ("ambiguous", "non_replayable", "partial"):
-            if any(source.get(key) is True for source in sources):
-                evidence[key] = True
-
-        outcomes = [str(source.get("outcome") or "").strip().lower() for source in sources]
-        if "unknown" in outcomes:
-            evidence["outcome"] = "unknown"
-        elif "ambiguous" in outcomes:
-            evidence["outcome"] = "ambiguous"
-        elif "accepted" in outcomes:
-            evidence["outcome"] = "accepted"
-
-        if any(str(source.get("status") or "").strip().lower() == "accepted" for source in sources):
-            evidence["status"] = "accepted"
-
-        error_codes = [str(source.get("error_code") or "").strip().upper() for source in sources]
-        if "COMMAND_OUTCOME_UNKNOWN" in error_codes:
-            evidence["error_code"] = "COMMAND_OUTCOME_UNKNOWN"
-
-        integrity_values = [
-            str(source.get("input_integrity") or "").strip().lower()
-            for source in sources
-        ]
-        if "uncertain" in integrity_values:
-            evidence["input_integrity"] = "uncertain"
-
-        if any(source.get("retryable") is False for source in sources):
-            evidence["retryable"] = False
-        return evidence
+        return project_transport_evidence(*values)
 
     @staticmethod
     def _unknown_outcome(evidence: dict[str, Any]) -> bool:
@@ -417,19 +327,16 @@ class ExecutionEngine:
                         break
 
                     result = plugin.execute_step(runtime_case, step_payload, topology=self.config)
-                    step_results[step_id] = result
-                    # One slot per executed step in BOTH lists (empty string when a
-                    # step has no command text / no output) so agent_trace
-                    # attempts[].commands[i] always pairs with outputs[i].
-                    executed_command = str(result.get("command", "")).strip() or command
-                    commands.append(executed_command)
-                    outputs.append(str(result.get("output", "")).strip())
-
                     step_evidence = self._merge_transport_evidence(
                         result,
                         self._failure_snapshot_evidence(runtime_case),
                     )
                     if self._unknown_outcome(step_evidence):
+                        # Preserve the executed command slot without reading or
+                        # formatting an untrusted receipt result after uncertainty
+                        # has been found. No output is claimed for this attempt.
+                        commands.append(command)
+                        outputs.append("")
                         transport_evidence = step_evidence
                         unknown_outcome = True
                         comment = f"command outcome unknown: {step_id}"
@@ -441,7 +348,7 @@ class ExecutionEngine:
                             comment=comment,
                             step_id=step_id,
                             step_payload=step_payload,
-                            result=result,
+                            result={"transport_result": step_evidence},
                         )
                         transport_evidence = self._merge_transport_evidence(
                             transport_evidence,
@@ -455,6 +362,14 @@ class ExecutionEngine:
                             self._explicit_failure_abort(runtime_case)
                         )
                         break
+
+                    step_results[step_id] = result
+                    # One slot per executed step in BOTH lists (empty string when a
+                    # step has no command text / no output) so agent_trace
+                    # attempts[].commands[i] always pairs with outputs[i].
+                    executed_command = str(result.get("command", "")).strip() or command
+                    commands.append(executed_command)
+                    outputs.append(str(result.get("output", "")).strip())
 
                     # post_step hook
                     self.hooks.dispatch(
@@ -515,14 +430,19 @@ class ExecutionEngine:
         except Exception as exc:  # pragma: no cover - defensive catch for runtime errors
             transport_evidence = self._transport_evidence(exc)
             unknown_outcome = self._unknown_outcome(transport_evidence)
-            comment = f"exception: {exc}"
+            comment = "command outcome unknown" if unknown_outcome else f"exception: {exc}"
             failure_payload = self._dispatch_failure(
                 runtime_case=runtime_case,
                 runner=runner,
                 attempt_index=attempt_index,
                 phase="exception",
                 comment=comment,
-                exception=exc,
+                result=(
+                    {"transport_result": transport_evidence}
+                    if unknown_outcome
+                    else None
+                ),
+                exception=exc if not unknown_outcome else None,
             )
             transport_evidence = self._merge_transport_evidence(
                 transport_evidence,

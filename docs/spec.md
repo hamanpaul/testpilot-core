@@ -166,6 +166,7 @@ sequenceDiagram
 
 - failure 後預設執行 `teardown()`；只有未知／歧義 command receipt，或 matching current-attempt failure snapshot 明確標示 `skip_teardown: true` 時才抑制清理。
 - receipt 的 `outcome` 或 `status` 若為 `accepted`，只表示命令已被接收，不能證明執行完成；Core 將它視為未知結果並停止 retry 與後續 cleanup。明確 `completed` 的成功或失敗仍依原有 verdict/retry 規則處理。
+- receipt 欄位或 exception receipt property 無法讀取，或 traversal 超過固定節點上限時，Core 輸出不含原始例外訊息的 unknown/non-replayable evidence，停止 Engine 後續 step、evaluate、cleanup 與 retry。沒有 receipt evidence 的一般本機例外仍沿用既有 failure/retry 行為。
 - plugin 可在 matching current-attempt `_last_failure` snapshot 設定 `abort_run: true` 結束整個 run；snapshot 必須帶 exact `case_id` 與整數 `attempt_index`，避免舊 attempt 的狀態誤停後續 case。此 terminal abort 在 `on_retry` 以外的路徑也有效。
 - `PluginBase.run_pipeline()` 直接執行時遵循相同的 snapshot 身分與 literal-boolean 規則：有效的 `abort_run: true` 會回傳 terminal abort reason 與 failure snapshot；只有同一 snapshot 也明確設為 `skip_teardown: true` 才跳過 cleanup。未知 command receipt 仍優先，無效或過期的 abort metadata 不改變 cleanup 或結果形狀。
 - remediation 只允許發生在 **attempt 與 attempt 之間** 的 `on_retry` 期間。

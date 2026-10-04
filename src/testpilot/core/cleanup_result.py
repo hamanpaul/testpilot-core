@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping
+from inspect import getattr_static
+import itertools
 import math
 import re
 from typing import Any
@@ -29,6 +32,16 @@ _TRANSPORT_FIELDS = frozenset(
         "recovery_error",
     }
 )
+_TRANSPORT_WRAPPER_FIELDS = ("result", "transport_result", "metadata")
+_TRANSPORT_FIELD_ORDER = tuple(sorted(_TRANSPORT_FIELDS))
+_MAX_TRANSPORT_RECEIPT_NODES = 64
+_MAX_CLEANUP_RESULT_KEYS = 16
+_MISSING = object()
+_UNREADABLE_RECEIPT = {
+    "outcome": "unknown",
+    "non_replayable": True,
+    "error_code": "COMMAND_OUTCOME_UNKNOWN",
+}
 _REASON_CODE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _INVALID_RESULT = {
     "status": "unknown",
@@ -44,203 +57,207 @@ _EXCEPTION_RESULT = {
 }
 
 
-def _is_accepted_receipt(value: Mapping[str, Any]) -> bool:
+def _receipt_text(value: Any) -> str:
+    return value.strip().lower() if type(value) is str else ""
+
+
+def _receipt_source_is_uncertain(source: Mapping[str, Any]) -> bool:
+    outcome = _receipt_text(source.get("outcome"))
+    status = _receipt_text(source.get("status"))
     return (
-        str(value.get("outcome") or "").strip().lower() == "accepted"
-        or str(value.get("status") or "").strip().lower() == "accepted"
+        outcome in {"unknown", "ambiguous", "accepted"}
+        or status == "accepted"
+        or source.get("ambiguous") is True
+        or source.get("non_replayable") is True
+        or source.get("partial") is True
+        or _receipt_text(source.get("input_integrity")) == "uncertain"
+        or _receipt_text(source.get("error_code")).upper()
+        == "COMMAND_OUTCOME_UNKNOWN"
     )
 
 
-def _promote_accepted_receipt(
-    evidence: dict[str, Any],
-    sources: list[Mapping[str, Any]],
-) -> None:
-    accepted_sources = [source for source in sources if _is_accepted_receipt(source)]
-    if not accepted_sources:
-        return
+def _capture_transport_sources(*values: Any) -> tuple[list[dict[str, Any]], bool]:
+    """Read a bounded snapshot of receipt mappings and their named wrappers."""
+    pending: deque[Any] = deque(values)
+    sources: list[dict[str, Any]] = []
+    keepalive: list[Any] = []
+    seen: set[int] = set()
+    unreadable = False
 
-    outcomes = [str(source.get("outcome") or "").strip().lower() for source in sources]
-    if "accepted" in outcomes and not {"unknown", "ambiguous"}.intersection(outcomes):
-        evidence["outcome"] = "accepted"
-    if any(str(source.get("status") or "").strip().lower() == "accepted" for source in sources):
-        evidence["status"] = "accepted"
-    for source in accepted_sources:
-        if source.get("cmd_id"):
-            evidence["cmd_id"] = source["cmd_id"]
+    while pending:
+        value = pending.popleft()
+        if isinstance(value, BaseException):
+            if id(value) in seen:
+                continue
+            seen.add(id(value))
+            keepalive.append(value)
+            for name in ("result", "transport_result"):
+                try:
+                    static_value = getattr_static(value, name, _MISSING)
+                except Exception:
+                    static_value = _MISSING
+                    unreadable = True
+                try:
+                    child = getattr(value, name, _MISSING)
+                except Exception:
+                    unreadable = True
+                    continue
+                if child is _MISSING:
+                    if static_value is not _MISSING:
+                        unreadable = True
+                    continue
+                if isinstance(child, Mapping):
+                    pending.append(child)
+            continue
+
+        if not isinstance(value, Mapping) or id(value) in seen:
+            continue
+        if len(sources) >= _MAX_TRANSPORT_RECEIPT_NODES:
+            unreadable = True
             break
+
+        seen.add(id(value))
+        keepalive.append(value)
+        source: dict[str, Any] = {}
+        for name in (*_TRANSPORT_WRAPPER_FIELDS, *_TRANSPORT_FIELD_ORDER):
+            try:
+                child = Mapping.get(value, name, _MISSING)
+            except Exception:
+                unreadable = True
+                continue
+            if child is _MISSING:
+                continue
+            source[name] = child
+            if name in _TRANSPORT_WRAPPER_FIELDS and isinstance(child, Mapping):
+                pending.append(child)
+        sources.append(source)
+
+    # Keep visited objects alive until their identities have been fully checked.
+    del keepalive
+    return sources, unreadable
+
+
+def _project_transport_sources(
+    sources: list[dict[str, Any]],
+) -> tuple[dict[str, Any], bool]:
+    evidence: dict[str, Any] = {}
+    projected_sources: list[dict[str, Any]] = []
+    invalid_field = False
+
+    for source in sources:
+        projected: dict[str, Any] = {}
+        for key in _TRANSPORT_FIELD_ORDER:
+            if key not in source:
+                continue
+            item = source[key]
+            if item is None or type(item) in {bool, int}:
+                projected[key] = item
+            elif type(item) is float and math.isfinite(item):
+                projected[key] = item
+            elif type(item) is str and _safe_text(item, max_length=512):
+                projected[key] = item
+            else:
+                invalid_field = True
+        projected_sources.append(projected)
+        for key, item in projected.items():
+            evidence.setdefault(key, item)
+
+    uncertain_sources = [
+        source for source in projected_sources if _receipt_source_is_uncertain(source)
+    ]
+    for source in uncertain_sources:
+        cmd_id = source.get("cmd_id")
+        if type(cmd_id) is str and cmd_id:
+            evidence["cmd_id"] = cmd_id
+            break
+
+    for key in ("ambiguous", "non_replayable", "partial"):
+        if any(source.get(key) is True for source in projected_sources):
+            evidence[key] = True
+
+    outcomes = [_receipt_text(source.get("outcome")) for source in projected_sources]
+    if "unknown" in outcomes:
+        evidence["outcome"] = "unknown"
+    elif "ambiguous" in outcomes:
+        evidence["outcome"] = "ambiguous"
+    elif "accepted" in outcomes:
+        evidence["outcome"] = "accepted"
+
+    if any(_receipt_text(source.get("status")) == "accepted" for source in projected_sources):
+        evidence["status"] = "accepted"
+
+    error_codes = [_receipt_text(source.get("error_code")).upper() for source in projected_sources]
+    if "COMMAND_OUTCOME_UNKNOWN" in error_codes:
+        evidence["error_code"] = "COMMAND_OUTCOME_UNKNOWN"
+
+    integrity_values = [
+        _receipt_text(source.get("input_integrity")) for source in projected_sources
+    ]
+    if "uncertain" in integrity_values:
+        evidence["input_integrity"] = "uncertain"
+
+    if any(source.get("retryable") is False for source in projected_sources):
+        evidence["retryable"] = False
+
+    return evidence, invalid_field
+
+
+def _fail_closed_receipt(evidence: dict[str, Any]) -> dict[str, Any]:
+    evidence = dict(evidence)
+    evidence.update(_UNREADABLE_RECEIPT)
+    return evidence
+
+
+def _is_unknown_evidence(evidence: Mapping[str, Any]) -> bool:
+    return _receipt_source_is_uncertain(evidence)
 
 
 def has_unknown_transport_outcome(*values: Any) -> bool:
-    """Find an explicit uncertain receipt on a result or its known wrappers."""
-    pending = list(values)
-    seen: set[int] = set()
-    while pending:
-        value = pending.pop()
-        if isinstance(value, BaseException):
-            if id(value) in seen:
-                continue
-            seen.add(id(value))
-            try:
-                pending.extend(
-                    item
-                    for item in (
-                        getattr(value, "result", None),
-                        getattr(value, "transport_result", None),
-                    )
-                    if isinstance(item, Mapping)
-                )
-            except Exception:
-                return True
-            continue
-        if not isinstance(value, Mapping):
-            continue
-        if id(value) in seen:
-            continue
-        seen.add(id(value))
-        try:
-            pending.extend(
-                item
-                for item in (
-                    value.get("result"),
-                    value.get("transport_result"),
-                    value.get("metadata"),
-                )
-                if isinstance(item, Mapping)
-            )
-            if (
-                str(value.get("outcome") or "").strip().lower()
-                in {"unknown", "ambiguous"}
-                or _is_accepted_receipt(value)
-                or value.get("ambiguous") is True
-                or value.get("non_replayable") is True
-                or value.get("partial") is True
-                or str(value.get("input_integrity") or "").strip().lower()
-                == "uncertain"
-                or str(value.get("error_code") or "").strip().upper()
-                == "COMMAND_OUTCOME_UNKNOWN"
-            ):
-                return True
-        except Exception:
-            # An unreadable receipt cannot justify follow-up cleanup I/O.
-            return True
-    return False
+    """Find uncertain evidence; unreadable or excessive receipt graphs fail closed."""
+    sources, unreadable = _capture_transport_sources(*values)
+    evidence, invalid_field = _project_transport_sources(sources)
+    return unreadable or invalid_field or _is_unknown_evidence(evidence)
 
 
 def project_transport_evidence(*values: Any) -> dict[str, Any]:
-    """Keep only bounded transport fields from result and failure wrappers."""
-    pending = list(values)
-    seen: set[int] = set()
-    projected_evidence: dict[str, Any] = {}
-    sources: list[Mapping[str, Any]] = []
-    while pending:
-        value = pending.pop(0)
-        if isinstance(value, BaseException):
-            if id(value) in seen:
-                continue
-            seen.add(id(value))
-            try:
-                pending.extend(
-                    item
-                    for item in (
-                        getattr(value, "result", None),
-                        getattr(value, "transport_result", None),
-                    )
-                    if isinstance(item, Mapping)
-                )
-            except Exception:
-                return {}
-            continue
-        if not isinstance(value, Mapping) or id(value) in seen:
-            continue
-        seen.add(id(value))
-        sources.append(value)
-        try:
-            projected = _project_transport_result(value)
-            if projected is None:
-                return {}
-            for key, item in projected.items():
-                projected_evidence.setdefault(key, item)
-            pending.extend(
-                item
-                for item in (
-                    value.get("result"),
-                    value.get("transport_result"),
-                    value.get("metadata"),
-                )
-                if isinstance(item, Mapping)
-            )
-        except Exception:
-            return {}
-    try:
-        _promote_accepted_receipt(projected_evidence, sources)
-    except Exception:
-        return {}
-    return projected_evidence
+    """Return sanitized receipt fields from a bounded wrapper traversal."""
+    sources, unreadable = _capture_transport_sources(*values)
+    evidence, invalid_field = _project_transport_sources(sources)
+    if unreadable or invalid_field:
+        return _fail_closed_receipt(evidence)
+    return evidence
 
 
 def _safe_text(value: Any, *, max_length: int) -> bool:
     return (
-        isinstance(value, str)
+        type(value) is str
         and bool(value.strip())
         and len(value) <= max_length
         and all(ord(char) >= 0x20 and ord(char) != 0x7F for char in value)
     )
 
 
-def _project_transport_result(value: Any) -> dict[str, Any] | None:
-    if not isinstance(value, Mapping):
-        return None
-    projected: dict[str, Any] = {}
-    for key, item in value.items():
-        if key not in _TRANSPORT_FIELDS:
-            continue
-        if item is None or isinstance(item, bool):
-            projected[key] = item
-        elif isinstance(item, int):
-            projected[key] = item
-        elif isinstance(item, float) and math.isfinite(item):
-            projected[key] = item
-        elif _safe_text(item, max_length=512):
-            projected[key] = item
-        else:
-            return None
-    return projected
-
-
 def _project_wrapped_transport_result(value: Mapping[str, Any]) -> dict[str, Any] | None:
     """Flatten known receipt wrappers while retaining only allowlisted fields."""
-    pending: list[Mapping[str, Any]] = [value]
-    seen: set[int] = set()
-    projected_evidence: dict[str, Any] = {}
-    sources: list[Mapping[str, Any]] = []
-    while pending:
-        source = pending.pop(0)
-        if id(source) in seen:
-            continue
-        seen.add(id(source))
-        sources.append(source)
-        projected = _project_transport_result(source)
-        if projected is None:
-            return None
-        for key, item in projected.items():
-            projected_evidence.setdefault(key, item)
-        try:
-            pending.extend(
-                item
-                for item in (
-                    source.get("result"),
-                    source.get("transport_result"),
-                    source.get("metadata"),
-                )
-                if isinstance(item, Mapping)
-            )
-        except Exception:
-            return None
+    sources, unreadable = _capture_transport_sources(value)
+    evidence, invalid_field = _project_transport_sources(sources)
+    if unreadable:
+        return _fail_closed_receipt(evidence)
+    if invalid_field:
+        return None
+    return evidence
+
+
+def _bounded_cleanup_result_keys(value: Mapping[str, Any]) -> set[str] | None:
     try:
-        _promote_accepted_receipt(projected_evidence, sources)
+        keys = list(
+            itertools.islice(iter(Mapping.keys(value)), _MAX_CLEANUP_RESULT_KEYS + 1)
+        )
     except Exception:
         return None
-    return projected_evidence
+    if len(keys) > _MAX_CLEANUP_RESULT_KEYS or any(type(key) is not str for key in keys):
+        return None
+    return set(keys)
 
 
 def normalize_cleanup_result(value: Any) -> dict[str, Any] | None:
@@ -253,21 +270,23 @@ def normalize_cleanup_result(value: Any) -> dict[str, Any] | None:
         return None
     if not isinstance(value, Mapping):
         return dict(_INVALID_RESULT)
+    keys = _bounded_cleanup_result_keys(value)
+    if keys is None:
+        return dict(_INVALID_RESULT)
     try:
-        keys = set(value.keys())
-        status = value.get("status")
-        reason_code = value.get("reason_code")
-        comment = value.get("comment")
-        raw_transport_result = value.get("transport_result", {})
+        status = Mapping.get(value, "status")
+        reason_code = Mapping.get(value, "reason_code")
+        comment = Mapping.get(value, "comment")
+        raw_transport_result = Mapping.get(value, "transport_result", {})
     except Exception:
         return dict(_INVALID_RESULT)
 
     if (
         not keys.issubset(_RESULT_FIELDS)
         or not {"status", "reason_code", "comment"}.issubset(keys)
-        or not isinstance(status, str)
+        or type(status) is not str
         or status not in {"failed", "unknown"}
-        or not isinstance(reason_code, str)
+        or type(reason_code) is not str
         or _REASON_CODE_RE.fullmatch(reason_code) is None
         or not _safe_text(comment, max_length=512)
     ):
@@ -275,15 +294,15 @@ def normalize_cleanup_result(value: Any) -> dict[str, Any] | None:
 
     if not isinstance(raw_transport_result, Mapping):
         return dict(_INVALID_RESULT)
-    # Inspect wrapper metadata before the projection discards those keys, then
-    # retain only the known scalar receipt fields from recognized wrappers.
-    unknown_transport_outcome = has_unknown_transport_outcome(raw_transport_result)
+    # Flatten recognized wrappers into allowlisted scalar evidence before dropping
+    # the raw wrapper objects.
     try:
         transport_result = _project_wrapped_transport_result(raw_transport_result)
     except Exception:
         return dict(_INVALID_RESULT)
     if transport_result is None:
         return dict(_INVALID_RESULT)
+    unknown_transport_outcome = has_unknown_transport_outcome(transport_result)
     return {
         "status": "unknown" if status == "unknown" or unknown_transport_outcome else status,
         "reason_code": (
