@@ -2,6 +2,8 @@
 
 ## Purpose and base
 
+Core SDK API 1.5 work is tracked in [issue #61](https://github.com/hamanpaul/testpilot-core/issues/61).
+
 Add a Core-owned result contract for plugin cleanup so that a failed or unverified restore cannot be hidden by `ExecutionEngine.execute_case_once()`'s `finally` block or followed by a retry. Work starts from merged `main` commit `ea442ec94166fc68b5fb0a2180f2d9982fd9d403` in `feature/cleanup-result-api15-20261004`. The current D036 plugin and installed API 1.4 pair remain unchanged.
 
 Source review is pinned to Core `7d5fcef884d2ba8a08ef31b05ea78c5383034919` and the D036 plan at plugin commit `847cb17120176b739c77f6095431df21088f1bad`. At the pinned Core, `execute_case_once()` ignores teardown returns and logs teardown exceptions; `execute_with_retry()` already stops on the attempt's `abort_run`; the run loop stops later cases on `RetryResult.abort_run`. `PluginBase.run_pipeline()` has early setup/verify returns whose values cannot be changed by its `finally` cleanup.
