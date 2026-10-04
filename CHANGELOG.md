@@ -25,6 +25,8 @@ preparation.
 
 - Enforce strict run-capability admission at public `Orchestrator.run()` before plugin binding or runner construction; route accepted strict plugins through Core's context-bearing loop and reject legacy custom/direct pipeline paths before setup or verdict work.
 
+- Add neutral API 1.6 role-plan request and immutable projection types with separate identity/provider digests; keep them opt-in and configuration-only until lifecycle and backend binding are implemented.
+
 ## [0.4.0] - 2026-10-03
 
 ### Fixed

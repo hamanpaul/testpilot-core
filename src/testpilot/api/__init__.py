@@ -23,6 +23,13 @@ from testpilot.cli_support import (
 )
 from testpilot.core.plugin_base import IncompatiblePluginError, PluginBase
 from testpilot.core.prepared_run import PreparedRun
+from testpilot.core.role_plan import (
+    CaptureRolePlanRequest,
+    EffectiveRolePlan,
+    RolePlanIdentity,
+    RolePlanOptionRequest,
+    RolePlanProviderOption,
+)
 from testpilot.core.run_start_gate import (
     PrepareRunAfterCaptureContext,
     PrepareRunGateEvidence,
@@ -75,6 +82,11 @@ __all__ = [
     "IncompatiblePluginError",
     "PluginBase",
     "PreparedRun",
+    "CaptureRolePlanRequest",
+    "RolePlanOptionRequest",
+    "RolePlanIdentity",
+    "RolePlanProviderOption",
+    "EffectiveRolePlan",
     "PrepareRunAfterCaptureContext",
     "PrepareRunGateEvidence",
     "PrepareRunGateOutcome",

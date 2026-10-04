@@ -85,6 +85,35 @@ incomplete and suppress export; they never fall back to sequence zero or broaden
 the requested range. Legacy plugins with no required capability retain their
 prior lifecycle and best-effort behavior.
 
+## Neutral role-plan projection
+
+The API 1.6 candidate also exposes frozen `CaptureRolePlanRequest`,
+`RolePlanOptionRequest`, `RolePlanIdentity`, `RolePlanProviderOption`, and
+`EffectiveRolePlan` types. `PluginBase.capture_role_plan_request` defaults to
+`None` and is independent of `required_run_capabilities`; a generic strict
+capture capability does not imply any DUT, STA, or other role. `PreparedRun`
+has an optional `effective_role_plan` field at the end of its constructor so
+existing positional calls continue to work.
+
+`project_capture_role_plan()` consumes the exact already-loaded
+`TestbedConfig` object and projects only explicitly requested fields. A
+requested role requires a configured selector, expected device-by-id, and one
+unambiguous profile value; an optional configured serial port is copied only
+when present. Provider options are separate namespaced fields and are
+projected only when the host supplies a matching allowlist. The projection
+does not reload a file, read the current working directory, infer defaults,
+or query a broker. Nested option values are copied into immutable values.
+Physical-identity and provider-option digests are computed separately, and the
+overall digest binds both. Type representations do not display configured
+identity or option values.
+
+This additive type surface does not wire the request into the run lifecycle,
+create a provider contract, or establish physical capture binding or broker
+ownership. `PrepareRunAfterCaptureContext` remains exactly its existing three
+fields. Runtime freezing, drift checks, and backend proof require a later
+jointly reviewed task; until then these types are configuration projection
+only and do not make strict capture usable.
+
 ## Compatibility
 
 - API 1.4 and 1.5 plugins remain loadable on an API 1.6 host and take the legacy

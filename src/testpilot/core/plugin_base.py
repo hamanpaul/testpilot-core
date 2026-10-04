@@ -18,6 +18,7 @@ from testpilot.core.cleanup_result import (
     project_transport_evidence,
 )
 from testpilot.core.prepared_run import PreparedRun
+from testpilot.core.role_plan import CaptureRolePlanRequest
 from testpilot.core.run_start_gate import (
     PrepareRunAfterCaptureContext,
     PrepareRunGateResult,
@@ -47,6 +48,7 @@ class PluginBase(ABC):
 
     api_version: str | None = None
     required_run_capabilities: ClassVar[frozenset[RunCapability]] = frozenset()
+    capture_role_plan_request: ClassVar[CaptureRolePlanRequest | None] = None
 
     @property
     @abstractmethod
