@@ -77,6 +77,21 @@ def _cleanup_failure(status: str = "failed") -> dict[str, Any]:
     }
 
 
+def _wrapped_unknown_cleanup_failure() -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "reason_code": "restore_failed",
+        "comment": "restore did not verify",
+        "transport_result": {
+            "metadata": {
+                "outcome": "unknown",
+                "cmd_id": "receipt-1",
+                "api_key": "synthetic-secret-value",
+            }
+        },
+    }
+
+
 def _run_retry(plugin: _CleanupPlugin, *, max_attempts: int = 3):
     return ExecutionEngine({}).execute_with_retry(
         plugin=plugin,
@@ -87,6 +102,65 @@ def _run_retry(plugin: _CleanupPlugin, *, max_attempts: int = 3):
             "failure_policy": "retry_then_fail_and_continue",
         },
     )
+
+
+def test_normalizer_preserves_only_allowlisted_nested_uncertainty() -> None:
+    from testpilot.core.cleanup_result import normalize_cleanup_result
+
+    normalized = normalize_cleanup_result(_wrapped_unknown_cleanup_failure())
+
+    assert normalized is not None
+    assert normalized["status"] == "unknown"
+    assert normalized["reason_code"] == "cleanup_outcome_unknown"
+    assert normalized["transport_result"] == {
+        "outcome": "unknown",
+        "cmd_id": "receipt-1",
+    }
+    assert "synthetic-secret-value" not in str(normalized)
+
+
+def test_engine_wrapped_unknown_cleanup_is_terminal_and_core_stamped() -> None:
+    result = _run_retry(_CleanupPlugin(cleanup_result=_wrapped_unknown_cleanup_failure()))
+
+    assert result.verdict is False
+    assert result.diagnostic_status == "FailEnv"
+    assert result.abort_run is True
+    assert result.abort_reason == "cleanup_outcome_unknown"
+    assert result.attempts_used == 1
+    assert result.failure_snapshot["case_id"] == "D036"
+    assert result.failure_snapshot["attempt_index"] == 1
+    assert result.failure_snapshot["category"] == "environment"
+    assert result.failure_snapshot["reason_code"] == "cleanup_outcome_unknown"
+    assert result.failure_snapshot["cleanup_status"] == "unknown"
+    assert result.failure_snapshot["transport_result"] == {
+        "outcome": "unknown",
+        "cmd_id": "receipt-1",
+    }
+    assert "synthetic-secret-value" not in str(result.failure_snapshot)
+
+
+def test_direct_pipeline_wrapped_unknown_cleanup_is_terminal_and_core_stamped() -> None:
+    plugin = _CleanupPlugin(cleanup_result=_wrapped_unknown_cleanup_failure())
+
+    result = plugin.run_pipeline(
+        {"id": "D036", "steps": [{"id": "probe", "command": "read state"}]},
+        topology=None,
+    )
+
+    assert result["verdict"] is False
+    assert result["diagnostic_status"] == "FailEnv"
+    assert result["abort_run"] is True
+    assert result["abort_reason"] == "cleanup_outcome_unknown"
+    assert result["failure_snapshot"]["case_id"] == "D036"
+    assert result["failure_snapshot"]["attempt_index"] == 1
+    assert result["failure_snapshot"]["category"] == "environment"
+    assert result["failure_snapshot"]["reason_code"] == "cleanup_outcome_unknown"
+    assert result["failure_snapshot"]["cleanup_status"] == "unknown"
+    assert result["transport_result"] == {
+        "outcome": "unknown",
+        "cmd_id": "receipt-1",
+    }
+    assert "synthetic-secret-value" not in str(result)
 
 
 @pytest.mark.parametrize("plugin_api", ["1.4", "1.5"])

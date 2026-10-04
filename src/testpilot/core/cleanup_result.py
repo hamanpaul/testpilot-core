@@ -174,6 +174,36 @@ def _project_transport_result(value: Any) -> dict[str, Any] | None:
     return projected
 
 
+def _project_wrapped_transport_result(value: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Flatten known receipt wrappers while retaining only allowlisted fields."""
+    pending: list[Mapping[str, Any]] = [value]
+    seen: set[int] = set()
+    projected_evidence: dict[str, Any] = {}
+    while pending:
+        source = pending.pop(0)
+        if id(source) in seen:
+            continue
+        seen.add(id(source))
+        projected = _project_transport_result(source)
+        if projected is None:
+            return None
+        for key, item in projected.items():
+            projected_evidence.setdefault(key, item)
+        try:
+            pending.extend(
+                item
+                for item in (
+                    source.get("result"),
+                    source.get("transport_result"),
+                    source.get("metadata"),
+                )
+                if isinstance(item, Mapping)
+            )
+        except Exception:
+            return None
+    return projected_evidence
+
+
 def normalize_cleanup_result(value: Any) -> dict[str, Any] | None:
     """Return a safe terminal cleanup result, or ``None`` for legacy success.
 
@@ -204,13 +234,17 @@ def normalize_cleanup_result(value: Any) -> dict[str, Any] | None:
     ):
         return dict(_INVALID_RESULT)
 
+    if not isinstance(raw_transport_result, Mapping):
+        return dict(_INVALID_RESULT)
+    # Inspect wrapper metadata before the projection discards those keys, then
+    # retain only the known scalar receipt fields from recognized wrappers.
+    unknown_transport_outcome = has_unknown_transport_outcome(raw_transport_result)
     try:
-        transport_result = _project_transport_result(raw_transport_result)
+        transport_result = _project_wrapped_transport_result(raw_transport_result)
     except Exception:
         return dict(_INVALID_RESULT)
     if transport_result is None:
         return dict(_INVALID_RESULT)
-    unknown_transport_outcome = has_unknown_transport_outcome(transport_result)
     return {
         "status": "unknown" if status == "unknown" or unknown_transport_outcome else status,
         "reason_code": (
