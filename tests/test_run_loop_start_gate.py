@@ -21,6 +21,17 @@ from testpilot.core.run_start_gate import (
     PrepareRunGateOutcome,
     PrepareRunGateResult,
     RunCapability,
+    StrictCaptureProviderAdmission,
+    StrictCaptureProviderOutcome,
+)
+from testpilot.core.role_plan import CaptureRolePlanRequest
+from testpilot.core.testbed_config import TestbedConfig
+from testpilot.runtime.run_backend import RunHandle
+from testpilot.runtime.strict_capture import (
+    StrictCaptureError,
+    StrictCaptureHarvest,
+    StrictCaptureHarvestStatus,
+    StrictCapturePosition,
 )
 from testpilot.core.usage_ledger import UsageLedger
 
@@ -46,6 +57,7 @@ class _Plugin:
     version = "0.1.0"
     api_version = "1.6"
     required_run_capabilities = frozenset({RunCapability.STRICT_CAPTURE_BINDING})
+    capture_role_plan_request = CaptureRolePlanRequest(roles=("dut",))
 
     def __init__(self, events: list[str], gate_result: Any = None) -> None:
         self.events = events
@@ -118,6 +130,34 @@ class _Backend:
         self.events = events
         self.markers = list(markers)
         self.context = context
+        self.handle: RunHandle | None = None
+        self._position = 0
+
+    def strict_capture_preflight(
+        self,
+        run_id: str,
+        config: Any,
+        request: Any,
+        plan: Any,
+    ) -> StrictCaptureProviderAdmission:
+        del run_id, config, request, plan
+        self.events.append("strict_capture_preflight")
+        return StrictCaptureProviderAdmission(StrictCaptureProviderOutcome.SUPPORTED)
+
+    def begin_strict_capture(
+        self,
+        run_id: str,
+        config: Any,
+        request: Any,
+        plan: Any,
+    ) -> RunHandle:
+        del config, request, plan
+        self.events.append("begin_strict_capture")
+        marker = self.markers.pop(0) if self.markers else 99
+        if isinstance(marker, BaseException):
+            raise StrictCaptureError("capture_begin_unknown", operation_uncertain=True)
+        self.handle = RunHandle(run_id=run_id, seq_start=marker)
+        return self.handle
 
     def mark_position(self, handle: Any) -> Any:
         del handle
@@ -142,6 +182,70 @@ class _Backend:
             capture_binding_id="fake-bound-capture",
         )
 
+    def checkpoint_strict_capture(self, handle: Any) -> StrictCapturePosition:
+        assert handle is self.handle
+        self.events.append("checkpoint_strict_capture")
+        marker = self.markers.pop(0) if self.markers else 99
+        if isinstance(marker, BaseException):
+            raise StrictCaptureError("capture_checkpoint_unknown", operation_uncertain=True)
+        self._position += 1
+        return StrictCapturePosition(marker, f"position{self._position}")
+
+    def harvest_strict_for_handle(
+        self,
+        handle: Any,
+        artifact_dir: Any,
+        case_results: Any,
+        case_seq_ranges: Any,
+    ) -> StrictCaptureHarvest:
+        del artifact_dir, case_results
+        assert handle is self.handle
+        self.events.append("harvest_strict_for_handle")
+        start = handle.seq_start
+        if type(start) is not int or start < 0:
+            return StrictCaptureHarvest(
+                StrictCaptureHarvestStatus.INCOMPLETE,
+                "run_start_marker_invalid",
+            )
+        marker = self.markers.pop(0) if self.markers else 99
+        if isinstance(marker, BaseException) or type(marker) is not int or marker < start:
+            return StrictCaptureHarvest(
+                StrictCaptureHarvestStatus.INCOMPLETE,
+                "run_end_marker_invalid",
+                start,
+                None,
+            )
+        for bounds in case_seq_ranges.values():
+            before = bounds.get("seq_start")
+            after = bounds.get("seq_end")
+            if (
+                type(before) is not int
+                or type(after) is not int
+                or before < start
+                or after < before
+                or after > marker
+            ):
+                return StrictCaptureHarvest(
+                    StrictCaptureHarvestStatus.INCOMPLETE,
+                    "case_sequence_range_invalid",
+                    start,
+                    marker,
+                )
+        return StrictCaptureHarvest(
+            StrictCaptureHarvestStatus.COMPLETE,
+            "capture_complete",
+            start,
+            marker,
+        )
+
+    def release_strict_capture(self, handle: Any) -> None:
+        assert handle is self.handle
+        self.events.append("release_strict_capture")
+
+    def cancel_strict_capture_preflight(self, run_id: str) -> None:
+        del run_id
+        self.events.append("cancel_strict_capture_preflight")
+
 
 class _BackendWithoutStrictContext:
     def __init__(self, events: list[str]) -> None:
@@ -151,6 +255,13 @@ class _BackendWithoutStrictContext:
         del handle
         self.events.append("mark_position")
         return 0
+
+
+class _MalformedPositionBackend(_Backend):
+    def checkpoint_strict_capture(self, handle: Any) -> Any:
+        assert handle is self.handle
+        self.events.append("checkpoint_strict_capture")
+        return SimpleNamespace(sequence=-1, position_token="malformed")
 
 
 class _RunnerSelector:
@@ -208,7 +319,17 @@ class _Orchestrator:
     def __init__(self, root: Path, plugin: _Plugin, events: list[str], markers: list[Any]) -> None:
         self.root = root
         self.plugins_dir = root / "plugins"
-        self.config = {}
+        config_path = root / "testbed.yaml"
+        config_path.write_text(
+            "testbed:\n"
+            "  devices:\n"
+            "    dut:\n"
+            "      selector: COM0\n"
+            "      expected_device_by_id: /dev/fake-dut\n"
+            "      profile: generic-console\n",
+            encoding="utf-8",
+        )
+        self.config = TestbedConfig(config_path)
         self.loader = _Loader(plugin, events)
         self.run_backend = _Backend(events, markers)
         self.run_handle = None
@@ -335,6 +456,7 @@ def test_missing_strict_run_start_marker_aborts_before_gate_version_and_cases(
     assert "prepare_run_after_capture" not in events
     assert "capture_dut_firmware_version" not in events
     assert not any(event.startswith("execute:") for event in events)
+    assert "harvest_strict_for_handle" in events
     assert "stop_run_capture" not in events
     assert payload.get("case_rows", []) == []
 
@@ -354,9 +476,9 @@ def test_strict_run_start_marker_exception_is_terminal_without_cleanup_io(
     payload = run_loop.run(orchestrator, "fake", ["D001"], None)
 
     assert payload["status"] == "aborted"
-    assert payload["run_abort"]["reason_code"] == "run_start_marker_unavailable"
+    assert payload["run_abort"]["reason_code"] == "capture_begin_unknown"
     assert payload["run_abort"]["unexecuted_case_ids"] == ["D001"]
-    assert payload["run_abort"]["capture_status"] == "incomplete"
+    assert payload["run_abort"]["capture_status"] == "unknown"
     assert "private marker failure" not in Path(payload["run_abort_path"]).read_text(
         encoding="utf-8"
     )
@@ -376,21 +498,22 @@ def test_strict_capture_setup_exception_is_terminal_without_followup_io(
     plugin = _Plugin(events)
     orchestrator = _Orchestrator(tmp_path, plugin, events, markers=[0])
 
-    def fail_during_setup(run_id: str) -> None:
-        events.append("start_run_capture")
+    def fail_during_setup(run_id: str, config: Any, request: Any, plan: Any) -> None:
+        del config, request, plan
+        events.append("begin_strict_capture")
         if partial_binding:
             orchestrator.run_handle = object()
-        raise RuntimeError("private partial capture setup detail")
+        raise StrictCaptureError("capture_begin_unknown", operation_uncertain=True)
 
-    orchestrator._start_run_capture = fail_during_setup
+    orchestrator.run_backend.begin_strict_capture = fail_during_setup
 
     payload = run_loop.run(orchestrator, "fake", ["D002"], None)
 
     assert payload["status"] == "aborted"
-    assert payload["run_abort"]["reason_code"] == "capture_setup_failed"
+    assert payload["run_abort"]["reason_code"] == "capture_begin_unknown"
     assert payload["run_abort"]["unexecuted_case_ids"] == ["D002"]
-    assert payload["run_abort"]["capture_status"] == "incomplete"
-    assert "private partial capture setup detail" not in Path(
+    assert payload["run_abort"]["capture_status"] == "unknown"
+    assert "private partial capture detail" not in Path(
         payload["run_abort_path"]
     ).read_text(encoding="utf-8")
     assert "mark_position" not in events
@@ -399,6 +522,7 @@ def test_strict_capture_setup_exception_is_terminal_without_followup_io(
     assert not any(event.startswith("execute:") for event in events)
     assert "stop_run_capture" not in events
     assert "export_run_logs" not in events
+    assert events.count("cancel_strict_capture_preflight") == 1
 
 
 def test_strict_no_io_selection_aborts_without_capture_or_case_execution(
@@ -420,7 +544,7 @@ def test_strict_no_io_selection_aborts_without_capture_or_case_execution(
     assert payload["status"] == "aborted"
     assert payload["run_abort"]["reason_code"] == "required_capture_disabled"
     assert payload["run_abort"]["unexecuted_case_ids"] == ["D002"]
-    assert "start_run_capture" not in events
+    assert "begin_strict_capture" not in events
     assert "prepare_run_after_capture" not in events
     assert "capture_dut_firmware_version" not in events
     assert not any(event.startswith("execute:") for event in events)
@@ -441,6 +565,7 @@ def test_strict_capture_context_must_match_actual_run_and_marker(tmp_path: Path)
     assert payload["run_abort"]["unexecuted_case_ids"] == ["D001"]
     assert "prepare_run_after_capture" not in events
     assert "capture_dut_firmware_version" not in events
+    assert "harvest_strict_for_handle" in events
     assert "stop_run_capture" not in events
     assert "export_run_logs" not in events
 
@@ -488,8 +613,26 @@ def test_zero_start_marker_and_accepted_gate_precede_version_and_cases(tmp_path:
     assert events.index("prepare_run_after_capture") < events.index("capture_dut_firmware_version")
     assert events.index("capture_dut_firmware_version") < events.index("select_runner:D001")
     assert payload["artifacts"]["run_start_gate"]["reason_code"] == "identity_verified"
-    assert orchestrator.export_requests[0]["run_seq_start"] == 0
-    assert orchestrator.export_requests[0]["run_seq_end"] == 0
+    assert payload["artifacts"]["core_run_capture"]["run_seq_start"] == 0
+    assert payload["artifacts"]["core_run_capture"]["run_seq_end"] == 0
+    assert orchestrator.export_requests == []
+
+
+def test_malformed_case_checkpoint_stops_before_executing_case(tmp_path: Path) -> None:
+    events: list[str] = []
+    accepted = PrepareRunGateResult(PrepareRunGateOutcome.ACCEPTED, "identity_verified")
+    plugin = _Plugin(events, accepted)
+    orchestrator = _Orchestrator(tmp_path, plugin, events, markers=[0])
+    orchestrator.run_backend = _MalformedPositionBackend(events, markers=[0])
+
+    payload = run_loop.run(orchestrator, "fake", ["D001"], None)
+
+    assert payload["status"] == "aborted"
+    assert payload["run_abort"]["reason_code"] == "capture_checkpoint_invalid"
+    assert payload["run_abort"]["unexecuted_case_ids"] == ["D001"]
+    assert not any(event.startswith("execute:") for event in events)
+    assert "stop_run_capture" not in events
+    assert "export_run_logs" not in events
 
 
 @pytest.mark.parametrize(
@@ -519,8 +662,10 @@ def test_invalid_strict_start_marker_is_terminal_before_capture_context_and_targ
     assert "prepare_run_after_capture" not in events
     assert "capture_dut_firmware_version" not in events
     assert not any(event.startswith("execute:") for event in events)
+    assert "harvest_strict_for_handle" in events
     assert "stop_run_capture" not in events
     assert "export_run_logs" not in events
+    assert "release_strict_capture" in events
 
 
 @pytest.mark.parametrize(
@@ -577,6 +722,8 @@ def test_nonaccepted_strict_gate_is_terminal_without_version_case_or_cleanup_io(
     assert not any(event.startswith("execute:") for event in events)
     assert "stop_run_capture" not in events
     assert "export_run_logs" not in events
+    assert "harvest_strict_for_handle" in events
+    assert "release_strict_capture" in events
     abort_artifact = json.loads(Path(payload["run_abort_path"]).read_text(encoding="utf-8"))
     assert abort_artifact["unexecuted_case_ids"] == ["D002"]
     if isinstance(gate_result, PrepareRunGateResult) and hasattr(gate_result, "reason_code"):
@@ -604,7 +751,7 @@ def test_accepted_outcome_with_unknown_subcheck_is_not_accepted(tmp_path: Path) 
     assert "capture_dut_firmware_version" not in events
 
 
-def test_invalid_strict_end_marker_marks_capture_incomplete_without_export(tmp_path: Path) -> None:
+def test_invalid_strict_end_marker_aborts_without_export(tmp_path: Path) -> None:
     events: list[str] = []
     accepted = PrepareRunGateResult(PrepareRunGateOutcome.ACCEPTED, "identity_verified")
     plugin = _Plugin(events, accepted)
@@ -612,19 +759,21 @@ def test_invalid_strict_end_marker_marks_capture_incomplete_without_export(tmp_p
 
     payload = run_loop.run(orchestrator, "fake", ["D001"], None)
 
-    assert payload["status"] == "ok"
+    assert payload["status"] == "aborted"
     assert payload["case_rows"] == ["D001"]
     assert payload["artifacts"]["core_run_capture"] == {
         "status": "incomplete",
         "reason_code": "run_end_marker_invalid",
         "run_seq_start": 0,
         "run_seq_end": None,
+        "record_count": 0,
+        "page_count": 0,
     }
     assert orchestrator.export_requests == []
-    assert "stop_run_capture" in events
+    assert "stop_run_capture" not in events
 
 
-def test_invalid_strict_case_range_marks_capture_incomplete_without_export(
+def test_invalid_strict_case_range_aborts_without_export(
     tmp_path: Path,
 ) -> None:
     events: list[str] = []
@@ -634,18 +783,20 @@ def test_invalid_strict_case_range_marks_capture_incomplete_without_export(
         tmp_path,
         plugin,
         events,
-        markers=[0, None, 1, 2],
+        markers=[0, 2, 1, 2],
     )
 
     payload = run_loop.run(orchestrator, "fake", ["D001"], None)
 
-    assert payload["status"] == "ok"
+    assert payload["status"] == "aborted"
     assert payload["case_rows"] == ["D001"]
     assert payload["artifacts"]["core_run_capture"] == {
         "status": "incomplete",
         "reason_code": "case_sequence_range_invalid",
         "run_seq_start": 0,
         "run_seq_end": 2,
+        "record_count": 0,
+        "page_count": 0,
     }
     assert orchestrator.export_requests == []
 

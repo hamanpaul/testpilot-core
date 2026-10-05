@@ -39,6 +39,17 @@ _CAPABILITY_REJECTION_REASONS = frozenset(
     }
 )
 
+_STRICT_PROVIDER_REJECTION_REASONS = frozenset(
+    {
+        "capture_provider_unsupported",
+        "capture_provider_unavailable",
+        "capture_provider_protocol_invalid",
+        "capture_endpoint_invalid",
+        "capture_lease_busy",
+        "capture_role_plan_invalid",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class RunCapabilityAdmissionResult:
@@ -55,6 +66,50 @@ class RunCapabilityAdmissionResult:
                 raise ValueError("capability admission reason is invalid")
         elif self.reason_code is not None:
             raise ValueError("only rejected capability admission has a reason")
+
+
+class StrictCaptureProviderOutcome(str, Enum):
+    """Finite outcome of the Core's API 1.1 provider preflight."""
+
+    SUPPORTED = "supported"
+    REJECTED = "rejected"
+
+
+@dataclass(frozen=True, slots=True)
+class StrictCaptureProviderAdmission:
+    """Sanitized result from the host-owned, read-only provider preflight."""
+
+    outcome: StrictCaptureProviderOutcome
+    reason_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.outcome) is not StrictCaptureProviderOutcome:
+            raise ValueError("strict capture provider outcome is invalid")
+        if self.outcome is StrictCaptureProviderOutcome.REJECTED:
+            if (
+                type(self.reason_code) is not str
+                or self.reason_code not in _STRICT_PROVIDER_REJECTION_REASONS
+            ):
+                raise ValueError("strict capture provider reason is invalid")
+        elif self.reason_code is not None:
+            raise ValueError("supported provider admission cannot have a reason")
+
+
+def is_valid_strict_capture_provider_admission(value: object) -> bool:
+    """Validate the finite provider preflight result at the Core boundary."""
+    if type(value) is not StrictCaptureProviderAdmission:
+        return False
+    try:
+        if type(value.outcome) is not StrictCaptureProviderOutcome:
+            return False
+        if value.outcome is StrictCaptureProviderOutcome.SUPPORTED:
+            return value.reason_code is None
+        return (
+            type(value.reason_code) is str
+            and value.reason_code in _STRICT_PROVIDER_REJECTION_REASONS
+        )
+    except Exception:
+        return False
 
 
 def admit_run_capabilities(
@@ -110,12 +165,20 @@ def admit_run_capabilities(
             RunCapabilityAdmissionOutcome.REJECTED,
             "post_capture_gate_missing",
         )
-    provider = inspect.getattr_static(
-        type(run_backend),
+    backend_type = type(run_backend)
+    strict_backend_methods = (
+        "strict_capture_preflight",
+        "begin_strict_capture",
         "get_strict_capture_context",
-        None,
+        "checkpoint_strict_capture",
+        "harvest_strict_for_handle",
+        "release_strict_capture",
+        "cancel_strict_capture_preflight",
     )
-    if not callable(provider):
+    if any(
+        not callable(inspect.getattr_static(backend_type, method_name, None))
+        for method_name in strict_backend_methods
+    ):
         return RunCapabilityAdmissionResult(
             RunCapabilityAdmissionOutcome.REJECTED,
             "capture_capability_unavailable",

@@ -1,7 +1,7 @@
 # Issue153 P1 Core Task1: SDK run-start gate
 
 > Date: 2026-10-04
-> Status: Core lifecycle contract prototype; independent review required
+> Status: SDK lifecycle and opt-in API 1.1 Core consumer; live deployment remains unqualified
 > Scope: `testpilot-core` only, based on `ee4743305d8b0a6c82ded2e8acbb2cf977428dc0`
 
 ## Goal
@@ -58,39 +58,37 @@ evidence item is not accepted.
 
 ```text
 host capability preflight
-  -> Core-owned loop
-  -> bind selected testbed config
-  -> bind project root
-  -> pure prepare selection
-  -> strict capture setup and handle binding
-  -> validate run-start marker
-  -> build context from active capture handle
-  -> prepare_run_after_capture
+  -> explicit API 1.1 provider capability preflight
+  -> bind selected testbed config and project root
+  -> pure prepare selection and freeze requested role plan
+  -> begin the capture binding on the explicit provider
+  -> build context from the same active handle
+  -> prepare_run_after_capture and recheck role-plan identity
   -> firmware-version capture
-  -> case runner and execution
-  -> validate end marker and case ranges before bounded export
+  -> per-case checkpoint, execution, and checkpoint
+  -> one end mark, fixed-range validation, finish, complete-only export
 ```
 
-The strict capability check occurs before plugin preparation. During a run,
-capture setup and run-start marker errors are sanitized into terminal aborts.
-`None`, booleans, negative values, and malformed markers are invalid. Gate
-exceptions, missing or malformed results, and failed/unknown results also produce
-terminal aborts. These artifacts record the reason, finite outcome, capture
-status, selected case IDs, and unexecuted case IDs; they report zero executed
-cases and never synthesize Pass/Fail rows.
+Public `Orchestrator.run()` performs static SDK admission before plugin
+configuration binding, custom runner construction, or preparation. The
+Core-owned loop makes a single read-only provider capability request before
+plugin binding or preparation. It requires API 1.1 and the checkpoint feature;
+unsupported or malformed providers produce a sanitized terminal abort before
+preparation. The loop re-projects the same requested plan around plugin
+callbacks and refuses any drift. Begin/context/gate failure stops before
+firmware-version capture and case work. Abort artifacts identify selected and
+unexecuted cases without inventing Pass/Fail rows.
 
-After strict startup uncertainty, Core does not continue to firmware-version
-capture, case runners, run-capture export, or capture teardown. This
-Task1 implementation has no strict production provider or bounded WAL harvest;
-unsupported backends abort before preparation. A separate capture task must
-provide the actual provider and bounded read-only harvest behavior before a
-strict production plugin can run.
-
-After accepted gate evidence, strict end-marker and per-case sequence ranges are
-validated before export. Invalid or reversed ranges mark `core_run_capture` as
-incomplete and suppress export; they never fall back to sequence zero or broaden
-the requested range. Legacy plugins with no required capability retain their
-prior lifecycle and best-effort behavior.
+After an accepted gate, every case is bracketed by read-only append-position
+checkpoints. A checkpoint uncertainty stops the run before a not-yet-started
+case or any later case. Core freezes one end mark, reads only the anchored
+start-to-end interval, verifies full global sequence coverage and every row,
+then finishes that same provider handle. It publishes logs and case line ranges
+only when the complete fixed interval and finish receipt validate; partial or
+unknown results carry bounded status metadata without case log attribution.
+Unknown one-shot completion permits status lookup for that exact operation ID
+only. Legacy plugins with no strict capability retain the prior setup, marker,
+export, teardown, and custom-runner behavior.
 
 ## Neutral role-plan projection
 
@@ -152,10 +150,58 @@ capability rejection before bind/factory, strict custom-runner rejection with a
 fake supported provider, the accepted Core-owned path, and legacy custom/direct
 controls.
 
-This specification and its tests establish only the SDK/Core lifecycle
-prototype. They do not establish production capture binding, plugin-side hybrid
-routing or identity verification, live hardware behavior, EIT results, or issue
-closure.
+This specification's synthetic provider tests establish the Core contract and
+consumer behavior. They do not establish the deployed EIT broker version,
+plugin-side hybrid routing or identity verification, live hardware behavior,
+EIT results, or issue closure.
+
+## API 1.1 strict capture consumer
+
+The Core now has a production consumer for the additive serialwrap capture
+binding API 1.1. It is opt-in through the existing SDK declaration: a plugin
+class must require `RunCapability.STRICT_CAPTURE_BINDING` and declare a static
+`CaptureRolePlanRequest`. A generic strict capability does not imply DUT, STA,
+or any other role. Core projects only the requested roles from the already
+loaded `TestbedConfig`, checks the same frozen plan before and after plugin
+callbacks, and passes that same plan and configuration object to the backend.
+The three-field `PrepareRunAfterCaptureContext` remains unchanged.
+
+At the public `Orchestrator.run()` entry point, static capability admission
+still occurs before configuration binding, runner construction, or preparation.
+For an admitted strict plugin, the backend then resolves one explicit
+serialwrap endpoint and makes one read-only API 1.1 capability request before
+plugin binding or preparation. Unsupported, absent, malformed, or API 1.0-only
+providers stop the run before plugin preparation. There is no fallback to
+API 1.0 capture routes. The provider query does not start or attach a daemon,
+reset the WAL, probe target readiness, or issue target commands. Begin, each
+per-case position checkpoint, the single end mark, fixed-range pages, and finish
+all stay bound to that accepted plan and handle. Raw WAL rows and opaque
+provider tokens remain private to the backend.
+
+Case log intervals and DUT/STA log files are published only after every page,
+sequence, row envelope, payload length, CRC, epoch, binding token, terminal
+coverage assertion, and finish receipt validates. Incomplete or unknown
+harvests produce bounded status metadata and no case log-line attribution. A
+single metadata-only finish is allowed only after a well-formed, correctly
+anchored terminal range page explicitly reports an incomplete capture with
+`ok: true`, `complete: false`, `capture_status: incomplete`, no more page, and
+no next cursor. A malformed, nonterminal, wrong-anchor, capped, or timed-out
+range stops provider I/O without finish or status lookup; the range method is
+read-only and has no operation ID to reconcile. When a begin, checkpoint, mark,
+or finish result may have been applied but its completion is unknown, Core
+queries status only for that operation ID. It does not repeat the mutation or
+send later provider or target commands. Core always releases its local
+lease/maps in a `finally` path. These guarantees cover the broker's
+append-order evidence, not continuous physical identity or exclusive ownership
+of the UART.
+
+The API 1.1 consumer does not change normal-run defaults or the installed EIT
+broker. A plugin that does not opt into the strict capability continues on the
+legacy run path. The currently installed EIT broker is API 1.0-only, so a
+plugin that opts into strict capture against that broker will abort before
+plugin preparation with `capture_provider_unsupported`; it will not silently
+use the API 1.0 exporter. Passing synthetic provider tests is not live EIT or
+hardware qualification.
 
 ## Effective configuration delivery (#152 Core dependency)
 

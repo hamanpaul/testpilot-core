@@ -5,7 +5,12 @@ from typing import Any
 
 import pytest
 
-from testpilot.api import PluginBase, PrepareRunAfterCaptureContext, PrepareRunGateOutcome
+from testpilot.api import (
+    CaptureRolePlanRequest,
+    PluginBase,
+    PrepareRunAfterCaptureContext,
+    PrepareRunGateOutcome,
+)
 from testpilot.core.azure_auth import AzureAgentRuntime, AzureAgentState, AzureAgentStatus
 from testpilot.core.case_planning import CasePlanningResult
 from testpilot.core.execution_engine import RetryResult
@@ -16,8 +21,17 @@ from testpilot.core.run_start_gate import (
     PrepareRunGateEvidence,
     PrepareRunGateResult,
     RunCapability,
+    StrictCaptureProviderAdmission,
+    StrictCaptureProviderOutcome,
 )
+from testpilot.core.testbed_config import TestbedConfig
 from testpilot.core.orchestrator import Orchestrator
+from testpilot.runtime.run_backend import RunHandle
+from testpilot.runtime.strict_capture import (
+    StrictCaptureHarvest,
+    StrictCaptureHarvestStatus,
+    StrictCapturePosition,
+)
 
 
 _CASE = {
@@ -87,6 +101,29 @@ class _SupportedBackend:
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.markers = iter([0, 0, 1, 2])
+        self.positions = iter([0, 1])
+
+    def strict_capture_preflight(
+        self,
+        run_id: str,
+        config: Any,
+        request: Any,
+        role_plan: Any,
+    ) -> StrictCaptureProviderAdmission:
+        del run_id, config, request, role_plan
+        self.events.append("strict_capture_preflight")
+        return StrictCaptureProviderAdmission(StrictCaptureProviderOutcome.SUPPORTED)
+
+    def begin_strict_capture(
+        self,
+        run_id: str,
+        config: Any,
+        request: Any,
+        role_plan: Any,
+    ) -> RunHandle:
+        del config, request, role_plan
+        self.events.append("begin_strict_capture")
+        return RunHandle(run_id=run_id, seq_start=0, meta={"strict_capture": True})
 
     def mark_position(self, handle: Any) -> int:
         del handle
@@ -106,6 +143,51 @@ class _SupportedBackend:
             run_id=run_id,
             start_sequence=run_seq_start,
             capture_binding_id="fake-bound-capture",
+        )
+
+    def checkpoint_strict_capture(self, handle: Any) -> StrictCapturePosition:
+        del handle
+        self.events.append("checkpoint_strict_capture")
+        sequence = next(self.positions)
+        return StrictCapturePosition(sequence, f"position{sequence}")
+
+    def harvest_strict_for_handle(
+        self,
+        handle: Any,
+        artifact_dir: Any,
+        case_results: Any,
+        case_seq_ranges: Any,
+    ) -> StrictCaptureHarvest:
+        del handle, artifact_dir, case_results, case_seq_ranges
+        self.events.append("harvest_strict_for_handle")
+        return StrictCaptureHarvest(
+            StrictCaptureHarvestStatus.COMPLETE,
+            "capture_complete",
+        )
+
+    def release_strict_capture(self, handle: Any) -> None:
+        del handle
+        self.events.append("release_strict_capture")
+
+    def cancel_strict_capture_preflight(self, run_id: str) -> None:
+        del run_id
+        self.events.append("cancel_strict_capture_preflight")
+
+
+class _Api10CaptureBackend(_SupportedBackend):
+    def strict_capture_preflight(
+        self,
+        run_id: str,
+        config: Any,
+        request: Any,
+        role_plan: Any,
+    ) -> StrictCaptureProviderAdmission:
+        del run_id, config, request
+        assert [role.role for role in role_plan.roles] == ["dut"]
+        self.events.append("strict_capture_preflight")
+        return StrictCaptureProviderAdmission(
+            StrictCaptureProviderOutcome.REJECTED,
+            "capture_provider_unsupported",
         )
 
 
@@ -136,6 +218,7 @@ def _plugin_type(
     class Plugin(PluginBase):
         api_version = "1.6"
         required_run_capabilities = capabilities
+        capture_role_plan_request = CaptureRolePlanRequest(roles=("dut",))
 
         def __init__(self) -> None:
             events.append("plugin_init")
@@ -241,7 +324,15 @@ def _make_orchestrator(
     events: list[str],
 ) -> Orchestrator:
     config_path = tmp_path / "testbed.yaml"
-    config_path.write_text("testbed: {}\n", encoding="utf-8")
+    config_path.write_text(
+        "testbed:\n"
+        "  devices:\n"
+        "    dut:\n"
+        "      selector: COM0\n"
+        "      expected_device_by_id: /dev/fake-dut\n"
+        "      profile: generic-console\n",
+        encoding="utf-8",
+    )
     orchestrator = Orchestrator(
         project_root=tmp_path,
         plugins_dir=tmp_path / "plugins",
@@ -285,20 +376,16 @@ def _configure_core_run(
     orchestrator._analyze_run = lambda **kwargs: RunAnalysisResult(status="complete")
 
 
-def test_public_entry_rejects_strict_plugin_without_production_provider_before_bind_or_factory(
+def test_public_entry_rejects_strict_custom_runner_before_bind_or_factory(
     tmp_path: Path,
 ) -> None:
     events: list[str] = []
     plugin_type = _plugin_type(events, custom_runner=True)
     orchestrator = _make_orchestrator(tmp_path, plugin_type, events)
-    assert not callable(
-        getattr(type(orchestrator.run_backend), "get_strict_capture_context", None)
-    )
-
     payload = orchestrator.run("strict", ["D001"])
 
     assert payload.get("status") == "aborted", (payload, events)
-    assert payload["run_abort"]["reason_code"] == "capture_capability_unavailable"
+    assert payload["run_abort"]["reason_code"] == "strict_custom_runner_unsupported"
     assert payload["run_abort"]["unexecuted_case_ids"] == ["D001"]
     assert payload["run_abort"]["executed_case_count"] == 0
     assert "case_rows" not in payload
@@ -357,6 +444,43 @@ def test_public_entry_uses_core_context_gate_for_supported_strict_plugin(
     )
     assert events.count("plugin_init") == 1
     assert "run_start_gate" in payload["artifacts"]
+    assert "begin_strict_capture" in events
+    assert events.count("checkpoint_strict_capture") == 2
+    assert "harvest_strict_for_handle" in events
+    assert "release_strict_capture" in events
+    assert "start_run_capture" not in events
+    assert "mark_position" not in events
+    assert "export_run_logs" not in events
+    assert "stop_run_capture" not in events
+
+
+def test_public_entry_rejects_api10_provider_before_plugin_preparation(
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+    plugin_type = _plugin_type(events)
+    plugin_type.capture_role_plan_request = CaptureRolePlanRequest(roles=("dut",))
+    orchestrator = _make_orchestrator(tmp_path, plugin_type, events)
+    config_path = tmp_path / "testbed.yaml"
+    config_path.write_text(
+        "testbed:\n"
+        "  devices:\n"
+        "    DUT:\n"
+        "      selector: COM0\n"
+        "      expected_device_by_id: /dev/fake-dut\n"
+        "      profile: generic-console\n",
+        encoding="utf-8",
+    )
+    orchestrator.config = TestbedConfig(config_path)
+    _configure_core_run(orchestrator, events)
+    orchestrator.run_backend = _Api10CaptureBackend(events)
+
+    payload = orchestrator.run("strict", ["D001"])
+
+    assert payload.get("status") == "aborted", (payload, events)
+    assert payload["run_abort"]["reason_code"] == "capture_provider_unsupported"
+    assert payload["run_abort"]["unexecuted_case_ids"] == ["D001"]
+    assert events == ["entry_point_load", "plugin_init", "strict_capture_preflight"]
 
 
 def test_direct_strict_run_pipeline_rejects_before_setup_step_cleanup_or_verdict() -> None:

@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from testpilot.api import CaptureRolePlanRequest
 from testpilot.core.azure_auth import AzureAgentRuntime, AzureAgentState, AzureAgentStatus
 from testpilot.core.orchestrator import Orchestrator
 from testpilot.core.plugin_base import PluginBase
@@ -18,6 +19,8 @@ from testpilot.core.run_start_gate import (
     RunCapability,
 )
 from testpilot.core.testbed_config import TestbedConfig
+from testpilot.runtime import serialwrap_backend as backend_module
+from testpilot.runtime.serialwrap_log_binding import SerialwrapLogBinding
 
 
 class _StopBeforeCapture(Exception):
@@ -67,6 +70,7 @@ class _Plugin(PluginBase):
 
 class _StrictPlugin(_Plugin):
     required_run_capabilities = frozenset({RunCapability.STRICT_CAPTURE_BINDING})
+    capture_role_plan_request = CaptureRolePlanRequest(roles=("dut",))
 
     def prepare_run_after_capture(
         self,
@@ -306,8 +310,31 @@ def test_direct_run_loop_binds_exact_config_before_plugin_preparation(
 def test_unsupported_strict_plugin_is_rejected_before_config_binding(
     tmp_path: Path,
     entry: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
+    provider_calls: list[str] = []
+
+    class UnsupportedApi10Client:
+        def __init__(self, binary: str, socket: str) -> None:
+            assert binary == "/fake/serialwrap"
+            assert socket == "unix:///tmp/testpilot-fake.sock"
+
+        def call(self, action: str, payload: dict[str, Any]) -> dict[str, Any]:
+            provider_calls.append(action)
+            assert action == "capabilities"
+            assert payload == {}
+            return {
+                "ok": True,
+                "features": {
+                    "capture_binding_provider": {
+                        "feature": "capture_binding_provider",
+                        "api_version": "1.0",
+                        "schema_version": "1",
+                        "supported": True,
+                    }
+                },
+            }
 
     class Plugin(_StrictPlugin):
         def bind_testbed_config(self, topology: Any) -> None:
@@ -321,7 +348,36 @@ def test_unsupported_strict_plugin_is_rejected_before_config_binding(
 
     plugin = Plugin()
     if entry == "public":
-        orchestrator = _make_orchestrator(tmp_path, plugin)
+        config_path = tmp_path / "selected-strict-testbed.yaml"
+        config_path.write_text(
+            "testbed:\n"
+            "  name: selected\n"
+            "  devices:\n"
+            "    dut:\n"
+            "      transport: serial\n"
+            "      selector: COM0\n"
+            "      expected_device_by_id: /dev/fake-dut\n"
+            "      profile: generic-console\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            backend_module,
+            "resolve_serialwrap_log_binding",
+            lambda *args, **kwargs: SerialwrapLogBinding(
+                enabled=True,
+                binary="/fake/serialwrap",
+                socket="unix:///tmp/testpilot-fake.sock",
+                binary_source="device_config",
+                socket_source="device_config",
+                device_count=1,
+            ),
+        )
+        monkeypatch.setattr(
+            backend_module,
+            "SerialwrapCaptureBindingClient",
+            UnsupportedApi10Client,
+        )
+        orchestrator = _make_orchestrator(tmp_path, plugin, config_path=config_path)
         payload = orchestrator.run("fake", ["D001"])
     else:
         orchestrator = SimpleNamespace(
@@ -334,9 +390,15 @@ def test_unsupported_strict_plugin_is_rejected_before_config_binding(
         payload = run_core_loop(orchestrator, "fake", ["D001"], None)
 
     assert payload["status"] == "aborted"
-    assert payload["run_abort"]["reason_code"] == "capture_capability_unavailable"
+    expected_reason = (
+        "capture_provider_unsupported"
+        if entry == "public"
+        else "capture_capability_unavailable"
+    )
+    assert payload["run_abort"]["reason_code"] == expected_reason
     assert payload["run_abort"]["capture_status"] == "not_started"
     assert events == []
+    assert provider_calls == (["capabilities"] if entry == "public" else [])
 
 
 def test_public_binding_exception_is_sanitized_before_runner_or_io(
