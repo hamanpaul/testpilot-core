@@ -327,6 +327,19 @@ class _OpaqueTier1Plugin(_LivePlugin):
         raise RuntimeError("opaque-tier1-secret-sentinel")
 
 
+class _UnreadableProjectedMapping(dict):
+    def items(self):
+        raise RuntimeError("private-projected-mapping-canary")
+
+
+class _UnreadableProjectedValue:
+    def __str__(self):
+        raise RuntimeError("private-projected-value-canary")
+
+    def __eq__(self, other):
+        raise RuntimeError("private-projected-identity-canary")
+
+
 class TestRuntimeRemediationCoordinator:
     def _ctx(self, hook_name: str, *, attempt_index: int = 1) -> HookContext:
         return HookContext(
@@ -455,6 +468,9 @@ class TestRuntimeRemediationCoordinator:
             {"case_id": "D001", "attempt_index": True, "category": "environment"},
             {"case_id": "D001", "attempt_index": "1", "category": "environment"},
             {"case_id": "D001", "attempt_index": 1, "evidence": None},
+            _UnreadableProjectedMapping(),
+            {"case_id": "D001", "attempt_index": 1, "category": _UnreadableProjectedValue()},
+            {"case_id": _UnreadableProjectedValue(), "attempt_index": 1},
         ],
     )
     def test_invalid_present_projection_never_falls_back_to_private_case(
