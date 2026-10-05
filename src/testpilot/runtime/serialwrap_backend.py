@@ -268,7 +268,10 @@ def _capture_record_identity(
 
 
 def _provider_error_is_unsupported(response: object) -> bool:
-    return type(response) is dict and response.get("error_code") in {
+    if type(response) is not dict:
+        return False
+    error_code = response.get("error_code")
+    return type(error_code) is str and error_code in {
         "CAPTURE_PROVIDER_UNSUPPORTED",
         "CAPTURE_ROLE_PLAN_INVALID",
     }
@@ -392,63 +395,67 @@ class SerialwrapBackend(RunBackend):
                 "capture_lease_busy",
             )
 
-        client = SerialwrapCaptureBindingClient(binding.binary, binding.socket)
+        preflight_stored = False
         try:
-            response = client.call("capabilities", {})
-        except StrictCaptureError:
-            _serialwrap_log.release(owner)
-            return StrictCaptureProviderAdmission(
-                StrictCaptureProviderOutcome.REJECTED,
-                "capture_provider_unavailable",
-            )
-        if _provider_error_is_unsupported(response) or (
-            type(response) is dict
-            and type(response.get("features")) is dict
-            and type(response["features"].get("capture_binding_provider")) is dict
-            and (
-                response["features"]["capture_binding_provider"].get("supported") is False
-                or response["features"]["capture_binding_provider"].get("api_version") == "1.0"
-            )
-        ):
-            _serialwrap_log.release(owner)
-            return StrictCaptureProviderAdmission(
-                StrictCaptureProviderOutcome.REJECTED,
-                "capture_provider_unsupported",
-            )
-        if not _valid_capability_response(response, len(plan.roles)):
-            _serialwrap_log.release(owner)
-            return StrictCaptureProviderAdmission(
-                StrictCaptureProviderOutcome.REJECTED,
-                "capture_provider_protocol_invalid",
-            )
-        limits = _capability_limits(response)
-        if not _valid_strict_plan_limits(plan, limits):
-            _serialwrap_log.release(owner)
-            return StrictCaptureProviderAdmission(
-                StrictCaptureProviderOutcome.REJECTED,
-                "capture_role_plan_invalid",
-            )
-        preflight = _StrictPreflight(
-            run_id=run_id,
-            config=config,
-            request=request,
-            plan=plan,
-            binding=binding,
-            client=client,
-            owner=owner,
-            limits=limits,
-        )
-        with self._strict_lock:
-            if run_id in self._strict_preflights or any(
-                record.run_id == run_id for record in self._strict_handles.values()
-            ):
-                _serialwrap_log.release(owner)
+            client = SerialwrapCaptureBindingClient(binding.binary, binding.socket)
+            try:
+                response = client.call("capabilities", {})
+            except StrictCaptureError:
                 return StrictCaptureProviderAdmission(
                     StrictCaptureProviderOutcome.REJECTED,
-                    "capture_lease_busy",
+                    "capture_provider_unavailable",
                 )
-            self._strict_preflights[run_id] = preflight
-        return StrictCaptureProviderAdmission(StrictCaptureProviderOutcome.SUPPORTED)
+            if _provider_error_is_unsupported(response) or (
+                type(response) is dict
+                and type(response.get("features")) is dict
+                and type(response["features"].get("capture_binding_provider")) is dict
+                and (
+                    response["features"]["capture_binding_provider"].get("supported") is False
+                    or response["features"]["capture_binding_provider"].get("api_version") == "1.0"
+                )
+            ):
+                return StrictCaptureProviderAdmission(
+                    StrictCaptureProviderOutcome.REJECTED,
+                    "capture_provider_unsupported",
+                )
+            if not _valid_capability_response(response, len(plan.roles)):
+                return StrictCaptureProviderAdmission(
+                    StrictCaptureProviderOutcome.REJECTED,
+                    "capture_provider_protocol_invalid",
+                )
+            limits = _capability_limits(response)
+            if not _valid_strict_plan_limits(plan, limits):
+                return StrictCaptureProviderAdmission(
+                    StrictCaptureProviderOutcome.REJECTED,
+                    "capture_role_plan_invalid",
+                )
+            preflight = _StrictPreflight(
+                run_id=run_id,
+                config=config,
+                request=request,
+                plan=plan,
+                binding=binding,
+                client=client,
+                owner=owner,
+                limits=limits,
+            )
+            admission = StrictCaptureProviderAdmission(
+                StrictCaptureProviderOutcome.SUPPORTED
+            )
+            with self._strict_lock:
+                if run_id in self._strict_preflights or any(
+                    record.run_id == run_id for record in self._strict_handles.values()
+                ):
+                    return StrictCaptureProviderAdmission(
+                        StrictCaptureProviderOutcome.REJECTED,
+                        "capture_lease_busy",
+                    )
+                self._strict_preflights[run_id] = preflight
+                preflight_stored = True
+            return admission
+        finally:
+            if not preflight_stored:
+                _serialwrap_log.release(owner)
 
     def begin_strict_capture(
         self,

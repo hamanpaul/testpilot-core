@@ -16,6 +16,8 @@ preparation.
 
 ### Fixed
 
+- Release the Core-local serialwrap logger lease when strict capability preflight rejects malformed provider replies or raises before admission.
+
 - Document the private hook-result projector carrier and cover accepted/unknown transport evidence first introduced by `post_case`, including run abort before later-case work.
 
 - Keep hook dispatch logs to fixed halt/failure status messages; advice and handler exception text remain available only through the projected control path.

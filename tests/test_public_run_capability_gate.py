@@ -17,6 +17,7 @@ from testpilot.core.execution_engine import RetryResult
 from testpilot.core.plugin_loader import PluginLoader
 from testpilot.core.prepared_run import PreparedRun
 from testpilot.core.run_analysis import RunAnalysisResult
+from testpilot.core.role_plan import project_capture_role_plan
 from testpilot.core.run_start_gate import (
     PrepareRunGateEvidence,
     PrepareRunGateResult,
@@ -27,6 +28,9 @@ from testpilot.core.run_start_gate import (
 from testpilot.core.testbed_config import TestbedConfig
 from testpilot.core.orchestrator import Orchestrator
 from testpilot.runtime.run_backend import RunHandle
+from testpilot.runtime import _serialwrap_log
+from testpilot.runtime import serialwrap_backend as backend_module
+from testpilot.runtime.serialwrap_log_binding import SerialwrapLogBinding
 from testpilot.runtime.strict_capture import (
     StrictCaptureHarvest,
     StrictCaptureHarvestStatus,
@@ -40,6 +44,58 @@ _CASE = {
     "steps": [{"id": "step1", "command": "synthetic target command"}],
     "pass_criteria": ["synthetic success"],
 }
+
+
+_API11_LIMITS = {
+    "max_roles": 32,
+    "max_request_bytes": 65_536,
+    "max_json_depth": 32,
+    "max_role_bytes": 256,
+    "max_selector_bytes": 16,
+    "max_expected_device_by_id_bytes": 4096,
+    "max_expected_profile_bytes": 128,
+    "max_serial_port_bytes": 4096,
+    "max_integer_digits": 16,
+    "max_range_integer": (1 << 63) - 1,
+    "max_page_records": 1000,
+    "max_page_bytes": 1_048_576,
+    "page_deadline_ms": 5000,
+    "max_capture_records": 100_000,
+    "max_capture_bytes": 64 * 1024 * 1024,
+    "max_record_bytes": 65_536,
+    "finish_deadline_ms": 45_000,
+    "max_operation_receipts": 128,
+    "max_terminal_receipts": 64,
+    "ttl_seconds": 86_400,
+}
+
+
+def _api11_capabilities() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "features": {
+            "capture_binding_provider": {
+                "feature": "capture_binding_provider",
+                "api_version": "1.1",
+                "schema_version": "1",
+                "supported": True,
+                "position_checkpoints": True,
+                "evidence_strength": "posix_fd_devnode_match_v1",
+                "limits": dict(_API11_LIMITS),
+            }
+        },
+    }
+
+
+class _CapabilitySequenceClient:
+    def __init__(self, responses: list[dict[str, Any]]) -> None:
+        self.responses = list(responses)
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def call(self, action: str, request: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((action, dict(request)))
+        assert action == "capabilities"
+        return self.responses.pop(0)
 
 
 class _EntryPoint:
@@ -376,6 +432,31 @@ def _configure_core_run(
     orchestrator._analyze_run = lambda **kwargs: RunAnalysisResult(status="complete")
 
 
+def _actual_serialwrap_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    client: _CapabilitySequenceClient,
+) -> backend_module.SerialwrapBackend:
+    binding = SerialwrapLogBinding(
+        enabled=True,
+        binary="/opt/fake-serialwrap",
+        socket="unix:///tmp/fake-serialwrap.sock",
+        binary_source="test",
+        socket_source="test",
+        device_count=1,
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "resolve_serialwrap_log_binding",
+        lambda *args, **kwargs: binding,
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "SerialwrapCaptureBindingClient",
+        lambda binary, socket: client,
+    )
+    return backend_module.SerialwrapBackend()
+
+
 def test_public_entry_rejects_strict_custom_runner_before_bind_or_factory(
     tmp_path: Path,
 ) -> None:
@@ -481,6 +562,49 @@ def test_public_entry_rejects_api10_provider_before_plugin_preparation(
     assert payload["run_abort"]["reason_code"] == "capture_provider_unsupported"
     assert payload["run_abort"]["unexecuted_case_ids"] == ["D001"]
     assert events == ["entry_point_load", "plugin_init", "strict_capture_preflight"]
+
+
+@pytest.mark.parametrize("error_code", [[], {}], ids=["array-error-code", "object-error-code"])
+def test_public_malformed_capability_error_code_releases_logger_for_next_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_code: Any,
+) -> None:
+    events: list[str] = []
+    plugin_type = _plugin_type(events)
+    malformed = {"ok": False, "error_code": error_code}
+    client = _CapabilitySequenceClient([malformed, _api11_capabilities()])
+    backend = _actual_serialwrap_backend(monkeypatch, client)
+    orchestrator = _make_orchestrator(tmp_path, plugin_type, events)
+    _configure_core_run(orchestrator, events)
+    orchestrator.run_backend = backend
+
+    try:
+        payload = orchestrator.run("strict", ["D001"])
+
+        assert payload.get("status") == "aborted", (payload, events)
+        assert payload["run_abort"]["reason_code"] == "capture_provider_protocol_invalid"
+        assert payload["run_abort"]["unexecuted_case_ids"] == ["D001"]
+        assert events == ["entry_point_load", "plugin_init"]
+        assert [action for action, _ in client.calls] == ["capabilities"]
+        assert _serialwrap_log._configured_owner is None
+
+        request = plugin_type.capture_role_plan_request
+        plan = project_capture_role_plan(orchestrator.config, request)
+        admission = backend.strict_capture_preflight(
+            "next-run",
+            orchestrator.config,
+            request,
+            plan,
+        )
+        assert admission.outcome is StrictCaptureProviderOutcome.SUPPORTED
+        assert [action for action, _ in client.calls] == ["capabilities", "capabilities"]
+        assert events == ["entry_point_load", "plugin_init"]
+    finally:
+        backend.cancel_strict_capture_preflight("next-run")
+        owner = _serialwrap_log._configured_owner
+        if owner is not None:
+            _serialwrap_log.release(owner)
 
 
 def test_direct_strict_run_pipeline_rejects_before_setup_step_cleanup_or_verdict() -> None:

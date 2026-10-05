@@ -241,6 +241,12 @@ class _FakeClient:
         raise AssertionError(f"unexpected provider route: {action}")
 
 
+class _RaisesDuringCapabilitiesClient(_FakeClient):
+    def call(self, action: str, request: dict[str, object]) -> dict[str, object]:
+        self.calls.append((action, dict(request)))
+        raise RuntimeError("synthetic capability client failure")
+
+
 def _backend_with_fake(
     monkeypatch: pytest.MonkeyPatch,
     fake: _FakeClient,
@@ -283,6 +289,45 @@ def test_api_10_provider_is_rejected_during_read_only_preflight(
     assert [action for action, _ in fake.calls] == ["capabilities"]
     assert backend._strict_preflights == {}
     assert _serialwrap_log._configured_owner is None
+
+
+def test_exception_before_capability_admission_releases_lease_for_next_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failed_client = _RaisesDuringCapabilitiesClient()
+    backend = _backend_with_fake(monkeypatch, failed_client)
+    config = _config(tmp_path)
+    request = CaptureRolePlanRequest(roles=("dut",))
+    plan = project_capture_role_plan(config, request)
+
+    try:
+        with pytest.raises(RuntimeError, match="synthetic capability client failure"):
+            backend.strict_capture_preflight("run-failed", config, request, plan)
+
+        assert [action for action, _ in failed_client.calls] == ["capabilities"]
+        assert backend._strict_preflights == {}
+        assert _serialwrap_log._configured_owner is None
+
+        accepted_client = _FakeClient()
+        monkeypatch.setattr(
+            backend_module,
+            "SerialwrapCaptureBindingClient",
+            lambda binary, socket: accepted_client,
+        )
+        admission = backend.strict_capture_preflight(
+            "run-next",
+            config,
+            request,
+            plan,
+        )
+        assert admission.outcome is StrictCaptureProviderOutcome.SUPPORTED
+        assert [action for action, _ in accepted_client.calls] == ["capabilities"]
+    finally:
+        backend.cancel_strict_capture_preflight("run-next")
+        owner = _serialwrap_log._configured_owner
+        if owner is not None:
+            _serialwrap_log.release(owner)
 
 
 def test_strict_backend_uses_one_bound_handle_and_complete_only_case_lines(
