@@ -17,6 +17,7 @@ from testpilot.core.execution_engine import ExecutionEngine
 from testpilot.core.hook_policy import HookContext, HookDispatcher, HookPolicyConfig, HookResult
 from testpilot.core.plugin_base import PluginBase
 from testpilot.core.prepared_run import PreparedRun
+from testpilot.core.remediation import RuntimeRemediationCoordinator
 from testpilot.core.usage_ledger import UsageLedger
 
 
@@ -308,6 +309,74 @@ def test_private_capture_remains_visible_to_pass_and_fail_criteria(evaluate_succ
     if not evaluate_success:
         assert result.failure_snapshot["comment"] == "criterion mismatch [private]"
         assert result.failure_snapshot["output"] == "[private]"
+
+
+@pytest.mark.parametrize("category", ["environment", "test"])
+def test_native_coordinator_preserves_projected_failure_without_private_case_state(
+    category: str,
+) -> None:
+    class ProjectedFailurePlugin(_ProjectionPlugin):
+        def execute_step(self, case, step, topology):
+            result = super().execute_step(case, step, topology)
+            case["_last_failure"] = {
+                "case_id": case["id"],
+                "attempt_index": case["_attempt_index"],
+                "phase": "execute_step",
+                "step_id": step["id"],
+                "category": category,
+                "reason_code": "precondition_unverified",
+                "comment": f"precondition failed {_CANARY}",
+                "output": _CANARY,
+                "metadata": {"private": _CANARY},
+            }
+            return result
+
+        def project_hook_payload(self, hook_name, payload):
+            projected = super().project_hook_payload(hook_name, payload)
+            case = projected["data"].get("case")
+            if isinstance(case, dict):
+                projected["data"]["case"] = {
+                    key: value for key, value in case.items() if not key.startswith("_")
+                }
+            return projected
+
+        def build_remediation_decision(self, case, failure_snapshot, topology, **kwargs):
+            decisions.append(failure_snapshot.to_dict())
+            return None
+
+    decisions = []
+    plugin = ProjectedFailurePlugin(fail_first_step=True)
+    dispatcher = HookDispatcher(HookPolicyConfig(enabled_hooks=set(_ALL_HOOKS)))
+    coordinator = RuntimeRemediationCoordinator(
+        plugin=plugin, topology={}, policy={"enabled": True}
+    )
+    dispatcher.register("pre_case", coordinator.handle_pre_case)
+    dispatcher.register("on_failure", coordinator.handle_on_failure)
+    dispatcher.register("on_retry", coordinator.handle_on_retry)
+    dispatcher.register("post_case", coordinator.handle_post_case)
+    observed = []
+
+    def observe(_ctx, data):
+        observed.append(deepcopy(data))
+        return HookResult()
+
+    dispatcher.register("on_failure", observe)
+
+    result = _run(plugin, dispatcher)
+
+    assert result.verdict is False
+    assert result.attempts_used == 1
+    assert plugin.step_calls == 1
+    assert "_last_failure" not in observed[0]["case"]
+    assert result.failure_snapshot["category"] == category
+    assert result.failure_snapshot["reason_code"] == "precondition_unverified"
+    assert result.failure_snapshot["comment"] == "precondition failed [private]"
+    assert result.failure_snapshot["output"] == "[private]"
+    assert result.failure_snapshot["metadata"] == {"private": "[private]"}
+    assert len(decisions) == (1 if category == "environment" else 0)
+    assert _CANARY not in str(observed)
+    assert _CANARY not in str(decisions)
+    assert _CANARY not in str(asdict(result))
 
 
 @pytest.mark.parametrize("projector_mode", ["raises", "wrong-shape"])

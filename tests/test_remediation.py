@@ -327,6 +327,19 @@ class _OpaqueTier1Plugin(_LivePlugin):
         raise RuntimeError("opaque-tier1-secret-sentinel")
 
 
+class _UnreadableProjectedMapping(dict):
+    def items(self):
+        raise RuntimeError("private-projected-mapping-canary")
+
+
+class _UnreadableProjectedValue:
+    def __str__(self):
+        raise RuntimeError("private-projected-value-canary")
+
+    def __eq__(self, other):
+        raise RuntimeError("private-projected-identity-canary")
+
+
 class TestRuntimeRemediationCoordinator:
     def _ctx(self, hook_name: str, *, attempt_index: int = 1) -> HookContext:
         return HookContext(
@@ -442,6 +455,51 @@ class TestRuntimeRemediationCoordinator:
         }
         failure_data = {"case": case, "phase": "evaluate", "comment": "pass_criteria not satisfied"}
         coordinator.handle_on_failure(self._ctx("on_failure"), failure_data)
+        assert "remediation_decision" not in failure_data
+
+    @pytest.mark.parametrize(
+        "projected",
+        [
+            None,
+            {},
+            "invalid",
+            {"case_id": "other", "attempt_index": 1, "category": "environment"},
+            {"case_id": "D001", "attempt_index": 2, "category": "environment"},
+            {"case_id": "D001", "attempt_index": True, "category": "environment"},
+            {"case_id": "D001", "attempt_index": "1", "category": "environment"},
+            {"case_id": "D001", "attempt_index": 1, "evidence": None},
+            _UnreadableProjectedMapping(),
+            {"case_id": "D001", "attempt_index": 1, "category": _UnreadableProjectedValue()},
+            {"case_id": _UnreadableProjectedValue(), "attempt_index": 1},
+        ],
+    )
+    def test_invalid_present_projection_never_falls_back_to_private_case(
+        self, projected,
+    ) -> None:
+        coordinator = RuntimeRemediationCoordinator(
+            plugin=_LivePlugin(), topology=object(),
+            policy={"enabled": True, "allowed_actions": ["case_env_reverify"]},
+        )
+        failure_data = {
+            "case": {
+                "id": "D001",
+                "_last_failure": {
+                    "case_id": "D001", "attempt_index": 1,
+                    "category": "environment", "output": "private-fallback-canary",
+                    "reason_code": "private-fallback-canary",
+                },
+            },
+            "phase": "execute_step", "comment": "public failure",
+            "failure_snapshot": projected,
+        }
+
+        coordinator.handle_on_failure(self._ctx("on_failure"), failure_data)
+
+        assert failure_data["failure_snapshot"]["category"] == "inconclusive"
+        assert failure_data["failure_snapshot"]["case_id"] == "D001"
+        assert failure_data["failure_snapshot"]["attempt_index"] == 1
+        assert failure_data["failure_snapshot"]["comment"] == "public failure"
+        assert "private-fallback-canary" not in str(failure_data["failure_snapshot"])
         assert "remediation_decision" not in failure_data
 
     @pytest.mark.parametrize("phase", ["setup_env", "verify_env"])

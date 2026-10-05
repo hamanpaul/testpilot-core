@@ -16,6 +16,8 @@ preparation.
 
 ### Fixed
 
+- Preserve the projected current-attempt failure snapshot in runtime remediation after private case scratch fields are removed; reject invalid or mismatched projected snapshots without falling back to private evidence.
+
 - Release the Core-local serialwrap logger lease when strict capability preflight rejects malformed provider replies or raises before admission.
 
 - Document the private hook-result projector carrier and cover accepted/unknown transport evidence first introduced by `post_case`, including run abort before later-case work.
