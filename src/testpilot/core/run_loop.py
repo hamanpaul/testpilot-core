@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -17,8 +18,31 @@ from testpilot.api import (
     sanitize_case_id as _sanitize_case_id,
 )
 from testpilot.core.execution_engine import ExecutionEngine
+from testpilot.core.plugin_base import PluginBase
+from testpilot.core.run_start_gate import (
+    PrepareRunGateOutcome,
+    RunCapabilityAdmissionOutcome,
+    admit_run_capabilities,
+    is_valid_capture_context,
+    is_valid_gate_result,
+    is_valid_sequence_marker,
+    is_valid_strict_capture_provider_admission,
+)
 from testpilot.core.run_analysis import RunAnalysisResult
+from testpilot.core.role_plan import (
+    CaptureRolePlanRequest,
+    EffectiveRolePlan,
+    RolePlanError,
+    project_capture_role_plan,
+)
+from testpilot.core.testbed_config import TestbedConfig
 from testpilot.runtime.run_backend import RunHandle
+from testpilot.runtime.strict_capture import (
+    StrictCaptureError,
+    StrictCaptureHarvest,
+    StrictCaptureHarvestStatus,
+    StrictCapturePosition,
+)
 
 log = logging.getLogger(__name__)
 
@@ -219,25 +243,224 @@ def _stop_run_capture_once(orchestrator: Any, capture_state: dict[str, bool]) ->
     capture_state["capture_stopped"] = True
 
 
+def _safe_case_ids(cases: list[dict[str, Any]] | None, requested_ids: list[str] | None) -> list[str]:
+    raw_ids = (
+        [case.get("id", "?") for case in cases]
+        if cases is not None
+        else (requested_ids or [])
+    )
+    return [_sanitize_case_id(str(case_id))[:128] for case_id in raw_ids]
+
+
+def _run_start_abort(
+    *,
+    plugin_name: str,
+    reports_root: Path,
+    run_id: str,
+    reason_code: str,
+    outcome: str,
+    cases: list[dict[str, Any]] | None,
+    requested_ids: list[str] | None,
+    capture_attempted: bool,
+    capture_status: str | None = None,
+    run_seq_start: int | None = None,
+    gate_result: Any = None,
+) -> dict[str, Any]:
+    """Write terminal run-start metadata without creating executed-case rows."""
+    artifact_dir = reports_root / run_id
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    selected_ids = _safe_case_ids(cases, requested_ids)
+    selection_known = cases is not None or requested_ids is not None
+    summary: dict[str, Any] = {
+        "stage": "run_start",
+        "outcome": outcome,
+        "reason_code": reason_code,
+        "executed_case_count": 0,
+        "selected_case_count": len(selected_ids) if selection_known else None,
+        "selected_case_ids": selected_ids,
+        "unexecuted_case_ids": selected_ids,
+        "selection_status": (
+            "prepared"
+            if cases is not None
+            else "request_only"
+            if requested_ids is not None
+            else "unresolved"
+        ),
+        "capture_status": capture_status
+        or ("incomplete" if capture_attempted else "not_started"),
+        "run_seq_start": run_seq_start,
+    }
+    if is_valid_gate_result(gate_result):
+        summary["gate"] = gate_result.to_payload()
+    artifact_path = artifact_dir / "run-abort.json"
+    artifact_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return {
+        "plugin": plugin_name,
+        "status": "aborted",
+        "cases_count": 0,
+        "run_abort": summary,
+        "run_abort_path": str(artifact_path),
+    }
+
+
+def abort_run_start_before_capture(
+    orchestrator: Any,
+    plugin_name: str,
+    requested_ids: list[str] | None,
+    reason_code: str,
+) -> dict[str, Any]:
+    """Create a sanitized terminal artifact for public-entry capability rejection."""
+    run_id = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    reports_root = Path(orchestrator.plugins_dir) / plugin_name / "reports"
+    return _run_start_abort(
+        plugin_name=plugin_name,
+        reports_root=reports_root,
+        run_id=run_id,
+        reason_code=reason_code,
+        outcome=PrepareRunGateOutcome.UNKNOWN.value,
+        cases=None,
+        requested_ids=requested_ids,
+        capture_attempted=False,
+    )
+
+
+def _strict_capture_ranges_problem(
+    *,
+    run_seq_start: int,
+    run_seq_end: Any,
+    case_seq_ranges: dict[str, dict[str, int | None]],
+) -> str | None:
+    if not is_valid_sequence_marker(run_seq_end) or run_seq_end < run_seq_start:
+        return "run_end_marker_invalid"
+    for bounds in case_seq_ranges.values():
+        case_start = bounds.get("seq_start")
+        case_end = bounds.get("seq_end")
+        if (
+            not is_valid_sequence_marker(case_start)
+            or not is_valid_sequence_marker(case_end)
+            or case_start < run_seq_start
+            or case_end < case_start
+            or case_end > run_seq_end
+        ):
+            return "case_sequence_range_invalid"
+    return None
+
+
+def _finalize_strict_capture(
+    orchestrator: Any,
+    capture_state: dict[str, Any],
+) -> StrictCaptureHarvest | None:
+    handle = capture_state.get("strict_handle")
+    if handle is None or capture_state.get("strict_harvested"):
+        return None
+    raw_artifact_dir = capture_state.get("strict_artifact_dir")
+    if raw_artifact_dir:
+        artifact_dir = Path(raw_artifact_dir)
+    else:
+        reports_root = Path(capture_state["strict_reports_root"])
+        artifact_dir = reports_root / capture_state["strict_run_id"]
+    try:
+        harvest = orchestrator.run_backend.harvest_strict_for_handle(
+            handle,
+            artifact_dir,
+            capture_state.get("strict_case_results", []),
+            capture_state.get("strict_case_seq_ranges", {}),
+        )
+        if type(harvest) is not StrictCaptureHarvest:
+            raise StrictCaptureError("capture_harvest_result_invalid")
+    except Exception:
+        harvest = StrictCaptureHarvest(
+            StrictCaptureHarvestStatus.UNKNOWN,
+            "capture_finalize_failed",
+        )
+    capture_state["strict_harvested"] = True
+    capture_state["strict_harvest_payload"] = harvest.to_payload()
+    return harvest
+
+
+def _attach_strict_capture_result(
+    result: Any,
+    capture_state: dict[str, Any],
+    harvest: StrictCaptureHarvest,
+) -> None:
+    payload = harvest.to_payload()
+    if not isinstance(result, dict):
+        return
+    run_abort = result.get("run_abort")
+    if isinstance(run_abort, dict):
+        run_abort["core_run_capture"] = payload
+        run_abort["capture_status"] = payload["status"]
+        abort_path = result.get("run_abort_path")
+        if isinstance(abort_path, str) and abort_path:
+            try:
+                Path(abort_path).write_text(
+                    json.dumps(run_abort, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+        return
+    artifacts = result.get("artifacts")
+    if isinstance(artifacts, dict):
+        artifacts["core_run_capture"] = payload
+
+
 def run(
     orchestrator: Any,
     plugin_name: str,
     case_ids: list[str] | None,
     dut_fw_ver: str | None,
     provider_config: dict[str, Any] | None = None,
+    *,
+    preloaded_plugin: Any | None = None,
+    prebound_plugin: Any | None = None,
 ) -> dict[str, Any]:
-    capture_state = {"capture_attempted": False, "capture_stopped": False}
+    capture_state: dict[str, Any] = {
+        "capture_attempted": False,
+        "capture_stopped": False,
+        "capture_cleanup_suppressed": False,
+        "strict_capture": False,
+        "strict_preflight_active": False,
+        "strict_handle": None,
+        "strict_harvested": False,
+    }
     try:
-        return _run_with_capture(
+        result = _run_with_capture(
             orchestrator,
             plugin_name,
             case_ids,
             dut_fw_ver,
             provider_config,
+            preloaded_plugin=preloaded_plugin,
+            prebound_plugin=prebound_plugin,
             capture_state=capture_state,
         )
+        if capture_state.get("strict_capture"):
+            harvest = _finalize_strict_capture(orchestrator, capture_state)
+            if harvest is not None:
+                _attach_strict_capture_result(result, capture_state, harvest)
+        return result
     finally:
-        if capture_state["capture_attempted"] and not capture_state["capture_stopped"]:
+        if capture_state.get("strict_capture"):
+            handle = capture_state.get("strict_handle")
+            try:
+                if handle is not None:
+                    _finalize_strict_capture(orchestrator, capture_state)
+                    orchestrator.run_backend.release_strict_capture(handle)
+                elif capture_state.get("strict_preflight_active"):
+                    orchestrator.run_backend.cancel_strict_capture_preflight(
+                        capture_state.get("strict_run_id", "")
+                    )
+            except Exception:
+                log.warning("strict capture local release failed")
+        elif (
+            capture_state["capture_attempted"]
+            and not capture_state["capture_stopped"]
+            and not capture_state["capture_cleanup_suppressed"]
+        ):
             try:
                 _stop_run_capture_once(orchestrator, capture_state)
             except Exception:
@@ -253,9 +476,145 @@ def _run_with_capture(
     dut_fw_ver: str | None,
     provider_config: dict[str, Any] | None,
     *,
+    preloaded_plugin: Any | None,
+    prebound_plugin: Any | None,
     capture_state: dict[str, bool],
 ) -> dict[str, Any]:
-    plugin = orchestrator.loader.load(plugin_name)
+    plugin = (
+        preloaded_plugin
+        if preloaded_plugin is not None
+        else orchestrator.loader.load(plugin_name)
+    )
+    admission = admit_run_capabilities(
+        plugin,
+        getattr(orchestrator, "run_backend", None),
+        default_gate_hook=PluginBase.prepare_run_after_capture,
+    )
+    strict_capture_gate = admission.outcome is not RunCapabilityAdmissionOutcome.LEGACY
+    capability_problem = (
+        admission.reason_code
+        if admission.outcome is RunCapabilityAdmissionOutcome.REJECTED
+        else None
+    )
+    if capability_problem is not None:
+        run_id = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+        reports_root = Path(orchestrator.plugins_dir) / plugin_name / "reports"
+        return _run_start_abort(
+            plugin_name=plugin_name,
+            reports_root=reports_root,
+            run_id=run_id,
+            reason_code=capability_problem,
+            outcome=PrepareRunGateOutcome.UNKNOWN.value,
+            cases=None,
+            requested_ids=case_ids,
+            capture_attempted=False,
+        )
+
+    strict_run_id: str | None = None
+    strict_reports_root: Path | None = None
+    strict_role_request: CaptureRolePlanRequest | None = None
+    strict_role_plan: EffectiveRolePlan | None = None
+    strict_config: Any = None
+    if strict_capture_gate:
+        capture_state["strict_capture"] = True
+        strict_run_id = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+        strict_reports_root = Path(orchestrator.plugins_dir) / plugin_name / "reports"
+        capture_state["strict_run_id"] = strict_run_id
+        capture_state["strict_reports_root"] = strict_reports_root
+        strict_config = getattr(orchestrator, "config", None)
+        raw_request = inspect.getattr_static(
+            type(plugin), "capture_role_plan_request", None
+        )
+        if type(raw_request) is not CaptureRolePlanRequest:
+            return _run_start_abort(
+                plugin_name=plugin_name,
+                reports_root=strict_reports_root,
+                run_id=strict_run_id,
+                reason_code="capture_role_plan_invalid",
+                outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                cases=None,
+                requested_ids=case_ids,
+                capture_attempted=False,
+            )
+        strict_role_request = raw_request
+        try:
+            if not isinstance(strict_config, TestbedConfig):
+                raise RolePlanError("strict capture requires the selected testbed config")
+            strict_role_plan = project_capture_role_plan(
+                strict_config,
+                strict_role_request,
+            )
+        except (RolePlanError, TypeError, ValueError):
+            return _run_start_abort(
+                plugin_name=plugin_name,
+                reports_root=strict_reports_root,
+                run_id=strict_run_id,
+                reason_code="capture_role_plan_invalid",
+                outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                cases=None,
+                requested_ids=case_ids,
+                capture_attempted=False,
+            )
+        try:
+            provider_admission = orchestrator.run_backend.strict_capture_preflight(
+                strict_run_id,
+                strict_config,
+                strict_role_request,
+                strict_role_plan,
+            )
+        except Exception:
+            provider_admission = None
+        if not is_valid_strict_capture_provider_admission(provider_admission):
+            return _run_start_abort(
+                plugin_name=plugin_name,
+                reports_root=strict_reports_root,
+                run_id=strict_run_id,
+                reason_code="capture_provider_protocol_invalid",
+                outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                cases=None,
+                requested_ids=case_ids,
+                capture_attempted=False,
+            )
+        if provider_admission.outcome.value != "supported":
+            return _run_start_abort(
+                plugin_name=plugin_name,
+                reports_root=strict_reports_root,
+                run_id=strict_run_id,
+                reason_code=provider_admission.reason_code or "capture_provider_unavailable",
+                outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                cases=None,
+                requested_ids=case_ids,
+                capture_attempted=False,
+            )
+        capture_state["strict_preflight_active"] = True
+        capture_state["strict_config"] = strict_config
+        capture_state["strict_role_request"] = strict_role_request
+        capture_state["strict_role_plan"] = strict_role_plan
+
+    if plugin is not prebound_plugin:
+        bind_testbed_config = getattr(plugin, "bind_testbed_config", None)
+        if callable(bind_testbed_config):
+            try:
+                bind_testbed_config(getattr(orchestrator, "config", None))
+            except Exception:
+                if strict_capture_gate:
+                    return _run_start_abort(
+                        plugin_name=plugin_name,
+                        reports_root=strict_reports_root,
+                        run_id=strict_run_id,
+                        reason_code="testbed_config_binding_failed",
+                        outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                        cases=None,
+                        requested_ids=case_ids,
+                        capture_attempted=False,
+                    )
+                return abort_run_start_before_capture(
+                    orchestrator,
+                    plugin_name,
+                    case_ids,
+                    "testbed_config_binding_failed",
+                )
+
     bind_project_root = getattr(plugin, "bind_project_root", None)
     if callable(bind_project_root):
         bind_project_root(getattr(orchestrator, "root", None))
@@ -265,23 +624,242 @@ def _run_with_capture(
 
     reports_root = Path(orchestrator.plugins_dir) / plugin_name / "reports"
     run_date = date.today()
-    run_id = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    run_id = strict_run_id or datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    if strict_capture_gate:
+        assert strict_config is not None
+        assert strict_role_request is not None
+        assert strict_role_plan is not None
+        try:
+            projected_after_prepare = project_capture_role_plan(
+                strict_config,
+                strict_role_request,
+            )
+        except (RolePlanError, TypeError, ValueError):
+            projected_after_prepare = None
+        if (
+            projected_after_prepare is None
+            or projected_after_prepare.digest != strict_role_plan.digest
+        ):
+            return _run_start_abort(
+                plugin_name=plugin_name,
+                reports_root=reports_root,
+                run_id=run_id,
+                reason_code="capture_role_plan_changed",
+                outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                cases=cases,
+                requested_ids=case_ids,
+                capture_attempted=False,
+            )
+        supplied_plan = getattr(prepared, "effective_role_plan", None)
+        if supplied_plan is not None and supplied_plan is not strict_role_plan:
+            return _run_start_abort(
+                plugin_name=plugin_name,
+                reports_root=reports_root,
+                run_id=run_id,
+                reason_code="capture_role_plan_changed",
+                outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                cases=cases,
+                requested_ids=case_ids,
+                capture_attempted=False,
+            )
+        prepared.effective_role_plan = strict_role_plan
+        capture_state["strict_artifact_dir"] = reports_root / run_id
+        capture_state["strict_case_results"] = []
+        capture_state["strict_case_seq_ranges"] = {}
     # Empty selections have no executable work to capture. Plugins can also
     # explicitly classify a non-empty selection as no-I/O (for example when
     # every prepared result is unsupported/N/A). Case planning, execution, and
     # reporting still run for the latter; only Core's environment probes stop.
     capture_enabled = bool(cases) and getattr(prepared, "no_io", False) is not True
-    if capture_enabled:
-        # Mark the attempt before calling into the orchestrator: a transport
-        # setup may acquire its owner lease and then raise while binding sessions.
-        capture_state["capture_attempted"] = True
-        capture_path = orchestrator._start_run_capture(run_id)
-        run_handle = _seq_tracking_handle(
-            orchestrator,
+    if strict_capture_gate and cases and not capture_enabled:
+        return _run_start_abort(
+            plugin_name=plugin_name,
+            reports_root=reports_root,
             run_id=run_id,
-            capture_path=capture_path,
+            reason_code="required_capture_disabled",
+            outcome=PrepareRunGateOutcome.UNKNOWN.value,
+            cases=cases,
+            requested_ids=case_ids,
+            capture_attempted=False,
         )
-        run_seq_start = _mark_seq_position(orchestrator, run_handle)
+    if capture_enabled:
+        if strict_capture_gate:
+            try:
+                projected_before_begin = project_capture_role_plan(
+                    strict_config,
+                    strict_role_request,
+                )
+            except (RolePlanError, TypeError, ValueError):
+                projected_before_begin = None
+            if (
+                projected_before_begin is None
+                or projected_before_begin.digest != strict_role_plan.digest
+            ):
+                return _run_start_abort(
+                    plugin_name=plugin_name,
+                    reports_root=reports_root,
+                    run_id=run_id,
+                    reason_code="capture_role_plan_changed",
+                    outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                    cases=cases,
+                    requested_ids=case_ids,
+                    capture_attempted=False,
+                )
+            try:
+                run_handle = orchestrator.run_backend.begin_strict_capture(
+                    run_id,
+                    strict_config,
+                    strict_role_request,
+                    strict_role_plan,
+                )
+            except StrictCaptureError as exc:
+                capture_state["capture_attempted"] = True
+                return _run_start_abort(
+                    plugin_name=plugin_name,
+                    reports_root=reports_root,
+                    run_id=run_id,
+                    reason_code=exc.reason_code,
+                    outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                    cases=cases,
+                    requested_ids=case_ids,
+                    capture_attempted=True,
+                    capture_status=(
+                        "unknown" if exc.operation_uncertain else "incomplete"
+                    ),
+                )
+            except Exception:
+                capture_state["capture_attempted"] = True
+                return _run_start_abort(
+                    plugin_name=plugin_name,
+                    reports_root=reports_root,
+                    run_id=run_id,
+                    reason_code="capture_begin_unknown",
+                    outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                    cases=cases,
+                    requested_ids=case_ids,
+                    capture_attempted=True,
+                    capture_status="unknown",
+                )
+            capture_state["strict_preflight_active"] = False
+            capture_state["strict_handle"] = run_handle
+            capture_state["capture_attempted"] = True
+            run_seq_start = run_handle.seq_start
+            if not is_valid_sequence_marker(run_seq_start):
+                return _run_start_abort(
+                    plugin_name=plugin_name,
+                    reports_root=reports_root,
+                    run_id=run_id,
+                    reason_code=(
+                        "run_start_marker_unavailable"
+                        if run_seq_start is None
+                        else "run_start_marker_invalid"
+                    ),
+                    outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                    cases=cases,
+                    requested_ids=case_ids,
+                    capture_attempted=True,
+                )
+            try:
+                capture_context = orchestrator.run_backend.get_strict_capture_context(
+                    run_handle,
+                    run_id=run_id,
+                    run_seq_start=run_seq_start,
+                )
+            except Exception:
+                capture_context = None
+            if not is_valid_capture_context(
+                capture_context,
+                run_id=run_id,
+                start_sequence=run_seq_start,
+            ):
+                capture_state["capture_cleanup_suppressed"] = True
+                return _run_start_abort(
+                    plugin_name=plugin_name,
+                    reports_root=reports_root,
+                    run_id=run_id,
+                    reason_code="capture_context_invalid",
+                    outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                    cases=cases,
+                    requested_ids=case_ids,
+                    capture_attempted=True,
+                    run_seq_start=run_seq_start,
+                )
+
+            try:
+                gate_result = plugin.prepare_run_after_capture(prepared, capture_context)
+            except Exception:
+                gate_result = None
+                gate_exception = True
+            else:
+                gate_exception = False
+            if not is_valid_gate_result(gate_result):
+                gate_reason = (
+                    "post_capture_gate_exception"
+                    if gate_exception
+                    else "post_capture_gate_result_missing"
+                    if gate_result is None
+                    else "post_capture_gate_result_invalid"
+                )
+                return _run_start_abort(
+                    plugin_name=plugin_name,
+                    reports_root=reports_root,
+                    run_id=run_id,
+                    reason_code=gate_reason,
+                    outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                    cases=cases,
+                    requested_ids=case_ids,
+                    capture_attempted=True,
+                    run_seq_start=run_seq_start,
+                )
+            if gate_result.outcome is not PrepareRunGateOutcome.ACCEPTED:
+                return _run_start_abort(
+                    plugin_name=plugin_name,
+                    reports_root=reports_root,
+                    run_id=run_id,
+                    reason_code=gate_result.reason_code,
+                    outcome=gate_result.outcome.value,
+                    cases=cases,
+                    requested_ids=case_ids,
+                    capture_attempted=True,
+                    run_seq_start=run_seq_start,
+                    gate_result=gate_result,
+                )
+            try:
+                projected_after_gate = project_capture_role_plan(
+                    strict_config,
+                    strict_role_request,
+                )
+            except (RolePlanError, TypeError, ValueError):
+                projected_after_gate = None
+            if (
+                projected_after_gate is None
+                or projected_after_gate.digest != strict_role_plan.digest
+                or getattr(prepared, "effective_role_plan", None) is not strict_role_plan
+            ):
+                return _run_start_abort(
+                    plugin_name=plugin_name,
+                    reports_root=reports_root,
+                    run_id=run_id,
+                    reason_code="capture_role_plan_changed",
+                    outcome=PrepareRunGateOutcome.UNKNOWN.value,
+                    cases=cases,
+                    requested_ids=case_ids,
+                    capture_attempted=True,
+                    run_seq_start=run_seq_start,
+                )
+            prepared.run_start_gate = gate_result
+            prepared_artifacts["run_start_gate"] = gate_result.to_payload()
+        else:
+            # The legacy path deliberately retains setup/reset, sequence
+            # markers, export and teardown behavior unchanged.
+            capture_state["capture_attempted"] = True
+            capture_path = orchestrator._start_run_capture(run_id)
+            run_handle = _seq_tracking_handle(
+                orchestrator,
+                run_id=run_id,
+                capture_path=capture_path,
+            )
+            run_seq_start = _mark_seq_position(orchestrator, run_handle)
         version_manifest = _capture_version_manifest(
             orchestrator,
             plugin=plugin,
@@ -314,7 +892,36 @@ def _run_with_capture(
     first_case_started_at_iso = ""
 
     case_seq_ranges: dict[str, dict[str, int | None]] = {}
+    if strict_capture_gate:
+        capture_state["strict_case_results"] = case_records
+        capture_state["strict_case_seq_ranges"] = case_seq_ranges
     loop_error: Exception | None = None
+    strict_abort: dict[str, Any] | None = None
+
+    def _record_strict_abort(reason_code: str, next_case_ordinal: int) -> None:
+        nonlocal strict_abort
+        unexecuted = [
+            str(item.get("id", "?")) for item in cases[next_case_ordinal:]
+        ]
+        strict_abort = {
+            "stage": "case_execution",
+            "outcome": PrepareRunGateOutcome.UNKNOWN.value,
+            "reason_code": reason_code,
+            "executed_case_count": len(case_records),
+            "selected_case_count": len(cases),
+            "unexecuted_case_ids": unexecuted,
+        }
+        prepared_artifacts["run_abort"] = strict_abort
+        try:
+            (artifact_dir / "run-abort.json").write_text(
+                json.dumps(strict_abort, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+                pass
+
+    case_ordinal = 1
+    last_checkpoint_sequence = run_seq_start if strict_capture_gate else None
     try:
         for case_ordinal, case in enumerate(cases, start=1):
             case_id = str(case.get("id", "?"))
@@ -348,7 +955,29 @@ def _run_with_capture(
                 provider_config=None,
             )
 
-            seq_before = _mark_seq_position(orchestrator, run_handle)
+            if strict_capture_gate:
+                try:
+                    position_before = orchestrator.run_backend.checkpoint_strict_capture(
+                        run_handle
+                    )
+                    if (
+                        type(position_before) is not StrictCapturePosition
+                        or not is_valid_sequence_marker(position_before.sequence)
+                        or (
+                            last_checkpoint_sequence is not None
+                            and position_before.sequence < last_checkpoint_sequence
+                        )
+                    ):
+                        raise StrictCaptureError("capture_checkpoint_invalid")
+                    seq_before = position_before.sequence
+                except StrictCaptureError as exc:
+                    _record_strict_abort(exc.reason_code, case_ordinal - 1)
+                    break
+                except Exception:
+                    _record_strict_abort("capture_checkpoint_unknown", case_ordinal - 1)
+                    break
+            else:
+                seq_before = _mark_seq_position(orchestrator, run_handle)
             case_started_monotonic = time.monotonic()
             case_started_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
             if first_case_started_monotonic is None:
@@ -362,7 +991,28 @@ def _run_with_capture(
             )
             case_finished_monotonic = time.monotonic()
             case_finished_at_iso = datetime.now().astimezone().isoformat(timespec="seconds")
-            seq_after = _mark_seq_position(orchestrator, run_handle)
+            checkpoint_problem: str | None = None
+            if strict_capture_gate:
+                try:
+                    position_after = orchestrator.run_backend.checkpoint_strict_capture(
+                        run_handle
+                    )
+                    if (
+                        type(position_after) is not StrictCapturePosition
+                        or not is_valid_sequence_marker(position_after.sequence)
+                        or position_after.sequence < seq_before
+                    ):
+                        raise StrictCaptureError("capture_checkpoint_invalid")
+                    seq_after = position_after.sequence
+                    last_checkpoint_sequence = seq_after
+                except StrictCaptureError as exc:
+                    seq_after = None
+                    checkpoint_problem = exc.reason_code
+                except Exception:
+                    seq_after = None
+                    checkpoint_problem = "capture_checkpoint_unknown"
+            else:
+                seq_after = _mark_seq_position(orchestrator, run_handle)
             case_seq_ranges[case_id] = {
                 "seq_start": seq_before,
                 "seq_end": seq_after,
@@ -403,6 +1053,9 @@ def _run_with_capture(
                     case_id=case_id,
                 )
             )
+            if checkpoint_problem is not None:
+                _record_strict_abort(checkpoint_problem, case_ordinal)
+                break
             if getattr(retry_result, "abort_run", False) is True:
                 # Later cases were never executed and must not acquire verdicts.
                 abort_summary = {
@@ -418,27 +1071,79 @@ def _run_with_capture(
                 )
                 break
     except Exception as exc:
-        loop_error = exc
+        if strict_capture_gate:
+            next_case_ordinal = max(0, case_ordinal - 1)
+            _record_strict_abort("case_execution_unknown", next_case_ordinal)
+        else:
+            loop_error = exc
 
     dut_log_path = ""
     sta_log_path = ""
     if capture_enabled:
-        try:
-            run_seq_end = _mark_seq_position(orchestrator, run_handle)
-            log_result = orchestrator._export_run_logs(
-                run_id=run_id,
-                artifact_dir=artifact_dir,
-                case_seq_ranges=case_seq_ranges,
-                case_results=case_records,
-                run_seq_start=run_seq_start,
-                run_seq_end=run_seq_end,
-            )
-            dut_log_path = log_result.get("dut_log_path", "")
-            sta_log_path = log_result.get("sta_log_path", "")
-        except Exception:
-            log.warning("run log export failed", exc_info=True)
-        finally:
-            _stop_run_capture_once(orchestrator, capture_state)
+        if strict_capture_gate:
+            try:
+                harvest = orchestrator.run_backend.harvest_strict_for_handle(
+                    run_handle,
+                    artifact_dir,
+                    case_records,
+                    case_seq_ranges,
+                )
+                if type(harvest) is not StrictCaptureHarvest:
+                    raise StrictCaptureError("capture_harvest_result_invalid")
+            except Exception:
+                harvest = StrictCaptureHarvest(
+                    StrictCaptureHarvestStatus.UNKNOWN,
+                    "capture_harvest_failed",
+                )
+            capture_state["strict_harvested"] = True
+            capture_state["strict_harvest_payload"] = harvest.to_payload()
+            prepared_artifacts["core_run_capture"] = harvest.to_payload()
+            if harvest.status is StrictCaptureHarvestStatus.COMPLETE:
+                dut_log_path = harvest.dut_log_path
+                sta_log_path = harvest.sta_log_path
+            if harvest.status is not StrictCaptureHarvestStatus.COMPLETE:
+                if not isinstance(prepared_artifacts.get("run_abort"), dict):
+                    _record_strict_abort(harvest.reason_code, len(cases))
+                run_abort_payload = prepared_artifacts.get("run_abort")
+                if isinstance(run_abort_payload, dict):
+                    run_abort_payload["core_run_capture"] = harvest.to_payload()
+                    try:
+                        (artifact_dir / "run-abort.json").write_text(
+                            json.dumps(run_abort_payload, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                    except OSError:
+                        pass
+            elif isinstance(prepared_artifacts.get("run_abort"), dict):
+                prepared_artifacts["run_abort"]["core_run_capture"] = harvest.to_payload()
+                try:
+                    (artifact_dir / "run-abort.json").write_text(
+                        json.dumps(
+                            prepared_artifacts["run_abort"],
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass
+        else:
+            try:
+                run_seq_end = _mark_seq_position(orchestrator, run_handle)
+                log_result = orchestrator._export_run_logs(
+                    run_id=run_id,
+                    artifact_dir=artifact_dir,
+                    case_seq_ranges=case_seq_ranges,
+                    case_results=case_records,
+                    run_seq_start=run_seq_start,
+                    run_seq_end=run_seq_end,
+                )
+                dut_log_path = log_result.get("dut_log_path", "")
+                sta_log_path = log_result.get("sta_log_path", "")
+            except Exception:
+                log.warning("run log export failed", exc_info=True)
+            finally:
+                _stop_run_capture_once(orchestrator, capture_state)
 
     run_result = RunResult(
         cases=case_records,
@@ -455,7 +1160,7 @@ def _run_with_capture(
         execution_policy=execution_policy,
         plugin_version=plugin.version,
         agent_trace_count=len(case_trace_files),
-        cases_count=len(cases),
+        cases_count=len(case_records) if strict_capture_gate else len(cases),
         run_started_monotonic=run_started_monotonic,
         run_started_at_iso=run_started_at_iso,
         first_case_started_monotonic=first_case_started_monotonic,

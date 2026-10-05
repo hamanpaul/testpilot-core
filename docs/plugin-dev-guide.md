@@ -67,7 +67,9 @@ contract（`RunBackend`, `RunHandle`, `ExportRequest`, `ExportResult`）、
 run preparation contract（`PreparedRun`, including API 1.4 `no_io`),
 case utility helpers、tier-2 contracts（`Tier2Capability`,
 `Tier2RecoveryContext`, `Tier2RecoveryAudit`, `Tier2PlanValidationError`）、
-`CliRegistrar`、run helpers（含 ctx-free 的
+API 1.6 run-start contracts（`RunCapability`,
+`PrepareRunAfterCaptureContext`, `PrepareRunGateOutcome`,
+`PrepareRunGateEvidence`, `PrepareRunGateResult`）、`CliRegistrar`、run helpers（含 ctx-free 的
 `run_one_case`，可選 `run_backend` 注入）, and `excel_adapter`。
 直接從 `testpilot.core.*` 或 `testpilot.schema.*` 匯入視為 private
 implementation detail；若有新 core/schema symbol 要成為穩定契約，必須先加入
@@ -115,6 +117,10 @@ implementation detail；若有新 core/schema symbol 要成為穩定契約，必
 | `create_reporter()` | 回傳 plugin 專屬 reporter（`IReporter`） | `None`（用 orchestrator 預設） |
 | `register_cli(registrar)` | 透過 `CliRegistrar` 註冊 installed plugin 自己的 Click 命令/群組 | no-op |
 | `bind_project_root(project_root)` | 接收本次執行選定的 operator project root，供 run-start preflight 或其 artifact 使用 | no-op |
+| `bind_testbed_config(topology)` | 接收 Orchestrator 已載入並選定的同一個 `TestbedConfig` 物件，供 plugin 的 run-local configuration 使用 | no-op |
+| `project_hook_payload(hook_name, payload)` | 將 lifecycle hook 與 Core attempt 對外資料投影為 plugin 可公開的副本 | identity projection |
+| `required_run_capabilities` | 由 host 在 Plugin preparation 前驗證必要的 run-level host 能力 | `frozenset()` |
+| `prepare_run_after_capture(prepared, context)` | 嚴格 capture 與 run-start marker 驗證後、firmware-version probe 前的 opt-in gate | `None` |
 | `verify_install()` | 回傳 plugin-owned install health 診斷；checkout/wheel `testpilot --verify-install` 與更新後回滾閘都會執行（更新後由新 managed venv 的 isolated process 驗證）。Wheel 的 entry-point 模組與 `Plugin` class 實作模組都需由所屬 distribution 的 RECORD 證明；editable install 需由 PEP 610 local source URL 證明；無法驗證時會阻擋驗證。`False`、例外、格式錯誤診斷也會阻擋驗證，`WARN` 維持提醒 | `[]` |
 | `build_remediation_decision(case, failure_snapshot, topology, ...)` | tier-1 deterministic failure→safe-env action mapping | `None` |
 | `execute_remediation(case, decision, topology)` | 執行 tier-1 allowlist action；只可修 environment | fail-closed unsupported result |
@@ -129,6 +135,15 @@ SDK API `1.2` 新增的 tier-2 hooks 為選配；既有宣告 `api_version = "1.
 SDK API `1.3` 新增 optional `bind_project_root(project_root)` run-context hook，
 預設為 no-op 且不改變既有 plugin method signatures；需要此 root-binding 行為的
 plugin 應宣告 `api_version = "1.3"`，避免舊 core 靜默忽略它。
+Core 另提供 optional `bind_testbed_config(topology)` hook，將目前
+`Orchestrator.config` 的同一個已載入物件交給 plugin；不會重讀路徑、依 CWD
+重建設定或複製設定。Core 在 run-capability admission 後、custom runner 建構及
+`prepare_run()` 前呼叫它；同一個 plugin instance 在同一 run 不會因 public fallback
+再次載入而重複綁定，若 fallback 載入了不同 instance，該 instance 也會收到所選設定。
+Plugin 可在 hook 中更新自己的 run-local reference；每次新 binding 都應重設
+run-local state。Hook 例外會以有限的 `testbed_config_binding_failed` 原因碼建立
+sanitized run-start abort，並停止後續 preparation。這個設定交付 hook 不代表 DUT/STA
+實體身分驗證，也不構成 capture binding evidence。
 SDK API `1.4` 新增 `PreparedRun.no_io`（預設 `False`）。Plugin 只有在整個 prepared
 selection 都不需要 Core 的 DUT/STA capture、sequence marker、log export 與 firmware
 version query 時才設為 `True`，例如透過 `PreparedRun(cases=cases, no_io=True)` 標示全為
@@ -136,6 +151,141 @@ unsupported/N/A 的 selection；此宣告不會跳過 case planning、execution 
 空 selection 會由 Core 自動略過上述環境 I/O。
 需要宣告 `no_io=True` 的 plugin 應使用 `api_version = "1.4"`；一般既有 plugin
 維持預設值即可。
+SDK API `1.5` 讓 `teardown()` 回傳 cleanup 結果：`None` 保持既有成功語意；若 cleanup
+失敗或無法確認，回傳下列有限欄位的 mapping。需要 Core 消費這個 mapping 的 plugin
+必須宣告 `api_version = "1.5"`，API 1.4 Core 會在載入時拒絕它。
+
+```python
+{
+    "status": "failed",  # 或 "unknown"
+    "reason_code": "restore_verification_failed",
+    "comment": "the saved mode did not read back",
+    "transport_result": {"error_code": "SESSION_NOT_READY"},  # 選填
+}
+```
+
+`status="failed"` 表示 cleanup 已知失敗；`status="unknown"` 表示結果無法確認。
+Core 會以目前 case/attempt 建立 environment failure snapshot、將 verdict 設為失敗，
+並終止本次 run，不會再 retry 該 case。若 receipt 表示操作結果 uncertain，Core 會將
+狀態提升為 `unknown`。額外欄位、格式錯誤的 mapping 或一般 teardown exception 都會
+fail closed。`KeyboardInterrupt` 等 cancellation 仍會向上傳遞。Plugin 的 cleanup
+流程應在 mutation 結果不確定時停止後續 I/O；Core 在先前命令 receipt 已 uncertain
+時會略過 teardown。仍成功回傳 `None` 的舊 plugin 不需升級 API 宣告。
+
+### SDK API 1.6: Run-start gate
+
+SDK API 1.6 adds a host-enforced run-start gate for plugins that must verify the
+active capture binding before firmware-version probes or case execution. Existing
+plugins leave `required_run_capabilities` empty and keep the legacy lifecycle. A
+plugin opting in must declare API 1.6 or newer and use the typed capability:
+
+```python
+from testpilot.api import (
+    PluginBase,
+    PrepareRunAfterCaptureContext,
+    PrepareRunGateEvidence,
+    PrepareRunGateOutcome,
+    PrepareRunGateResult,
+    PreparedRun,
+    RunCapability,
+)
+
+
+class Plugin(PluginBase):
+    api_version = "1.6"
+    required_run_capabilities = frozenset({RunCapability.STRICT_CAPTURE_BINDING})
+
+    def prepare_run_after_capture(
+        self,
+        prepared: PreparedRun,
+        context: PrepareRunAfterCaptureContext,
+    ) -> PrepareRunGateResult:
+        if self._verify_selected_targets(prepared, context):
+            return PrepareRunGateResult(
+                outcome=PrepareRunGateOutcome.ACCEPTED,
+                reason_code="identity_verified",
+                evidence=(
+                    PrepareRunGateEvidence(
+                        check="selected_targets",
+                        outcome=PrepareRunGateOutcome.ACCEPTED,
+                        reason_code="same_boot_verified",
+                    ),
+                ),
+            )
+        return PrepareRunGateResult(
+            outcome=PrepareRunGateOutcome.FAILED,
+            reason_code="identity_mismatch",
+        )
+```
+
+Core checks the declared capability and an overridden hook before calling
+`bind_project_root()` or `prepare_run()`. The required order is pure preparation,
+strict capture setup, a trustworthy non-negative run-start sequence marker, this
+gate, firmware-version capture, then case runners. Sequence zero is valid; `None`,
+booleans, negative values, and malformed markers are not. The context is created
+from the active capture handle, and its opaque `capture_binding_id` must never be
+copied from operator configuration.
+
+The gate result uses finite `accepted`, `failed`, or `unknown` outcomes and
+sanitized reason/evidence tokens. Missing, malformed, raised, failed, or unknown
+results create a terminal run-start abort artifact with the prepared/requested
+cases listed as unexecuted. Core does not create synthetic case rows or continue
+to version probes, case execution, capture export, or teardown after an uncertain
+gate. Invalid strict end markers or case ranges mark run capture incomplete and
+skip export; they never broaden the sequence range.
+
+If a host cannot prove the required strict capture capability, Core rejects the
+opt-in before Plugin preparation. The current production backend does not yet
+provide this strict context; plugins requesting it therefore fail closed before
+preparation until backend support is added. API 1.5 hosts also reject API 1.6
+plugins during loading, while API 1.6 hosts continue accepting API 1.4 and 1.5
+plugins through the unchanged legacy path.
+
+### SDK API 1.7: Private hook payload projection
+
+API 1.7 新增選配的 `PluginBase.project_hook_payload(hook_name, payload)`。Core 傳入
+兩部分的 mapping，並要求 projector 回傳相同形狀：
+
+```python
+{
+    "data": {"step": {"command": "..."}, "result": {"output": "..."}},
+    "context": {
+        "hook_name": "post_step",
+        "case_id": "D001",
+        "plugin_name": "example",
+        "attempt_index": 1,
+        "step_id": "probe",
+        "runner": {},
+        "extra": {},
+    },
+}
+```
+
+`context` 的欄位對應 `HookContext`。Core 在呼叫 projector 前先建立 detached deep copy，
+並只把投影後的 `data` 與 `context` 傳給 hook callback；原始 case、step results、captures、
+prior attempts 與 runner context 不會透過第二條路徑交給 callback。Hook 執行後，Core 會再
+投影一次回傳資料，再只合併 SDK 已支援的控制欄位。Hook 對 case、step、result、commands、
+outputs 或 prior attempts 的修改不會改寫 private evaluator evidence。
+
+`PluginBase` 的預設 projector 是 identity，讓舊 plugin 繼續沿用既有 hook 行為。需要將
+private values 排除於 lifecycle hooks 與 Engine attempts / snapshots / traces 的 plugin，
+應宣告 `api_version = "1.7"` 並覆寫 projector，在 `data` 與 `context` 兩部分都移除或取代
+敏感欄位。Projector 必須回傳包含 `data` 與 `context` 的 mapping，且 `context` 必須保留
+`HookContext` 的欄位型別與 `hook_name`。Deep copy 失敗、projector 例外或格式錯誤都會以
+有限的 `hook_payload_projection_failed` 原因停止該 case；Core 不會退回 raw payload，也不會
+輸出 projector exception 內容。若已取得 unknown transport evidence，unknown reason 與安全
+receipt 優先保留，Core 不執行後續 teardown 或 retry。
+
+Unknown outcome 在 dispatch action-capable lifecycle hook 前先分類，因此不會呼叫
+`post_step`、`on_failure` 或 `post_case`，也不會 replay 下一 step / attempt。未知 receipt 若由
+`on_retry` 控制資料回傳，Core 會保存經投影的安全 receipt，並在開始下一次 attempt 或呼叫
+`post_case` 前停止。Completed 的非零命令結果仍是已知失敗，保留一般 hooks 和設定的 retry。
+
+此投影涵蓋 Core lifecycle hooks 與 Engine attempt / snapshot / trace surfaces；不會去敏
+raw UART/WAL capture，也不保證 Plugin 自行生成的 report 已安全投影。API 1.6 host 會在
+Plugin instance 建立前拒絕 API 1.7 plugin；API 1.7 host 仍接受相容的舊 API plugin。完整邊界
+見 [`private-hook-projection.md`](private-hook-projection.md)。
+
 每個 tier-2 capability 必須宣告 `executor_key`、`description`、
 `execution_boundary` 與 `params_schema`。core 會驗證 executor allowlist、參數名稱/
 型別/enum/長度與 action budget；`schema_validated` 只表示結構通過，不表示 core

@@ -3,12 +3,32 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 import inspect
 from pathlib import Path
-from typing import Any, Sequence
+import re
+from typing import Any, ClassVar, Sequence
 
 from testpilot.core.case_utils import case_matches_requested_ids, stringify_step_command
+from testpilot.core.cleanup_result import (
+    cleanup_exception_result,
+    cleanup_failure_snapshot,
+    has_unknown_transport_outcome,
+    normalize_cleanup_result,
+    project_transport_evidence,
+)
 from testpilot.core.prepared_run import PreparedRun
+from testpilot.core.role_plan import CaptureRolePlanRequest
+from testpilot.core.run_start_gate import (
+    PrepareRunAfterCaptureContext,
+    PrepareRunGateResult,
+    RunCapability,
+    RunCapabilityAdmissionOutcome,
+    admit_run_capabilities,
+)
+
+_ABORT_REASON_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_DEFAULT_PLUGIN_ABORT_REASON = "plugin_failure_abort"
 
 
 class IncompatiblePluginError(Exception):
@@ -27,6 +47,8 @@ class PluginBase(ABC):
     """
 
     api_version: str | None = None
+    required_run_capabilities: ClassVar[frozenset[RunCapability]] = frozenset()
+    capture_role_plan_request: ClassVar[CaptureRolePlanRequest | None] = None
 
     @property
     @abstractmethod
@@ -72,6 +94,28 @@ class PluginBase(ABC):
         """
         return True
 
+    def project_hook_payload(
+        self, hook_name: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Project a detached lifecycle-hook envelope for public observation.
+
+        ``payload`` has exactly two top-level keys: ``data`` contains the
+        lifecycle hook payload and ``context`` contains plain fields matching
+        :class:`HookContext` (``hook_name``, ``case_id``, ``plugin_name``,
+        ``attempt_index``, ``step_id``, ``runner``, and ``extra``). Return the
+        same two-part shape. Core never gives this method the evaluator's live
+        case or step-result objects, and it passes only the returned context to
+        the hook callback.
+
+        The default is an identity projection for legacy plugins. Plugins that
+        hold private evidence should override this method and remove or replace
+        sensitive fields from both parts of the envelope. Core fails closed
+        with a finite reason if copying or projection fails or returns a
+        malformed envelope; it does not fall back to the raw payload.
+        """
+        del hook_name
+        return payload
+
     @abstractmethod
     def execute_step(self, case: dict[str, Any], step: dict[str, Any], topology: Any) -> dict[str, Any]:
         """執行單一測試步驟。
@@ -88,8 +132,14 @@ class PluginBase(ABC):
             True if all criteria pass.
         """
 
-    def teardown(self, case: dict[str, Any], topology: Any) -> None:
-        """清理測試環境。預設為 no-op；子類別可覆寫。"""
+    def teardown(
+        self, case: dict[str, Any], topology: Any
+    ) -> Mapping[str, Any] | None:
+        """Clean up test state.
+
+        API 1.5 plugins may return a bounded failure mapping with ``status``
+        ``failed`` or ``unknown``. ``None`` remains successful legacy cleanup.
+        """
 
     # -- optional live remediation hooks --------------------------------------
 
@@ -202,6 +252,15 @@ class PluginBase(ABC):
         """
         del project_root
 
+    def bind_testbed_config(self, topology: Any) -> None:
+        """Receive the active, already-loaded testbed configuration for a run.
+
+        Core calls this after run-capability admission and before custom runner
+        construction or plugin preparation. The default is a no-op so existing
+        plugins retain their behavior.
+        """
+        del topology
+
     def verify_install(self) -> list[tuple[bool, str]]:
         """Return plugin-owned install-health checks for testpilot --verify-install."""
         return []
@@ -242,6 +301,20 @@ class PluginBase(ABC):
             ]
         return PreparedRun(cases=cases, artifacts={})
 
+    def prepare_run_after_capture(
+        self,
+        prepared: PreparedRun,
+        context: PrepareRunAfterCaptureContext,
+    ) -> PrepareRunGateResult | None:
+        """Optionally validate identities after strict capture and before version probes.
+
+        The default is a no-op for existing plugins. A plugin that requires the
+        gate must declare ``RunCapability.STRICT_CAPTURE_BINDING`` and override
+        this method; Core rejects a missing or non-typed result before proceeding.
+        """
+        del prepared, context
+        return None
+
     # -- optional overridable pipeline -----------------------------------------
 
     def run_pipeline(
@@ -255,50 +328,214 @@ class PluginBase(ABC):
         additional phases.  The default implementation mirrors the
         ExecutionEngine contract.
         """
+        admission = admit_run_capabilities(
+            self,
+            None,
+            default_gate_hook=PluginBase.prepare_run_after_capture,
+        )
+        if admission.outcome is not RunCapabilityAdmissionOutcome.LEGACY:
+            raise RuntimeError("strict run requires Core-owned context-bearing lifecycle")
+
         commands: list[str] = []
         outputs: list[str] = []
         verdict = False
         comment = ""
 
+        runtime_case = dict(case)
+        runtime_case.pop("_last_failure", None)
+        runtime_case["_attempt_index"] = 1
+
+        def current_failure_snapshot() -> Mapping[str, Any] | None:
+            failure = runtime_case.get("_last_failure")
+            if not isinstance(failure, Mapping):
+                return None
+            if failure.get("case_id") != str(runtime_case.get("id", "")):
+                return None
+            attempt_index = failure.get("attempt_index")
+            if (
+                not isinstance(attempt_index, int)
+                or isinstance(attempt_index, bool)
+                or attempt_index != 1
+            ):
+                return None
+            return failure
+
+        def current_explicit_failure_abort() -> tuple[bool, str, bool, Mapping[str, Any] | None]:
+            failure = current_failure_snapshot()
+            if failure is None or failure.get("abort_run") is not True:
+                return False, "", False, None
+
+            raw_reason = failure.get("abort_reason") or failure.get("reason_code")
+            reason = str(raw_reason or _DEFAULT_PLUGIN_ABORT_REASON).strip()[:128]
+            if _ABORT_REASON_PATTERN.fullmatch(reason) is None:
+                reason = _DEFAULT_PLUGIN_ABORT_REASON
+            return True, reason, failure.get("skip_teardown") is True, dict(failure)
+
+        unknown_outcome = False
+        plugin_abort_run = False
+        plugin_abort_reason = ""
+        skip_teardown = False
+        plugin_failure_snapshot: Mapping[str, Any] | None = None
+        transport_evidence: dict[str, Any] = {}
+        cleanup_result: dict[str, Any] | None = None
         try:
-            if not self.setup_env(case, topology):
-                return {"verdict": False, "comment": "setup_env failed", "commands": [], "outputs": []}
-            if not self.verify_env(case, topology):
-                return {"verdict": False, "comment": "env_verify gate failed", "commands": [], "outputs": []}
+            if not self.setup_env(runtime_case, topology):
+                comment = "setup_env failed"
+                failure = current_failure_snapshot()
+                unknown_outcome = has_unknown_transport_outcome(failure)
+                transport_evidence = project_transport_evidence(failure)
+                (
+                    plugin_abort_run,
+                    plugin_abort_reason,
+                    skip_teardown,
+                    plugin_failure_snapshot,
+                ) = current_explicit_failure_abort()
+            elif not self.verify_env(runtime_case, topology):
+                comment = "env_verify gate failed"
+                failure = current_failure_snapshot()
+                unknown_outcome = has_unknown_transport_outcome(failure)
+                transport_evidence = project_transport_evidence(failure)
+                (
+                    plugin_abort_run,
+                    plugin_abort_reason,
+                    skip_teardown,
+                    plugin_failure_snapshot,
+                ) = current_explicit_failure_abort()
+            else:
+                step_results: dict[str, Any] = {}
+                raw_steps = runtime_case.get("steps", [])
+                steps = raw_steps if isinstance(raw_steps, list) else []
+                for step in steps:
+                    step_data = dict(step) if isinstance(step, dict) else {"id": "step", "command": str(step)}
+                    step_id = str(step_data.get("id", "step"))
+                    cmd = stringify_step_command(step_data.get("command"))
+                    # Keep commands/outputs index-aligned per step: a step with no
+                    # command text or no output (e.g. a station verb with no key=value
+                    # lines) still occupies its slot in BOTH lists, otherwise every
+                    # later entry shifts up by one and evidence gets attributed to
+                    # the wrong step (2026-09-17 EIT bench D259/D402 trace misread).
+                    commands.append(cmd)
+                    result = self.execute_step(runtime_case, step_data, topology)
+                    failure = current_failure_snapshot()
+                    if has_unknown_transport_outcome(result, failure):
+                        unknown_outcome = True
+                        transport_evidence = project_transport_evidence(
+                            result,
+                            failure,
+                        )
+                        outputs.append("")
+                        comment = f"command outcome unknown: {step_id}"
+                        break
+                    step_results[step_id] = result
+                    outputs.append(str(result.get("output", "")).strip())
+                    if not result.get("success", False):
+                        comment = f"step failed: {step_id}"
+                        (
+                            plugin_abort_run,
+                            plugin_abort_reason,
+                            skip_teardown,
+                            plugin_failure_snapshot,
+                        ) = current_explicit_failure_abort()
+                        break
 
-            step_results: dict[str, Any] = {}
-            raw_steps = case.get("steps", [])
-            steps = raw_steps if isinstance(raw_steps, list) else []
-            for step in steps:
-                step_data = dict(step) if isinstance(step, dict) else {"id": "step", "command": str(step)}
-                step_id = str(step_data.get("id", "step"))
-                cmd = stringify_step_command(step_data.get("command"))
-                # Keep commands/outputs index-aligned per step: a step with no
-                # command text or no output (e.g. a station verb with no key=value
-                # lines) still occupies its slot in BOTH lists, otherwise every
-                # later entry shifts up by one and evidence gets attributed to
-                # the wrong step (2026-09-17 EIT bench D259/D402 trace misread).
-                commands.append(cmd)
-                result = self.execute_step(case, step_data, topology)
-                step_results[step_id] = result
-                outputs.append(str(result.get("output", "")).strip())
-                if not result.get("success", False):
-                    comment = f"step failed: {step_id}"
-                    break
-
-            if not comment:
-                verdict = self.evaluate(case, {"steps": step_results})
-                if not verdict:
-                    comment = "pass_criteria not satisfied"
+                if not comment:
+                    verdict = self.evaluate(runtime_case, {"steps": step_results})
+                    if not verdict:
+                        comment = "pass_criteria not satisfied"
+                        (
+                            plugin_abort_run,
+                            plugin_abort_reason,
+                            skip_teardown,
+                            plugin_failure_snapshot,
+                        ) = current_explicit_failure_abort()
 
         except Exception as exc:
-            comment = f"exception: {exc}"
+            failure = current_failure_snapshot()
+            unknown_outcome = has_unknown_transport_outcome(exc, failure)
+            transport_evidence = project_transport_evidence(exc, failure)
+            comment = "command outcome unknown" if unknown_outcome else f"exception: {exc}"
+            (
+                plugin_abort_run,
+                plugin_abort_reason,
+                skip_teardown,
+                plugin_failure_snapshot,
+            ) = current_explicit_failure_abort()
         finally:
-            self.teardown(case, topology)
+            unknown_outcome = unknown_outcome or has_unknown_transport_outcome(
+                current_failure_snapshot()
+            )
+            if not unknown_outcome and not skip_teardown:
+                try:
+                    cleanup_result = normalize_cleanup_result(
+                        self.teardown(runtime_case, topology)
+                    )
+                except Exception:
+                    cleanup_result = cleanup_exception_result()
 
-        return {
+        result_payload: dict[str, Any] = {
             "verdict": verdict,
             "comment": comment,
             "commands": commands,
             "outputs": outputs,
         }
+        if unknown_outcome:
+            result_payload.update(
+                {
+                    "verdict": False,
+                    "comment": comment or "command outcome unknown",
+                    "failure_snapshot": {
+                        "case_id": str(runtime_case.get("id", "")),
+                        "attempt_index": 1,
+                        "category": "environment",
+                        "reason_code": "command_outcome_unknown",
+                        "comment": comment or "command outcome unknown",
+                        "transport_result": transport_evidence,
+                    },
+                    "diagnostic_status": "FailEnv",
+                    "abort_run": True,
+                    "abort_reason": "command_outcome_unknown",
+                    "transport_result": transport_evidence,
+                }
+            )
+        elif cleanup_result is not None:
+            snapshot = cleanup_failure_snapshot(
+                cleanup_result,
+                case_id=runtime_case.get("id", ""),
+                attempt_index=1,
+            )
+            result_payload.update(
+                {
+                    "verdict": False,
+                    "comment": cleanup_result["comment"],
+                    "failure_snapshot": snapshot,
+                    "diagnostic_status": "FailEnv",
+                    "abort_run": True,
+                    "abort_reason": cleanup_result["reason_code"],
+                    "transport_result": dict(cleanup_result["transport_result"]),
+                }
+            )
+        elif plugin_abort_run and plugin_failure_snapshot is not None:
+            category = str(plugin_failure_snapshot.get("category", "")).strip().lower()
+            if category in {"environment", "session"}:
+                diagnostic_status = "FailEnv"
+            elif category in {"configuration", "config"}:
+                diagnostic_status = "FailConfig"
+            elif category in {"test", "semantic"}:
+                diagnostic_status = "FailTest"
+            else:
+                diagnostic_status = "Inconclusive"
+            transport_evidence = project_transport_evidence(
+                transport_evidence,
+                plugin_failure_snapshot,
+            )
+            result_payload.update(
+                {
+                    "verdict": False,
+                    "failure_snapshot": dict(plugin_failure_snapshot),
+                    "diagnostic_status": diagnostic_status,
+                    "abort_run": True,
+                    "abort_reason": plugin_abort_reason,
+                    "transport_result": transport_evidence,
+                }
+            )
+        return result_payload

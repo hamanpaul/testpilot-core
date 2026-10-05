@@ -13,7 +13,7 @@ def test_api_version_is_semver():
     from testpilot.api import API_VERSION
 
     assert re.fullmatch(r"\d+\.\d+", API_VERSION)
-    assert API_VERSION == "1.4"
+    assert API_VERSION == "1.7"
 
 
 def test_tier2_recovery_contract_types_are_exported():
@@ -28,6 +28,38 @@ def test_prepared_run_no_io_is_public_and_opt_in():
 
     assert PreparedRun(cases=[]).no_io is False
     assert PreparedRun(cases=[], no_io=True).no_io is True
+    assert PreparedRun(cases=[]).run_start_gate is None
+
+
+def test_run_start_gate_contract_types_are_public_and_frozen():
+    from dataclasses import FrozenInstanceError
+
+    from testpilot.api import (
+        PrepareRunAfterCaptureContext,
+        PrepareRunGateEvidence,
+        PrepareRunGateOutcome,
+        PrepareRunGateResult,
+        RunCapability,
+    )
+
+    context = PrepareRunAfterCaptureContext("run-1", 0, "binding-1")
+    result = PrepareRunGateResult(
+        PrepareRunGateOutcome.ACCEPTED,
+        "identity_verified",
+        (PrepareRunGateEvidence("dut_identity", PrepareRunGateOutcome.ACCEPTED, "same_boot"),),
+    )
+
+    assert RunCapability.STRICT_CAPTURE_BINDING.value == "strict_capture_binding"
+    assert context.start_sequence == 0
+    assert result.to_payload() == {
+        "outcome": "accepted",
+        "reason_code": "identity_verified",
+        "evidence": [
+            {"check": "dut_identity", "outcome": "accepted", "reason_code": "same_boot"}
+        ],
+    }
+    with pytest.raises(FrozenInstanceError):
+        result.reason_code = "changed"
 
 
 def test_incompatible_error_exported():
@@ -42,9 +74,17 @@ def test_incompatible_error_exported():
         ("1.0", "1.0", True),
         ("1.0", "1.3", True),
         ("1.3", "1.4", True),
+        ("1.4", "1.5", True),
+        ("1.5", "1.5", True),
+        ("1.5", "1.6", True),
+        ("1.6", "1.7", True),
+        ("1.7", "1.7", True),
         ("1.4", "1.3", False),
+        ("1.5", "1.4", False),
+        ("1.6", "1.5", False),
+        ("1.7", "1.6", False),
         ("1.3", "1.0", False),
-        ("2.0", "1.5", False),
+        ("2.0", "1.6", False),
         (None, "1.0", False),
     ],
 )
@@ -105,11 +145,12 @@ def _plugin_class(name: str, api_version: Any) -> type:
     return Plugin
 
 
-def test_loader_accepts_compatible_plugin_and_caches_it():
+@pytest.mark.parametrize("declared", ["1.3", "1.4"])
+def test_loader_accepts_compatible_plugin_and_caches_it(declared):
     from testpilot.core.plugin_loader import PluginLoader
 
     loader = PluginLoader.from_entry_points([
-        _FakeEntryPoint("dummy", _plugin_class("dummy", "1.3")),
+        _FakeEntryPoint("dummy", _plugin_class("dummy", declared)),
     ])
 
     plugin = loader.load("dummy")
@@ -135,7 +176,90 @@ def test_loader_rejects_api_14_plugin_on_api_13_host(monkeypatch):
     assert loader.loaded == {}
 
 
-@pytest.mark.parametrize("declared", [None, "1", 1.0, "1.5", "2.0"])
+def test_loader_rejects_api_15_plugin_on_api_14_host(monkeypatch):
+    import testpilot.api
+
+    from testpilot.api import IncompatiblePluginError
+    from testpilot.core.plugin_loader import PluginLoader
+
+    monkeypatch.setattr(testpilot.api, "API_VERSION", "1.4")
+    loader = PluginLoader.from_entry_points([
+        _FakeEntryPoint("dummy", _plugin_class("dummy", "1.5")),
+    ])
+
+    with pytest.raises(IncompatiblePluginError):
+        loader.load("dummy")
+
+    assert loader.loaded == {}
+
+
+def test_loader_accepts_api_15_plugin_on_api_16_host():
+    from testpilot.core.plugin_loader import PluginLoader
+
+    loader = PluginLoader.from_entry_points([
+        _FakeEntryPoint("dummy", _plugin_class("dummy", "1.5")),
+    ])
+
+    assert loader.load("dummy").name == "dummy"
+
+
+def test_loader_accepts_api_17_plugin_on_api_17_host(monkeypatch):
+    import testpilot.api
+
+    from testpilot.core.plugin_loader import PluginLoader
+
+    monkeypatch.setattr(testpilot.api, "API_VERSION", "1.7")
+    loader = PluginLoader.from_entry_points([
+        _FakeEntryPoint("dummy", _plugin_class("dummy", "1.7")),
+    ])
+
+    assert loader.load("dummy").name == "dummy"
+
+
+def test_loader_rejects_api_17_plugin_on_api_16_host_before_instantiation(monkeypatch):
+    import testpilot.api
+
+    from testpilot.api import IncompatiblePluginError, PluginBase
+    from testpilot.core.plugin_loader import PluginLoader
+
+    class Api17Plugin(PluginBase):
+        api_version = "1.7"
+        initialized = False
+
+        def __init__(self) -> None:
+            type(self).initialized = True
+
+        @property
+        def name(self) -> str:
+            return "dummy"
+
+        def discover_cases(self) -> list[dict[str, Any]]:
+            return []
+
+        def execute_step(
+            self,
+            case: dict[str, Any],
+            step: dict[str, Any],
+            topology: Any,
+        ) -> dict[str, Any]:
+            return {}
+
+        def evaluate(self, case: dict[str, Any], results: dict[str, Any]) -> bool:
+            return True
+
+    monkeypatch.setattr(testpilot.api, "API_VERSION", "1.6")
+    loader = PluginLoader.from_entry_points([
+        _FakeEntryPoint("dummy", Api17Plugin),
+    ])
+
+    with pytest.raises(IncompatiblePluginError):
+        loader.load("dummy")
+
+    assert Api17Plugin.initialized is False
+    assert loader.loaded == {}
+
+
+@pytest.mark.parametrize("declared", [None, "1", 1.0, "1.8", "2.0"])
 def test_loader_rejects_incompatible_plugin_without_caching(declared):
     from testpilot.api import IncompatiblePluginError
     from testpilot.core.plugin_loader import PluginLoader

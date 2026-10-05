@@ -6,6 +6,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 from testpilot.serialwrap_binary import (
@@ -90,6 +91,8 @@ def resolve_serialwrap_log_binding(
     config: dict[str, Any] | None,
     *,
     backend_binary: str | None = None,
+    roles: Sequence[str] | None = None,
+    strict: bool = False,
 ) -> SerialwrapLogBinding:
     """Resolve backend logging to one explicit device target or fail closed.
 
@@ -102,16 +105,71 @@ def resolve_serialwrap_log_binding(
     raw_devices = testbed.get("devices", {})
     devices = raw_devices if isinstance(raw_devices, dict) else {}
     selected: list[dict[str, Any]] = []
-    for role in ("dut", "sta"):
-        raw = devices.get(role) or devices.get(role.upper())
-        if not isinstance(raw, dict):
-            continue
-        transport = str(raw.get("transport") or "").strip().lower()
-        if transport in _SERIAL_TRANSPORTS or (
-            not transport
-            and any(key in raw for key in ("binary", "socket", "selector", "com_port", "serial_port"))
+    selected_roles: tuple[str, ...]
+    if roles is None:
+        if strict:
+            return _disabled("strict capture requires an explicit role plan", device_count=0)
+        selected_roles = ("dut", "sta")
+        for role in selected_roles:
+            raw = devices.get(role) or devices.get(role.upper())
+            if not isinstance(raw, dict):
+                continue
+            transport = str(raw.get("transport") or "").strip().lower()
+            if transport in _SERIAL_TRANSPORTS or (
+                not transport
+                and any(
+                    key in raw
+                    for key in ("binary", "socket", "selector", "com_port", "serial_port")
+                )
+            ):
+                selected.append(raw)
+    else:
+        if isinstance(roles, (str, bytes)):
+            return _disabled("strict capture role plan is invalid", device_count=0)
+        selected_roles = tuple(roles)
+        if (
+            not selected_roles
+            or len(selected_roles) > 32
+            or any(type(role) is not str or not role for role in selected_roles)
+            or len(set(role.casefold() for role in selected_roles)) != len(selected_roles)
         ):
-            selected.append(raw)
+            return _disabled("strict capture role plan is invalid", device_count=0)
+        normalized_devices: dict[str, list[Any]] = {}
+        for role_name, raw in devices.items():
+            if type(role_name) is str:
+                normalized_devices.setdefault(role_name.strip().casefold(), []).append(raw)
+        for role in selected_roles:
+            matches = normalized_devices.get(role.casefold(), [])
+            if len(matches) != 1 or not isinstance(matches[0], dict):
+                return _disabled(
+                    "strict capture role configuration is ambiguous",
+                    device_count=len(selected),
+                )
+            raw = matches[0]
+            transport = str(raw.get("transport") or "").strip().lower()
+            if strict and transport and transport not in _SERIAL_TRANSPORTS:
+                return _disabled(
+                    "strict capture role does not select a supported serial transport",
+                    device_count=len(selected),
+                )
+            if strict and not transport and not str(raw.get("selector") or "").strip():
+                return _disabled(
+                    "strict capture role selector is missing",
+                    device_count=len(selected),
+                )
+            if transport in _SERIAL_TRANSPORTS or (
+                not transport
+                and any(
+                    key in raw
+                    for key in ("binary", "socket", "selector", "com_port", "serial_port")
+                )
+            ):
+                selected.append(raw)
+            else:
+                return _disabled(
+                    "strict capture role does not select a serial transport",
+                    device_count=len(selected),
+                )
 
     if not selected:
         return _disabled(
@@ -220,14 +278,23 @@ def resolve_serialwrap_log_binding(
         socket = explicit[0]
         socket_source = "device_config"
     elif normalized_env:
-        # Leave the option absent so both serialwrap subprocesses consume the
-        # exact inherited endpoint override.
-        socket = None
+        # Strict callers pass this exact inherited endpoint explicitly so a
+        # plugin callback cannot redirect later child processes by changing
+        # the environment. Legacy callers preserve their old inherited form.
+        socket = env_endpoint if strict else None
         socket_source = SERIALWRAP_ENDPOINT_ENV
     else:
         # Both clients use the same serialwrap user/default endpoint resolver.
         socket = None
         socket_source = "serialwrap_default"
+
+    if strict and socket_source == "serialwrap_default":
+        return _disabled(
+            "strict capture requires an explicitly configured provider endpoint",
+            device_count=len(selected),
+            binary_source=binary_source,
+            socket_source=socket_source,
+        )
 
     return SerialwrapLogBinding(
         enabled=True,

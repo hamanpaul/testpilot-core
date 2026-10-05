@@ -62,6 +62,10 @@ TestPilot <core-version> (<source-ref>)
 
 It provides a versioned plugin SDK (`testpilot.api`), CLI host, lifecycle orchestration, evidence/trace capture, reporting contracts, transport/run-backend abstractions, and an optional agent-assisted control plane. Project-specific test logic belongs in independently developed plugins.
 
+SDK API 1.6 adds an opt-in strict run-start gate for plugins that require host-verified capture binding before firmware-version or case I/O. Unsupported strict capture aborts before plugin preparation; API 1.4/1.5 plugins retain their existing path, and API 1.5 hosts reject API 1.6 plugins before instantiation. The current production backend does not yet provide the strict capture context, so the opt-in fails closed until that support is added. See the [plugin development guide](docs/plugin-dev-guide.md#sdk-api-16-run-start-gate) for the lifecycle contract and example.
+
+SDK API 1.7 adds optional `PluginBase.project_hook_payload()` for plugins that need to keep private evidence out of lifecycle hooks and Core attempt results. Core deep-copies the `{"data": ..., "context": ...}` envelope before projection and dispatch, so the plugin evaluator still receives the original step results and captures. The default identity projection keeps older plugins compatible; a plugin that needs privacy projection should declare API 1.7 and override the method. Invalid projections fail closed, and unknown transport outcomes stop later action-capable hooks, teardown, and retry. See the [projection contract](docs/private-hook-projection.md) and [plugin development guide](docs/plugin-dev-guide.md#sdk-api-17-private-hook-payload-projection). This boundary does not redact raw UART/WAL capture files or guarantee plugin-generated reports are sanitized.
+
 ### Scope and current fit
 
 The core extension model is not tied to a single product domain, but the project has an embedded and real-hardware testing heritage. Current field usage, bundled transport support, managed-install assumptions, and most non-trivial examples are still concentrated around device verification.
@@ -88,6 +92,10 @@ The default core-owned execution path is split into two concerns:
 - **Copilot SDK control plane** — per-case session foundation, lifecycle hooks, advisory planning, tiered environment recovery, and extension surfaces such as custom agents / skills / selective MCP.
 
 Core principle: **agent assistance does not own the final verdict.**
+
+The built-in SSH transport treats subprocess timeouts, local exit status `255`,
+and local signal termination as unknown remote command outcomes. The Engine
+stops those attempts before retry and teardown; see [SSH outcome boundary](docs/ssh-outcome-boundary.md).
 
 Current landed control-plane subset:
 
@@ -327,6 +335,12 @@ testpilot list-plugins
 
 Implement the `PluginBase` contract: declare `api_version`, `name`, `discover_cases()`, `execute_step()`, and `evaluate()`; override optional hooks such as `setup_env()`, `verify_env()`, `teardown()`, `create_reporter()`, `create_runner()`, `register_cli()`, and remediation hooks as needed.
 
+`PluginBase.run_pipeline()` applies the same current-case/current-attempt terminal-failure rules as the retry engine. A matching `_last_failure` with literal `abort_run: True` is returned as a terminal result; teardown is skipped only when that snapshot also has literal `skip_teardown: True`. Unknown command outcomes keep precedence over plugin-provided abort reasons.
+
+Transport receipts marked `outcome: accepted` or `status: accepted` mean the command was accepted but do not establish completion. The retry engine stops retries and follow-up cleanup on that evidence. A direct `PluginBase.run_pipeline()` call returns terminal `FailEnv` before reading or rendering the step output, preserves the submitted command slot with a blank output, and skips evaluation and teardown. Explicit completed success or failure keeps its existing behavior.
+
+Unreadable receipt fields or receipt graphs beyond the bounded traversal limit produce sanitized unknown, non-replayable evidence and stop Engine follow-up. The direct pipeline applies the same rule before rendering result output and skips evaluation and teardown. An ordinary local exception without receipt evidence keeps the existing failure and retry behavior.
+
 Plugins using SDK API 1.4 may return `PreparedRun(cases=cases, no_io=True)` when the entire prepared selection needs no Core DUT/STA capture, sequence markers, log export, or firmware-version query. This keeps per-case planning, execution, and reporting intact. Empty selections skip those Core environment queries automatically; mixed selections must leave `no_io=False`.
 
 Plugins import the public SDK surface from `testpilot.api`; they must not reach into `testpilot.core`, `testpilot.schema`, `testpilot.reporting`, `testpilot.transport`, or `testpilot.runtime` internals. See `plugins/_template/README.md` and `docs/plugin-dev-guide.md` for the current contract.
@@ -366,6 +380,10 @@ User-facing pull requests should carry a changelog fragment or explicitly record
 
 **TestPilot Core 是一套 Plugin 化的測試自動化與驗證框架。**
 
+SDK API 1.6 新增 opt-in strict run-start gate，供必須先取得 host 驗證 capture binding 才能進行 firmware-version 或 case I/O 的 Plugin 使用。strict capture 不支援時，Core 會在 Plugin preparation 前 abort；API 1.4／1.5 Plugin 維持既有路徑，API 1.5 host 則會在 Plugin instance 建立前拒絕 API 1.6 Plugin。目前 production backend 尚未提供 strict capture context，因此 opt-in 會 fail closed，直到該支援完成。生命週期 contract 與範例見[Plugin 開發指南](docs/plugin-dev-guide.md#sdk-api-16-run-start-gate)。
+
+SDK API 1.7 新增選配的 `PluginBase.project_hook_payload()`，讓需要保護 private evidence 的 Plugin 能在 lifecycle hook 與 Core attempt result 對外前投影資料。Core 會先複製 `{"data": ..., "context": ...}` envelope 再執行投影與 hook；Plugin evaluator 仍收到原始 step results 與 captures。預設 identity projection 維持舊 Plugin 相容；需要資料去敏的 Plugin 應宣告 API 1.7 並覆寫此方法。投影格式錯誤或失敗時會 fail closed；transport outcome 未知時，Core 會停止後續 action-capable hook、teardown 與 retry。詳見[投影契約](docs/private-hook-projection.md)與[Plugin 開發指南](docs/plugin-dev-guide.md#sdk-api-17-private-hook-payload-projection)。此邊界不會去敏 raw UART/WAL capture 檔，也不保證 Plugin 自行產生的報表已去敏。
+
 Core 提供具版本的 Plugin SDK（`testpilot.api`）、CLI host、測試生命週期編排、evidence / trace 蒐集、reporting contract、transport / run-backend abstraction，以及選配的 Agent-assisted control plane。各專案真正要測什麼、如何操作環境、如何判讀 domain-specific 條件，則由各自的 Plugin 實作。
 
 ### 定位與目前適用範圍
@@ -394,6 +412,10 @@ Core wheel 本身不包含 domain test suite。目前公開 reference 包含：
 - **Copilot SDK control plane** — per-case session foundation、lifecycle hooks、advisory planning、分層 environment recovery，以及 custom agents / skills / selective MCP 等 extension surface。
 
 核心原則：**Agent 可以協助，但不擁有最終 verdict。**
+
+內建 SSH transport 會將 subprocess timeout、本機 exit status `255`，以及本機 signal
+termination 標記為遠端 command outcome 未知；Engine 會在 retry 與 teardown 前停止該次
+attempt。詳細限制與 receipt 欄位見 [SSH outcome boundary](docs/ssh-outcome-boundary.md)。
 
 目前已落地的 control-plane 子集：
 

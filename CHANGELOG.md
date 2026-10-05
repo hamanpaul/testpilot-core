@@ -9,9 +9,40 @@ preparation.
 
 ## [Unreleased]
 
+### Changed
+
+- 升級 Plugin SDK 契約至 API 1.7，新增 `PluginBase.project_hook_payload()` 的 identity 預設與 detached `data` / `context` 投影 envelope；Core 以投影副本呼叫 lifecycle hooks，保留原始 evaluator evidence，並在投影失敗時 fail closed。
+- 將 unknown transport classification 移到 action hook 邊界前；unknown evidence 不再觸發 `post_step`、`on_failure`、`on_retry` 或 `post_case`，也不會 teardown 或 replay。已知的 completed 非零結果仍沿用一般 hook 與 retry 流程。
+
 ### Fixed
 
+- Release the Core-local serialwrap logger lease when strict capability preflight rejects malformed provider replies or raises before admission.
+
+- Document the private hook-result projector carrier and cover accepted/unknown transport evidence first introduced by `post_case`, including run abort before later-case work.
+
+- Keep hook dispatch logs to fixed halt/failure status messages; advice and handler exception text remain available only through the projected control path.
+
+- Classify direct `PluginBase.run_pipeline()` transport receipts before reading or rendering step output; preserve the submitted command slot and safe receipt identity, and stop with sanitized `FailEnv` before evaluation or teardown on accepted, partial, or unreadable outcomes.
+
+- Stop after unreadable receipt fields or over-budget transport receipt traversal with sanitized unknown, non-replayable evidence; keep ordinary local exceptions without receipt evidence on the existing retry path.
+
+- Treat accepted transport receipts as uncertain across nested results, exceptions, and cleanup responses; preserve the accepted status and command identity while stopping retries and follow-up I/O.
+
+- Apply matching plugin terminal-abort snapshots consistently in direct `PluginBase.run_pipeline()` calls: preserve the abort evidence, honor literal teardown suppression, and keep unknown transport outcomes dominant.
+
 - Keep staged-command producer markers parseable when serial console echo inserts CR/LF wrapping inside commands by splitting the marker literal in generated shell commands; retain strict receipt validation, per-invocation nonces, separate script/cleanup statuses, and the 120-byte UART budget.
+
+- Treat SSH subprocess timeouts, exit status 255, and local signal termination as structured, non-replayable unknown outcomes; stop Engine retries and teardown without exposing command argv in exception formatting.
+
+- Enforce strict run-capability admission at public `Orchestrator.run()` before plugin binding or runner construction; route accepted strict plugins through Core's context-bearing loop and reject legacy custom/direct pipeline paths before setup or verdict work.
+
+- Reject nested credential-like provider-option mapping keys and effective role plans whose supplied digests do not match their canonical contents.
+
+- Add neutral API 1.6 role-plan request and immutable projection types with separate identity/provider digests; keep them opt-in and configuration-only until lifecycle and backend binding are implemented.
+
+- Deliver the selected, already-loaded `TestbedConfig` through the optional `PluginBase.bind_testbed_config()` hook after capability admission and before custom runner construction or plugin preparation. Binding failures stop startup with a sanitized finite reason; the default hook remains a no-op.
+- Add the opt-in Core consumer for serialwrap capture-binding API 1.1. Strict plugins require an explicit role plan and provider endpoint; API 1.0-only providers fail before preparation, and logs/case intervals are published only after complete fixed-range validation. Plugins without the strict capability keep the legacy default run path.
+- Keep API 1.1 capture identity tokens separate from the provider's ordered accepted-RX provenance tokens; validate both per-role token lists and compare RX WAL rows only with their ingress-provenance token.
 
 ## [0.4.0] - 2026-10-03
 
@@ -48,6 +79,10 @@ preparation.
 - Save decoded serialwrap logs as exact UTF-8 payload bytes without platform newline translation, and report the encoded byte length.
 
 ### Changed
+
+- SDK API 1.6 adds an opt-in host-enforced post-capture/pre-version run-start gate with frozen typed context/results, strict sequence-marker checks, and terminal artifacts listing unexecuted cases. Unsupported strict capture fails closed before plugin preparation; API 1.4/1.5 plugins retain the legacy path. See `docs/superpowers/specs/2026-10-04-issue153-run-start-gate.md`.
+
+- SDK API 1.5：`PluginBase.teardown()` 可回報失敗／未知的 cleanup 結果；Core 會產生 terminal `FailEnv` 並停止 retry，舊 plugin 回傳 `None` 維持相容。[Issue #61](https://github.com/hamanpaul/testpilot-core/issues/61)
 
 - Increment the plugin SDK contract to API 1.4 and add `PreparedRun.no_io`; empty selections automatically skip run-level DUT/STA capture and firmware-version queries, while plugins can explicitly opt out for an entirely no-I/O prepared selection without skipping per-case results.
 

@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from testpilot.core.role_plan import EffectiveRolePlan
+from testpilot.core.run_start_gate import PrepareRunGateResult
+
 
 @dataclass(slots=True)
 class PreparedRun:
@@ -16,3 +19,5 @@ class PreparedRun:
     cases: list[dict[str, Any]]
     artifacts: dict[str, Any] = field(default_factory=dict)
     no_io: bool = False
+    run_start_gate: PrepareRunGateResult | None = None
+    effective_role_plan: EffectiveRolePlan | None = None
