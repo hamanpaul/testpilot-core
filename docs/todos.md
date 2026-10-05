@@ -13,6 +13,8 @@
 > Mode 治理，audit phase 細節維持在 `docs/plan.md` 與
 > `openspec/specs/audit-mode/spec.md`，本檔不 retroactively 新增一組新 ID。
 
+> 2026-10-06 existing remediation/integration work: projected current-attempt failure snapshot preservation passed full source qualification (1191 passed / 1 skipped; pinned provider enabled; actual wait 0, source unchanged; raw `1cc6fe84…`). Native Engine/coordinator RED and malformed-snapshot regressions are retained; merged-source EIT acceptance remains pending. No case calibration, plugin acceptance closure, or release is implied.
+
 ---
 
 ## Phase 0：Scaffold

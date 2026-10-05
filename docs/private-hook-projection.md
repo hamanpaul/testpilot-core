@@ -70,6 +70,13 @@ the verdict or overwrite the retained evidence.
 
 ## Failure and unknown-outcome behavior
 
+The runtime remediation coordinator consumes the projected `failure_snapshot`
+from `on_failure`. It must match the current case ID and integer attempt index;
+its category and reason remain available even if the projector removes
+`case._last_failure`. Only an absent `failure_snapshot` field uses the legacy
+case fallback. A present but invalid or mismatched snapshot uses Core's normal
+phase defaults without reading private case evidence.
+
 If deep-copying fails, the projector raises, or the returned envelope is
 malformed, Core stops the case with the finite reason
 `hook_payload_projection_failed`. It does not retry with the raw payload or

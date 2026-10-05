@@ -523,8 +523,33 @@ class RuntimeRemediationCoordinator:
             return HookResult()
 
         case = _as_mapping(data.get("case"))
+        raw_snapshot = case.get("_last_failure")
+        if "failure_snapshot" in data:
+            # Projection may intentionally remove private case scratch state.
+            # Never recover that state when a projected snapshot is present.
+            raw_snapshot = data["failure_snapshot"]
+            projected = _as_mapping(raw_snapshot)
+            projected_attempt = projected.get("attempt_index")
+            if (
+                projected.get("case_id") != ctx.case_id
+                or type(projected_attempt) is not int
+                or projected_attempt != ctx.attempt_index
+            ):
+                raw_snapshot = None
+            else:
+                try:
+                    raw_snapshot = _coerce_failure_snapshot(
+                        raw_snapshot,
+                        case_id=ctx.case_id,
+                        attempt_index=ctx.attempt_index,
+                        phase=str(data.get("phase", "failure")),
+                        comment=str(data.get("comment", "") or ""),
+                        step_id=ctx.step_id or "",
+                    ).to_dict()
+                except (TypeError, ValueError):
+                    raw_snapshot = None
         snapshot = _coerce_failure_snapshot(
-            case.get("_last_failure"),
+            raw_snapshot,
             case_id=ctx.case_id,
             attempt_index=ctx.attempt_index,
             phase=str(data.get("phase", "failure")),
