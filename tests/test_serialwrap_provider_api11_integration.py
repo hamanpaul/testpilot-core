@@ -496,8 +496,8 @@ def test_public_core_consumer_uses_real_provider_api11_cli_rpc_wal_and_pty(
                 ),
                 None,
             )
-            binding_tokens = (
-                begin_item["response"].get("binding_tokens", [])
+            rx_binding_tokens = (
+                begin_item["response"].get("rx_binding_tokens", [])
                 if begin_item is not None
                 else []
             )
@@ -530,8 +530,8 @@ def test_public_core_consumer_uses_real_provider_api11_cli_rpc_wal_and_pty(
                         (
                             row.get("seq"),
                             row.get("rx_disposition"),
-                            bool(binding_tokens)
-                            and row.get("rx_binding_token") == binding_tokens[0],
+                            bool(rx_binding_tokens)
+                            and row.get("rx_binding_token") == rx_binding_tokens[0],
                         )
                         for row in (
                             range_item["response"].get("records", [])
