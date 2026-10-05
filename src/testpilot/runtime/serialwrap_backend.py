@@ -99,6 +99,7 @@ class _StrictCaptureRecord:
     start_watermark: str = field(repr=False)
     start_sequence: int
     binding_tokens: dict[str, str] = field(repr=False)
+    rx_binding_tokens: dict[str, str] = field(repr=False)
     last_position: StrictCapturePosition = field(repr=False)
     mark_attempted: bool = False
     marked: bool = False
@@ -500,11 +501,12 @@ class SerialwrapBackend(RunBackend):
             raise
 
         tokens = response.get("binding_tokens")
-        if type(tokens) is not list:
+        rx_tokens = response.get("rx_binding_tokens")
+        if type(tokens) is not list or type(rx_tokens) is not list:
             raise StrictCaptureError("capture_begin_response_invalid", operation_uncertain=True)
-        role_tokens = {
-            role.selector: token
-            for role, token in zip(plan.roles, tokens, strict=True)
+        role_tokens = {role.selector: token for role, token in zip(plan.roles, tokens, strict=True)}
+        role_rx_tokens = {
+            role.selector: token for role, token in zip(plan.roles, rx_tokens, strict=True)
         }
         start_sequence = response["start_sequence"]
         position = StrictCapturePosition(start_sequence, response["start_watermark"])
@@ -529,6 +531,7 @@ class SerialwrapBackend(RunBackend):
             start_watermark=response["start_watermark"],
             start_sequence=start_sequence,
             binding_tokens=role_tokens,
+            rx_binding_tokens=role_rx_tokens,
             last_position=position,
         )
         with self._strict_lock:
@@ -843,11 +846,18 @@ class SerialwrapBackend(RunBackend):
             or response["roles_count"] != len(plan.roles)
         ):
             return False
-        tokens = response.get("binding_tokens")
+        return all(
+            SerialwrapBackend._valid_role_tokens(response.get(field_name), len(plan.roles))
+            for field_name in ("binding_tokens", "rx_binding_tokens")
+        )
+
+    @staticmethod
+    def _valid_role_tokens(value: object, role_count: int) -> bool:
         return (
-            type(tokens) is list
-            and len(tokens) == len(plan.roles)
-            and all(type(token) is str and _DIGEST_RE.fullmatch(token) for token in tokens)
+            type(value) is list
+            and len(value) == role_count
+            and all(type(token) is str and _DIGEST_RE.fullmatch(token) for token in value)
+            and len(set(value)) == role_count
         )
 
     @staticmethod
@@ -1017,9 +1027,9 @@ class SerialwrapBackend(RunBackend):
                     observed_epoch = row["wal_epoch"]
                 elif row["wal_epoch"] != observed_epoch:
                     raise StrictCaptureError("capture_epoch_changed")
-                if row["com"] in record.binding_tokens and row["dir"] == "RX":
+                if row["com"] in record.rx_binding_tokens and row["dir"] == "RX":
                     if (
-                        row.get("rx_binding_token") != record.binding_tokens[row["com"]]
+                        row.get("rx_binding_token") != record.rx_binding_tokens[row["com"]]
                         or row.get("rx_disposition") != "accepted"
                     ):
                         raise StrictCaptureError("capture_role_binding_changed")

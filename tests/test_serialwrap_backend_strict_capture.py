@@ -43,6 +43,7 @@ _LIMITS = {
     "max_terminal_receipts": 64,
     "ttl_seconds": 86_400,
 }
+_MISSING = object()
 
 
 def _capability(api_version: str = "1.1", *, supported: bool = True) -> dict[str, object]:
@@ -64,21 +65,34 @@ def _capability(api_version: str = "1.1", *, supported: bool = True) -> dict[str
     }
 
 
-def _config(tmp_path: Path) -> TestbedConfig:
+def _config(tmp_path: Path, *, include_sta: bool = False) -> TestbedConfig:
     path = tmp_path / "testbed.yaml"
-    path.write_text(
+    contents = (
         "testbed:\n"
         "  devices:\n"
         "    dut:\n"
         "      selector: COM0\n"
         "      expected_device_by_id: /dev/fake-dut\n"
-        "      profile: generic-console\n",
-        encoding="utf-8",
+        "      profile: generic-console\n"
     )
+    if include_sta:
+        contents += (
+            "    sta:\n"
+            "      selector: COM1\n"
+            "      expected_device_by_id: /dev/fake-sta\n"
+            "      profile: generic-console\n"
+        )
+    path.write_text(contents, encoding="utf-8")
     return TestbedConfig(path)
 
 
-def _row(sequence: int, text: str) -> dict[str, object]:
+def _row(
+    sequence: int,
+    text: str,
+    *,
+    direction: str = "TX",
+    rx_binding_token: str | None = None,
+) -> dict[str, object]:
     payload = text.encode("utf-8")
     row: dict[str, object] = {
         "seq": sequence,
@@ -86,7 +100,7 @@ def _row(sequence: int, text: str) -> dict[str, object]:
         "mono_ts_ns": sequence * 100,
         "wall_ts": "2026-10-05T00:00:00+00:00",
         "com": "COM0",
-        "dir": "TX",
+        "dir": direction,
         "source": "console",
         "cmd_id": None,
         "len": len(payload),
@@ -95,6 +109,9 @@ def _row(sequence: int, text: str) -> dict[str, object]:
         "loss_flag": False,
         "meta": {},
     }
+    if direction == "RX":
+        row["rx_binding_token"] = rx_binding_token or "1" * 64
+        row["rx_disposition"] = "accepted"
     material = json.dumps(
         row,
         ensure_ascii=False,
@@ -119,6 +136,8 @@ class _FakeClient:
         range_unknown: bool = False,
         finish_complete: bool = True,
         status_unresolved: bool = False,
+        binding_tokens: list[str] | None = None,
+        rx_binding_tokens: list[str] | object | None = None,
     ) -> None:
         self.capability = capability or _capability()
         self.range_complete = range_complete
@@ -127,6 +146,8 @@ class _FakeClient:
         self.range_unknown = range_unknown
         self.finish_complete = finish_complete
         self.status_unresolved = status_unresolved
+        self.binding_tokens = binding_tokens
+        self.rx_binding_tokens = rx_binding_tokens
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.checkpoint_sequence = 10
         self.saved_operations: dict[str, dict[str, object]] = {}
@@ -155,7 +176,8 @@ class _FakeClient:
         if action == "capabilities":
             return self.capability
         if action == "begin":
-            return {
+            role_count = len(request["role_plan"]["roles"])
+            response: dict[str, object] = {
                 "ok": True,
                 "schema_version": "1",
                 "capture_status": "active",
@@ -165,13 +187,23 @@ class _FakeClient:
                 "plan_digest": request["role_plan"]["digest"],
                 "evidence_strength": "posix_fd_devnode_match_v1",
                 "roles_count": len(request["role_plan"]["roles"]),
-                "binding_tokens": ["f" * 64],
+                "binding_tokens": self.binding_tokens
+                if self.binding_tokens is not None
+                else ["f" * 64 for _ in range(role_count)],
                 "daemon_token": "d" * 64,
                 "wal_epoch_token": "b" * 64,
                 "start_watermark": "a" * 64,
                 "start_sequence": 10,
                 "expires_in_seconds": 86_400,
             }
+            if self.rx_binding_tokens is not _MISSING:
+                response["rx_binding_tokens"] = (
+                    self.rx_binding_tokens
+                    if self.rx_binding_tokens is not None
+                    else ["1" * 64 for _ in range(role_count)]
+                )
+            self.saved_operations[str(request["operation_id"])] = dict(response)
+            return response
         if action == "checkpoint":
             self.checkpoint_sequence += 1
             response = {
@@ -289,6 +321,114 @@ def test_api_10_provider_is_rejected_during_read_only_preflight(
     assert [action for action, _ in fake.calls] == ["capabilities"]
     assert backend._strict_preflights == {}
     assert _serialwrap_log._configured_owner is None
+
+
+@pytest.mark.parametrize(
+    ("binding_tokens", "rx_binding_tokens"),
+    [
+        (["f" * 64, "e" * 64], _MISSING),
+        (["f" * 64], ["1" * 64, "2" * 64]),
+        (["f" * 64, "f" * 64], ["1" * 64, "2" * 64]),
+        (["f" * 64, "e" * 64], ["1" * 64, "1" * 64]),
+        (["f" * 64, "e" * 64], ["1" * 63, "2" * 64]),
+    ],
+    ids=[
+        "missing-rx-tokens",
+        "identity-count",
+        "duplicate-identity",
+        "duplicate-rx",
+        "malformed-rx",
+    ],
+)
+def test_begin_rejects_missing_or_malformed_per_role_token_lists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding_tokens: list[str],
+    rx_binding_tokens: list[str] | object,
+) -> None:
+    fake = _FakeClient(
+        binding_tokens=binding_tokens,
+        rx_binding_tokens=rx_binding_tokens,
+    )
+    backend = _backend_with_fake(monkeypatch, fake)
+    config = _config(tmp_path, include_sta=True)
+    request = CaptureRolePlanRequest(roles=("dut", "sta"))
+    plan = project_capture_role_plan(config, request)
+
+    try:
+        admission = backend.strict_capture_preflight("run-bad-begin", config, request, plan)
+        assert admission.outcome is StrictCaptureProviderOutcome.SUPPORTED
+        with pytest.raises(StrictCaptureError, match="capture_operation_unknown"):
+            backend.begin_strict_capture("run-bad-begin", config, request, plan)
+
+        assert [action for action, _ in fake.calls] == ["capabilities", "begin", "status"]
+        begin_operation_id = fake.calls[1][1]["operation_id"]
+        assert fake.calls[2][1] == {"operation_id": begin_operation_id}
+        assert backend._strict_handles == {}
+    finally:
+        backend.cancel_strict_capture_preflight("run-bad-begin")
+
+
+def test_accepted_rx_uses_separate_rx_provenance_token(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeClient()
+    fake.pages = [
+        _row(11, "accepted rx\n", direction="RX", rx_binding_token="1" * 64),
+        _row(12, "tx\n"),
+    ]
+    backend = _backend_with_fake(monkeypatch, fake)
+    config = _config(tmp_path)
+    request = CaptureRolePlanRequest(roles=("dut",))
+    plan = project_capture_role_plan(config, request)
+
+    admission = backend.strict_capture_preflight("run-rx-token", config, request, plan)
+    assert admission.outcome is StrictCaptureProviderOutcome.SUPPORTED
+    handle = backend.begin_strict_capture("run-rx-token", config, request, plan)
+    result = SimpleNamespace(case_id="D001", dut_log_lines="", sta_log_lines="")
+    harvest = backend.harvest_strict_for_handle(
+        handle,
+        tmp_path / "rx-token",
+        [result],
+        {"D001": {"seq_start": 11, "seq_end": 12}},
+    )
+
+    assert harvest.status is StrictCaptureHarvestStatus.COMPLETE
+    assert (tmp_path / "rx-token" / "DUT.log").read_text(encoding="utf-8") == ("accepted rx\ntx\n")
+
+
+def test_capture_identity_token_does_not_authorize_an_rx_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _FakeClient()
+    fake.pages = [
+        _row(11, "rx with identity token\n", direction="RX", rx_binding_token="f" * 64),
+        _row(12, "tx\n"),
+    ]
+    backend = _backend_with_fake(monkeypatch, fake)
+    config = _config(tmp_path)
+    request = CaptureRolePlanRequest(roles=("dut",))
+    plan = project_capture_role_plan(config, request)
+
+    admission = backend.strict_capture_preflight("run-wrong-rx-token", config, request, plan)
+    assert admission.outcome is StrictCaptureProviderOutcome.SUPPORTED
+    handle = backend.begin_strict_capture("run-wrong-rx-token", config, request, plan)
+    result = SimpleNamespace(case_id="D001", dut_log_lines="", sta_log_lines="")
+    artifact_dir = tmp_path / "wrong-rx-token"
+    harvest = backend.harvest_strict_for_handle(
+        handle,
+        artifact_dir,
+        [result],
+        {"D001": {"seq_start": 11, "seq_end": 12}},
+    )
+
+    assert harvest.status is StrictCaptureHarvestStatus.UNKNOWN
+    assert harvest.reason_code == "capture_role_binding_changed"
+    assert [action for action, _ in fake.calls] == ["capabilities", "begin", "mark", "range"]
+    assert result.dut_log_lines == ""
+    assert not (artifact_dir / "DUT.log").exists()
 
 
 def test_exception_before_capability_admission_releases_lease_for_next_run(
