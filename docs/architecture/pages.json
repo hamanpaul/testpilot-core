@@ -1,0 +1,39 @@
+{
+  "schema": "viewer-overlay-pages/v1",
+  "labels": {
+    "nav": "架構導覽",
+    "wheel": "滾輪縮放",
+    "alt_wheel": "Alt＋滾輪縮放",
+    "missing": "尚未提供"
+  },
+  "pages": [
+    {
+      "id": "overview",
+      "title": "架構總覽（執行與管控範圍）",
+      "short": "總覽",
+      "path": "architecture.html",
+      "available": true
+    },
+    {
+      "id": "01-run-startup",
+      "title": "01 啟動、能力閘門與三叉分流",
+      "short": "01 啟動分流",
+      "path": "features/01-run-startup.html",
+      "available": true
+    },
+    {
+      "id": "02-case-execution",
+      "title": "02 單案執行、重試與環境修復",
+      "short": "02 單案重試",
+      "path": "features/02-case-execution.html",
+      "available": true
+    },
+    {
+      "id": "03-finalize-reporting",
+      "title": "03 收尾擷取、分析與報表產出",
+      "short": "03 收尾報表",
+      "path": "features/03-finalize-reporting.html",
+      "available": true
+    }
+  ]
+}

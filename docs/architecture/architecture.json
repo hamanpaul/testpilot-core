@@ -2,31 +2,30 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "TestPilot Core｜執行與責任架構",
+    "title": "TestPilot Core｜執行流程與管控範圍",
+    "locale": "zh-TW",
+    "output": "docs/architecture/architecture.html",
     "quality_profile": "showcase",
     "repository": {
       "url": "https://github.com/hamanpaul/testpilot-core",
-      "revision": "5172ee97e4f623963ec2a37c6c6c81a62568e803",
+      "revision": "413d336e3a9c8b56bd4b94535eeab200f9f236aa",
       "provider": "github"
-    },
-    "viewBox": [
-      1370,
-      850
-    ]
+    }
   },
   "components": [
     {
       "id": "agent-assistance",
       "type": "cloud",
       "label": "Azure Agent 輔助",
-      "sublabel": "Copilot SDK / BYOK",
+      "sublabel": "可停用／tool-denied",
+      "tag": "可選 AI",
       "pos": [
-        729.0,
-        700
+        582,
+        520
       ],
       "size": [
-        245,
-        84
+        195,
+        72
       ],
       "sources": [
         {
@@ -41,54 +40,56 @@
         },
         {
           "path": "src/testpilot/core/orchestrator.py",
-          "line": 360,
-          "end_line": 438
+          "line": 364,
+          "end_line": 444
         }
       ]
     },
     {
       "id": "case-engine",
       "type": "backend",
-      "label": "Case 執行引擎",
+      "label": "③ Case 執行引擎",
       "sublabel": "case → attempt → step",
+      "tag": "Core 管控",
       "pos": [
-        729.0,
-        240
+        582,
+        236
       ],
       "size": [
-        245,
-        84
+        195,
+        76
       ],
       "sources": [
         {
           "path": "src/testpilot/core/execution_engine.py",
-          "line": 147,
-          "end_line": 230
+          "line": 451,
+          "end_line": 560
         },
         {
           "path": "src/testpilot/core/execution_engine.py",
-          "line": 232,
-          "end_line": 266
+          "line": 670,
+          "end_line": 764
         },
         {
           "path": "src/testpilot/core/execution_engine.py",
-          "line": 314,
-          "end_line": 398
+          "line": 948,
+          "end_line": 1065
         }
       ]
     },
     {
       "id": "custom-runner",
-      "type": "backend",
+      "type": "external",
       "label": "Custom Runner",
-      "sublabel": "可選的完整執行分支",
+      "sublabel": "接管整輪；繞過 Core",
+      "tag": "Plugin 實作",
       "pos": [
-        36.0,
-        40
+        865,
+        48
       ],
       "size": [
-        245,
-        84
+        195,
+        72
       ],
       "sources": [
         {
@@ -98,28 +99,29 @@
         },
         {
           "path": "examples/sample_echo/src/testpilot_sample_echo/plugin.py",
-          "line": 99,
+          "line": 91,
           "end_line": 116
         },
         {
           "path": "src/testpilot/core/orchestrator.py",
-          "line": 674,
-          "end_line": 695
+          "line": 679,
+          "end_line": 702
         }
       ]
     },
     {
       "id": "domain-plugin",
-      "type": "backend",
-      "label": "Domain Plugin",
-      "sublabel": "步驟、環境、evaluate()",
+      "type": "external",
+      "label": "④ Domain Plugin",
+      "sublabel": "env／step／evaluate",
+      "tag": "Plugin 實作",
       "pos": [
-        1089.0,
-        240
+        865,
+        236
       ],
       "size": [
-        245,
-        84
+        195,
+        76
       ],
       "sources": [
         {
@@ -129,34 +131,35 @@
         },
         {
           "path": "src/testpilot/core/plugin_base.py",
-          "line": 18,
-          "end_line": 94
+          "line": 38,
+          "end_line": 143
         },
         {
           "path": "src/testpilot/core/plugin_base.py",
-          "line": 224,
-          "end_line": 233
+          "line": 293,
+          "end_line": 316
         }
       ]
     },
     {
       "id": "entry",
       "type": "frontend",
-      "label": "CLI / Python API",
-      "sublabel": "命令列與程式入口",
+      "label": "① CLI / Python API",
+      "sublabel": "命令列與 SDK 入口",
+      "tag": "Core 入口",
       "pos": [
-        36.0,
-        240
+        14,
+        252
       ],
       "size": [
-        245,
-        84
+        162,
+        76
       ],
       "sources": [
         {
           "path": "src/testpilot/api/__init__.py",
           "line": 1,
-          "end_line": 35
+          "end_line": 80
         },
         {
           "path": "src/testpilot/cli_support.py",
@@ -174,14 +177,15 @@
       "id": "plugin-loader",
       "type": "backend",
       "label": "Plugin 載入器",
-      "sublabel": "entry point / 路徑模式",
+      "sublabel": "entry point／SDK 閘門",
+      "tag": "Core 管控",
       "pos": [
-        369.0,
-        40
+        212,
+        112
       ],
       "size": [
-        245,
-        84
+        152,
+        72
       ],
       "sources": [
         {
@@ -202,215 +206,316 @@
       ]
     },
     {
+      "id": "plugin-sdk",
+      "type": "backend",
+      "label": "Plugin SDK 契約",
+      "sublabel": "testpilot.api v1.7／PluginBase",
+      "tag": "公開 SDK",
+      "pos": [
+        1145,
+        112
+      ],
+      "size": [
+        200,
+        76
+      ],
+      "sources": [
+        {
+          "path": "src/testpilot/api/__init__.py",
+          "line": 1,
+          "end_line": 79
+        },
+        {
+          "path": "src/testpilot/core/plugin_base.py",
+          "line": 38,
+          "end_line": 143
+        },
+        {
+          "path": "src/testpilot/core/plugin_loader.py",
+          "line": 35,
+          "end_line": 51
+        }
+      ]
+    },
+    {
       "id": "recovery",
       "type": "backend",
       "label": "Hooks / 環境修復",
-      "sublabel": "重試間 Tier-1 / Tier-2",
+      "sublabel": "重試間 Tier-1/2 gate",
+      "tag": "Core 管控",
       "pos": [
-        729.0,
-        470
+        582,
+        365
       ],
       "size": [
-        245,
-        84
+        195,
+        72
       ],
       "sources": [
         {
           "path": "src/testpilot/core/orchestrator.py",
-          "line": 263,
+          "line": 264,
           "end_line": 277
         },
         {
           "path": "src/testpilot/core/remediation.py",
-          "line": 645,
-          "end_line": 662
+          "line": 630,
+          "end_line": 705
         },
         {
           "path": "src/testpilot/core/remediation.py",
-          "line": 947,
-          "end_line": 1013
+          "line": 983,
+          "end_line": 1050
         }
       ]
     },
     {
       "id": "reporting",
-      "type": "backend",
-      "label": "結果報表",
-      "sublabel": "Plugin reporter / Core cost",
+      "type": "external",
+      "label": "⑤ Plugin Reporter",
+      "sublabel": "Core 觸發；Plugin 產領域報表",
+      "tag": "Plugin 實作",
       "pos": [
-        36.0,
-        470
+        865,
+        640
       ],
       "size": [
-        245,
-        84
+        195,
+        72
       ],
       "sources": [
         {
+          "path": "src/testpilot/core/plugin_base.py",
+          "line": 270,
+          "end_line": 283
+        },
+        {
           "path": "src/testpilot/core/run_loop.py",
-          "line": 452,
-          "end_line": 480
+          "line": 1246,
+          "end_line": 1285
         },
         {
           "path": "src/testpilot/reporting/reporter.py",
           "line": 254,
-          "end_line": 277
-        },
-        {
-          "path": "src/testpilot/reporting/usage_reporter.py",
-          "line": 103,
-          "end_line": 112
+          "end_line": 280
         }
       ]
     },
     {
       "id": "run-artifacts",
       "type": "database",
-      "label": "Run 產物",
-      "sublabel": "trace / log / report",
+      "label": "⑥ Run 產物",
+      "sublabel": "trace／log／report",
+      "tag": "檔案輸出",
       "pos": [
-        36.0,
-        700
+        1145,
+        675
       ],
       "size": [
-        245,
-        84
+        175,
+        72
       ],
       "sources": [
         {
           "path": "src/testpilot/core/run_loop.py",
-          "line": 222,
-          "end_line": 249
+          "line": 877,
+          "end_line": 885
         },
         {
           "path": "src/testpilot/core/run_loop.py",
-          "line": 314,
-          "end_line": 329
+          "line": 1021,
+          "end_line": 1036
         },
         {
           "path": "src/testpilot/reporting/usage_reporter.py",
           "line": 103,
-          "end_line": 112
+          "end_line": 120
         }
       ]
     },
     {
       "id": "run-backend",
       "type": "backend",
-      "label": "RunBackend",
-      "sublabel": "serialwrap 日誌與 seq 區間",
+      "label": "RunBackend 日誌擷取",
+      "sublabel": "整輪 serialwrap／seq 切片",
+      "tag": "Core 擷取",
       "pos": [
-        369.0,
-        470
+        200,
+        405
       ],
       "size": [
-        245,
-        84
+        180,
+        76
       ],
       "sources": [
         {
-          "path": "src/testpilot/runtime/factory.py",
-          "line": 19,
-          "end_line": 41
+          "path": "src/testpilot/runtime/run_backend.py",
+          "line": 56,
+          "end_line": 81
         },
         {
           "path": "src/testpilot/runtime/serialwrap_backend.py",
-          "line": 80,
-          "end_line": 121
+          "line": 328,
+          "end_line": 390
         },
         {
           "path": "src/testpilot/runtime/serialwrap_backend.py",
-          "line": 123,
-          "end_line": 154
+          "line": 1398,
+          "end_line": 1460
         }
       ]
     },
     {
       "id": "run-controller",
       "type": "backend",
-      "label": "Run 控制器",
-      "sublabel": "Orchestrator / run_loop",
+      "label": "② Run 控制器",
+      "sublabel": "Orchestrator／run_loop",
+      "tag": "Core 管控",
       "pos": [
-        369.0,
-        240
+        292,
+        232
       ],
       "size": [
-        245,
-        84
+        195,
+        116
       ],
       "sources": [
         {
           "path": "src/testpilot/core/orchestrator.py",
-          "line": 744,
-          "end_line": 772
+          "line": 752,
+          "end_line": 836
         },
         {
           "path": "src/testpilot/core/run_loop.py",
-          "line": 217,
-          "end_line": 247
+          "line": 762,
+          "end_line": 852
         },
         {
           "path": "src/testpilot/core/run_loop.py",
-          "line": 331,
-          "end_line": 393
+          "line": 1148,
+          "end_line": 1255
         }
       ]
     },
     {
-      "id": "transport",
+      "id": "sdk-toolkits",
       "type": "backend",
-      "label": "命令 Transport",
-      "sublabel": "serialwrap / SSH / ADB 等",
+      "label": "SDK 選用工具庫",
+      "sublabel": "Transport／MD・JSON・HTML",
+      "tag": "選用 SDK 庫",
       "pos": [
-        1089.0,
-        470
+        1145,
+        236
       ],
       "size": [
-        245,
-        84
+        200,
+        76
       ],
       "sources": [
         {
-          "path": "examples/sample_echo/src/testpilot_sample_echo/plugin.py",
-          "line": 38,
-          "end_line": 52
+          "path": "src/testpilot/api/__init__.py",
+          "line": 41,
+          "end_line": 68
+        },
+        {
+          "path": "src/testpilot/reporting/reporter.py",
+          "line": 254,
+          "end_line": 280
         },
         {
           "path": "src/testpilot/transport/factory.py",
           "line": 14,
           "end_line": 29
-        },
-        {
-          "path": "src/testpilot/transport/network.py",
-          "line": 12,
-          "end_line": 25
         }
       ]
     }
   ],
-  "boundaries": [],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "TestPilot Core 執行管控（編排、重試、日誌擷取）",
+      "wraps": [
+        "case-engine",
+        "plugin-loader",
+        "recovery",
+        "run-backend",
+        "run-controller"
+      ]
+    },
+    {
+      "kind": "security-group",
+      "label": "可選 AI（tool-denied／無判定權）",
+      "wraps": [
+        "agent-assistance"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Plugin 契約範圍（環境定義與實作）",
+      "wraps": [
+        "custom-runner",
+        "domain-plugin",
+        "reporting"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Plugin SDK 公開介面（testpilot.api v1.7）",
+      "wraps": [
+        "plugin-sdk",
+        "sdk-toolkits"
+      ]
+    }
+  ],
   "connections": [
     {
       "id": "backend-artifacts",
       "from": "run-backend",
       "to": "run-artifacts",
-      "label": "匯出 seq 日誌",
-      "variant": "default"
+      "label": "收割解碼日誌與 manifest",
+      "variant": "default",
+      "fromSide": "bottom",
+      "toSide": "right",
+      "via": [
+        [
+          290,
+          804
+        ],
+        [
+          1365,
+          804
+        ],
+        [
+          1365,
+          711
+        ]
+      ],
+      "labelAt": [
+        780,
+        792
+      ]
     },
     {
       "id": "engine-plugin",
       "from": "case-engine",
       "to": "domain-plugin",
-      "label": "呼叫步驟與判定",
-      "variant": "emphasis"
+      "label": "env／step／evaluate",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDx": 0,
+      "labelDy": -38
     },
     {
       "id": "engine-recovery",
       "from": "case-engine",
       "to": "recovery",
-      "label": "on_retry：嘗試間修復",
+      "label": "失敗：on_failure／on_retry",
       "variant": "dashed",
-      "labelDy": 65
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDx": -68,
+      "labelDy": 30
     },
     {
       "id": "entry-run",
@@ -418,15 +523,34 @@
       "to": "run-controller",
       "label": "啟動 run",
       "variant": "emphasis",
-      "labelDy": 15
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDx": 0,
+      "labelDy": -14
     },
     {
-      "id": "plugin-transport",
+      "id": "plugin-sdk-contract",
       "from": "domain-plugin",
-      "to": "transport",
-      "label": "選用命令傳輸",
-      "variant": "default",
-      "labelDy": 65
+      "to": "plugin-sdk",
+      "label": "實作 PluginBase／v1.7 契約",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "left",
+      "labelAt": [
+        1054,
+        168
+      ]
+    },
+    {
+      "id": "plugin-sdk-transport",
+      "from": "domain-plugin",
+      "to": "sdk-toolkits",
+      "label": "選用 Transport（Core 不呼叫）",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDx": 0,
+      "labelDy": -38
     },
     {
       "id": "recovery-agent",
@@ -434,22 +558,66 @@
       "to": "agent-assistance",
       "label": "opt-in：Tier-2 計畫",
       "variant": "dashed",
-      "labelDy": 65
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDx": 58,
+      "labelDy": 22
     },
     {
       "id": "recovery-plugin",
       "from": "recovery",
       "to": "domain-plugin",
-      "label": "修復後 verify_env",
-      "variant": "dashed"
+      "label": "修復＋verify_env",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "bottom",
+      "labelDx": 15,
+      "labelDy": 12
+    },
+    {
+      "id": "recovery-retry-loop",
+      "from": "recovery",
+      "to": "case-engine",
+      "label": "通過→下一 attempt",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDx": 62,
+      "labelDy": -18
+    },
+    {
+      "id": "reporter-sdk-helpers",
+      "from": "reporting",
+      "to": "sdk-toolkits",
+      "label": "選用 MD／JSON／HTML 元件",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "via": [
+        [
+          962.5,
+          470
+        ],
+        [
+          1245,
+          470
+        ]
+      ],
+      "labelAt": [
+        1110,
+        456
+      ]
     },
     {
       "id": "reports-artifacts",
       "from": "reporting",
       "to": "run-artifacts",
-      "label": "寫入報表",
-      "variant": "default",
-      "labelDy": 65
+      "label": "寫入 Plugin 報表",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDx": 0,
+      "labelDy": -16
     },
     {
       "id": "run-agent",
@@ -457,84 +625,101 @@
       "to": "agent-assistance",
       "label": "可選：規劃與分析",
       "variant": "dashed",
-      "labelDy": 65,
       "fromSide": "bottom",
       "toSide": "left",
-      "via": [
-        [
-          491.5,
-          390
-        ],
-        [
-          650,
-          390
-        ],
-        [
-          650,
-          742
-        ]
-      ]
+      "labelDx": 38,
+      "labelDy": 12
     },
     {
       "id": "run-capture",
       "from": "run-controller",
       "to": "run-backend",
-      "label": "管理 capture",
+      "label": "整輪錄製／標記 seq",
       "variant": "default",
-      "labelDy": 115
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDx": -45,
+      "labelDy": 0
     },
     {
       "id": "run-case",
       "from": "run-controller",
       "to": "case-engine",
-      "label": "core 分支：逐案執行",
-      "variant": "emphasis"
+      "label": "core 主幹：逐案",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelDx": 24,
+      "labelDy": -14
+    },
+    {
+      "id": "run-core-artifacts",
+      "from": "run-controller",
+      "to": "run-artifacts",
+      "label": "寫入 trace／core cost 與分析",
+      "variant": "default",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "labelDx": -110,
+      "labelDy": -10
     },
     {
       "id": "run-custom",
       "from": "run-controller",
       "to": "custom-runner",
-      "label": "有 runner：委派",
-      "variant": "dashed"
+      "label": "有 runner：接管（無 core cost）",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "left",
+      "labelDx": 0,
+      "labelDy": -14
     },
     {
       "id": "run-load",
       "from": "run-controller",
       "to": "plugin-loader",
       "label": "載入與驗 SDK",
-      "variant": "default"
+      "variant": "default",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDx": -48,
+      "labelDy": 8
     },
     {
       "id": "run-reports",
       "from": "run-controller",
       "to": "reporting",
-      "label": "交付 RunResult",
-      "variant": "default"
+      "label": "觸發報表：build_reports(RunResult)",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "left",
+      "labelDx": 45,
+      "labelDy": -10
     }
   ],
   "cards": [
     {
       "dot": "emerald",
-      "title": "Core 管流程，Plugin 定判定",
+      "title": "Core 管控：編排、日誌擷取與報表觸發",
       "items": [
-        "一個 run 逐案執行；每案可有多個 attempt。",
-        "attempt 內含環境 gate、步驟、evaluate 與 teardown。"
+        "Orchestrator 分流；Core 控管 retry/timeout、修復 gate 與 RunBackend 整輪日誌錄製／切片收割。",
+        "收尾由 Core 產出 trace／core cost，再呼叫 plugin.build_reports(RunResult) 並附加 Core 欄位。"
       ]
     },
     {
       "dot": "amber",
-      "title": "條件分支與修復",
+      "title": "Plugin SDK（testpilot.api v1.7）與權責切分",
       "items": [
-        "custom runner 接管完整流程；無 runner / reporter 則為 skeleton。",
-        "Agent 可停用；Tier-2 需 opt-in、預算與 verify_env。"
+        "testpilot.api 是 Core 與 Plugin 的唯一公開契約，PluginLoader 會驗證 api_version 相容性。",
+        "裝置傳輸（serialwrap/SSH/ADB）與共用 MD/JSON/HTML 報表元件由 Plugin 選用，Core 本身不呼叫。"
       ]
     },
     {
       "dot": "slate",
-      "title": "來源與範圍",
+      "title": "細節流程頁與可選 AI 紅線",
       "items": [
-        "固定來源 5172ee97e4f6；點選節點查閱原始碼。",
-        "外部 plugin 與實機尚未驗證；固定操作介面為英文。"
+        "上方導覽列可切換 01 啟動分流、02 單案重試與 03 收尾報表時序圖。",
+        "Azure Agent 可停用、tool-denied、無判定權；來源固定 413d336e3a9c。"
       ]
     }
   ]

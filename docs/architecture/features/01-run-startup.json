@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "TestPilot Core｜01 啟動、能力閘門與三叉分流",
+    "subtitle": "從 CLI / SDK 進入 Orchestrator，經 PluginLoader SDK 版本檢查與能力准入後分流至 Custom Runner、Skeleton 或 Core run_loop，並建立 RunBackend 擷取與啟動閘門。",
+    "locale": "zh-TW",
+    "output": "docs/architecture/features/01-run-startup.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "repository": {
+      "url": "https://github.com/hamanpaul/testpilot-core",
+      "provider": "github",
+      "revision": "413d336e3a9c8b56bd4b94535eeab200f9f236aa"
+    }
+  },
+  "participants": [
+    {
+      "id": "cli-entry",
+      "type": "frontend",
+      "label": "CLI / SDK 入口",
+      "sublabel": "cli_support／run_one_case",
+      "sources": [
+        {
+          "path": "src/testpilot/cli_support.py",
+          "line": 50,
+          "end_line": 76
+        },
+        {
+          "path": "src/testpilot/core/api_entry.py",
+          "line": 15,
+          "end_line": 47
+        }
+      ]
+    },
+    {
+      "id": "orchestrator",
+      "type": "backend",
+      "label": "Orchestrator／run_loop",
+      "sublabel": "分流、準備與啟動閘門",
+      "sources": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 752,
+          "end_line": 836
+        },
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 472,
+          "end_line": 525
+        }
+      ]
+    },
+    {
+      "id": "plugin-loader",
+      "type": "backend",
+      "label": "PluginLoader",
+      "sublabel": "entry point／SDK v1.7 閘門",
+      "sources": [
+        {
+          "path": "src/testpilot/core/plugin_loader.py",
+          "line": 35,
+          "end_line": 51
+        },
+        {
+          "path": "src/testpilot/core/plugin_loader.py",
+          "line": 152,
+          "end_line": 175
+        }
+      ]
+    },
+    {
+      "id": "domain-plugin",
+      "type": "external",
+      "label": "Domain Plugin",
+      "sublabel": "prepare_run／啟動 gate",
+      "sources": [
+        {
+          "path": "src/testpilot/core/plugin_base.py",
+          "line": 293,
+          "end_line": 316
+        },
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 788,
+          "end_line": 826
+        }
+      ]
+    },
+    {
+      "id": "run-backend",
+      "type": "backend",
+      "label": "RunBackend",
+      "sublabel": "整輪錄製／strict preflight",
+      "sources": [
+        {
+          "path": "src/testpilot/runtime/orchestrator_run_backend_compat.py",
+          "line": 97,
+          "end_line": 110
+        },
+        {
+          "path": "src/testpilot/runtime/serialwrap_backend.py",
+          "line": 328,
+          "end_line": 390
+        }
+      ]
+    },
+    {
+      "id": "custom-runner",
+      "type": "external",
+      "label": "Custom Runner",
+      "sublabel": "legacy 接管分支",
+      "sources": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 679,
+          "end_line": 702
+        }
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "from": 160,
+      "to": 350,
+      "label": "1. 入口載入與 SDK 相容閘門"
+    },
+    {
+      "from": 370,
+      "to": 570,
+      "label": "2. 能力准入與三叉分流"
+    },
+    {
+      "from": 590,
+      "to": 900,
+      "label": "3. Case 準備、擷取啟動與 Post-Capture Gate"
+    }
+  ],
+  "messages": [
+    {
+      "id": "s01-invoke",
+      "from": "cli-entry",
+      "to": "orchestrator",
+      "y": 180,
+      "label": "建立 Orchestrator 並呼叫 run()",
+      "variant": "emphasis"
+    },
+    {
+      "id": "s02-load-plugin",
+      "from": "orchestrator",
+      "to": "plugin-loader",
+      "y": 244,
+      "label": "loader.load(plugin_name)",
+      "variant": "default"
+    },
+    {
+      "id": "s03-sdk-gate",
+      "from": "plugin-loader",
+      "to": "orchestrator",
+      "y": 318,
+      "label": "驗 PluginBase 與 API_VERSION 後回傳",
+      "variant": "return",
+      "note": "不支援或未宣告 api_version 會拋出 IncompatiblePluginError"
+    },
+    {
+      "id": "s04-admit-caps",
+      "from": "orchestrator",
+      "to": "domain-plugin",
+      "y": 395,
+      "label": "檢查 required_run_capabilities 與 gate hook",
+      "variant": "security",
+      "note": "API 1.6 strict 能力不合法或 backend 不足時，於擷取前 fail-closed 中止"
+    },
+    {
+      "id": "s05-custom-branch",
+      "from": "orchestrator",
+      "to": "custom-runner",
+      "y": 475,
+      "label": "若 legacy 有 create_runner()：委派整輪",
+      "variant": "dashed",
+      "note": "strict 模式禁用 custom runner；此分支不產生 core cost／analysis；若無 runner 也無 reporter 則走 skeleton"
+    },
+    {
+      "id": "s06-bind-prepare",
+      "from": "orchestrator",
+      "to": "domain-plugin",
+      "y": 612,
+      "label": "bind testbed／root ＋ prepare_run(case_ids)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "s07-start-capture",
+      "from": "orchestrator",
+      "to": "run-backend",
+      "y": 684,
+      "label": "啟動 capture（strict preflight 或 legacy setup_run）",
+      "variant": "default"
+    },
+    {
+      "id": "s08-capture-ready",
+      "from": "run-backend",
+      "to": "orchestrator",
+      "y": 756,
+      "label": "回傳 RunHandle 與起始 seq／capture context",
+      "variant": "return"
+    },
+    {
+      "id": "s09-post-capture-gate",
+      "from": "orchestrator",
+      "to": "domain-plugin",
+      "y": 838,
+      "label": "strict：prepare_run_after_capture ＋ 鎖定 role_plan",
+      "variant": "security",
+      "note": "若 gate 非 ACCEPTED 或 role_plan 漂移，寫出 abort 結果後不進入單案執行"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "能力閘門先於實機 I/O",
+      "items": [
+        "admit_run_capabilities 只檢查型別與屬性，不觸發裝置連線。",
+        "strict 模式確認 capture context 與 role_plan digest 後才探測韌體版本。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "三條執行分流",
+      "items": [
+        "Core run_loop：需要有 build_reports() 的 reporter，走完整的逐案重試管線。",
+        "Custom Runner（僅 legacy）：完全自管執行；Skeleton：僅盤點案例不實測。"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "來源鎖定",
+      "items": [
+        "來源固定於 413d336e3a9c；點選參與者可檢視對應程式碼。",
+        "支援滑鼠滾輪縮放與上方導覽列切換總覽／各階段流程。"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "TestPilot Core｜03 收尾擷取、Run-End 分析與報表產出",
+    "subtitle": "所有 case 結束後，Core 經 RunBackend 收割 seq 日誌並組裝 RunResult；寫出 Core 專屬的 agent_usage 成本與可選 run-end 分析後，再把未變動的 RunResult 交給 Plugin Reporter 投影為領域報表。",
+    "locale": "zh-TW",
+    "output": "docs/architecture/features/03-finalize-reporting.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "repository": {
+      "url": "https://github.com/hamanpaul/testpilot-core",
+      "provider": "github",
+      "revision": "413d336e3a9c8b56bd4b94535eeab200f9f236aa"
+    }
+  },
+  "participants": [
+    {
+      "id": "run-loop",
+      "type": "backend",
+      "label": "Core run_loop",
+      "sublabel": "RunResult 收斂與排程",
+      "sources": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1080,
+          "end_line": 1170
+        },
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1232,
+          "end_line": 1286
+        }
+      ]
+    },
+    {
+      "id": "run-backend",
+      "type": "backend",
+      "label": "RunBackend",
+      "sublabel": "整輪日誌收割與切片",
+      "sources": [
+        {
+          "path": "src/testpilot/runtime/serialwrap_backend.py",
+          "line": 614,
+          "end_line": 725
+        },
+        {
+          "path": "src/testpilot/runtime/serialwrap_backend.py",
+          "line": 1398,
+          "end_line": 1460
+        }
+      ]
+    },
+    {
+      "id": "azure-agent",
+      "type": "cloud",
+      "label": "Azure Agent（可選）",
+      "sublabel": "run-end 摘要分析",
+      "sources": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1229,
+          "end_line": 1245
+        }
+      ]
+    },
+    {
+      "id": "usage-reporter",
+      "type": "backend",
+      "label": "Core Usage Reporter",
+      "sublabel": "agent_usage／cost",
+      "sources": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1217,
+          "end_line": 1227
+        },
+        {
+          "path": "src/testpilot/reporting/usage_reporter.py",
+          "line": 103,
+          "end_line": 120
+        }
+      ]
+    },
+    {
+      "id": "plugin-reporter",
+      "type": "external",
+      "label": "Plugin Reporter",
+      "sublabel": "build_reports／SDK 元件",
+      "sources": [
+        {
+          "path": "src/testpilot/core/plugin_base.py",
+          "line": 270,
+          "end_line": 283
+        },
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1250,
+          "end_line": 1258
+        }
+      ]
+    },
+    {
+      "id": "artifacts",
+      "type": "database",
+      "label": "Run 產物",
+      "sublabel": "reports/<RID>",
+      "sources": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 877,
+          "end_line": 885
+        }
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "from": 160,
+      "to": 370,
+      "label": "1. 擷取收割與 RunResult 組裝"
+    },
+    {
+      "from": 390,
+      "to": 610,
+      "label": "2. Core 統計、Run-End 分析與 Cost 落盤"
+    },
+    {
+      "from": 630,
+      "to": 800,
+      "label": "3. Plugin 領域報表投影與回傳"
+    }
+  ],
+  "messages": [
+    {
+      "id": "f01-harvest-logs",
+      "from": "run-loop",
+      "to": "run-backend",
+      "y": 182,
+      "label": "harvest_strict 或 export_logs",
+      "variant": "emphasis",
+      "note": "依 strict/legacy 收割或匯出 seq 區間日誌"
+    },
+    {
+      "id": "f02-write-logs",
+      "from": "run-backend",
+      "to": "artifacts",
+      "y": 248,
+      "label": "寫出解碼 DUT／STA 日誌與 WAL manifest",
+      "variant": "default"
+    },
+    {
+      "id": "f03-build-runresult",
+      "from": "run-backend",
+      "to": "run-loop",
+      "y": 322,
+      "label": "回傳 log 路徑與完整狀態 → 組裝 RunResult",
+      "variant": "return",
+      "note": "strict 模式若 harvest 非 COMPLETE 會補寫 run-abort.json"
+    },
+    {
+      "id": "f04-analyze-run",
+      "from": "run-loop",
+      "to": "azure-agent",
+      "y": 412,
+      "label": "可選：_analyze_run(RunResult, metrics)（verdict 已鎖定）",
+      "variant": "dashed",
+      "note": "先凍結直接用量再呼叫 run-end 分析；異常中斷時標為 skipped_aborted"
+    },
+    {
+      "id": "f05-write-cost",
+      "from": "run-loop",
+      "to": "usage-reporter",
+      "y": 496,
+      "label": "_write_core_cost_payload(analysis, metrics)",
+      "variant": "default"
+    },
+    {
+      "id": "f06-cost-files",
+      "from": "usage-reporter",
+      "to": "artifacts",
+      "y": 564,
+      "label": "寫入 agent_usage/",
+      "variant": "default",
+      "note": "包含 cost-report.json 與 run-analysis"
+    },
+    {
+      "id": "f07-plugin-report",
+      "from": "run-loop",
+      "to": "plugin-reporter",
+      "y": 656,
+      "label": "build_reports(RunResult)",
+      "variant": "emphasis",
+      "note": "確保 Plugin Reporter 看到的 RunResult 與核心執行產出完全一致"
+    },
+    {
+      "id": "f08-write-plugin-report",
+      "from": "plugin-reporter",
+      "to": "artifacts",
+      "y": 738,
+      "label": "寫入 Plugin 領域報表",
+      "variant": "emphasis",
+      "note": "run_loop 隨後附加 core_cost_report 與 tier2_remediation 指針再回傳"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Core 產物與中斷保底",
+      "items": [
+        "RunBackend 寫出 seq 日誌與 WAL manifest；Usage Reporter 寫出 agent_usage。",
+        "即使迴圈拋錯中斷，Core 仍會先寫出 skipped_aborted 成本與分析產物。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Core 與 Plugin 報表切分",
+      "items": [
+        "Plugin Reporter 只對 RunResult 做領域投影，不能回頭更改單案 verdict。",
+        "Core 在 plugin reporter 執行完後才把 core_agent_analysis 與 cost 指針附進 payload。"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "來源鎖定",
+      "items": [
+        "來源固定於 413d336e3a9c；點選參與者可檢視對應程式碼。",
+        "支援滑鼠滾輪縮放、時序表頭捲動凍結與上方導覽列切頁。"
+      ]
+    }
+  ]
+}
