@@ -1,0 +1,413 @@
+{
+  "schema_version": 1,
+  "document_type": "feature-facts",
+  "feature": {
+    "id": "02-case-execution",
+    "order": 2,
+    "title": "單案與重試",
+    "summary": "Core 控制每案的有界重試、timeout 遞增與 hook 投影；每個 attempt 交由 Domain Plugin 執行環境設定、步驟（含自選傳輸）、evaluate 判定與 teardown，並在重試間執行 Tier-1／Tier-2 環境修復與語意不變 gate。"
+  },
+  "repository": {
+    "url": "https://github.com/hamanpaul/testpilot-core",
+    "revision": "413d336e3a9c8b56bd4b94535eeab200f9f236aa"
+  },
+  "diagram_type": "sequence",
+  "scope": {
+    "includes": [
+      "run_loop 逐案選 runner、可選 _plan_case 與 pre_case/post_case",
+      "ExecutionEngine.execute_case_once：setup_env → verify_env → steps → evaluate → teardown",
+      "on_failure / on_retry 間 Tier-1 與 opt-in Tier-2 環境修復、語意不變檢查與 unknown outcome fail-closed"
+    ],
+    "excludes": [
+      "Plugin 內部的特定硬體命令實作（例如 serialwrap / SSH / ADB 呼叫細節）",
+      "run 結束後的 log harvest 與報表輸出（見 03 收尾報表）"
+    ]
+  },
+  "participants": [
+    {
+      "id": "run-loop",
+      "type": "backend",
+      "label": "Core run_loop",
+      "sublabel": "逐案排程與 trace 落盤",
+      "overview_component": "run-controller",
+      "responsibility": "逐案呼叫執行引擎、標記 seq 邊界、寫入 agent_trace 並在 abort_run 時中斷。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 926,
+          "end_line": 1072,
+          "excerpt_sha256": "91a05eaadcd16f991d42111df1b276345e6ba65160b2aaaf04c918f4fe05b2cd",
+          "claim": "for case loop、seq 邊界、write_case_trace 與 run-abort 處理。"
+        }
+      ]
+    },
+    {
+      "id": "exec-engine",
+      "type": "backend",
+      "label": "ExecutionEngine",
+      "sublabel": "attempt／retry／timeout",
+      "overview_component": "case-engine",
+      "responsibility": "執行有界 retry 迴圈、計算遞增 timeout、派發投影 hooks 與處理 unknown outcome。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 451,
+          "end_line": 560,
+          "excerpt_sha256": "1868dc9c568415210ea8dd76ed87bfccdd5191e7243d34625984d355a5754c6b",
+          "claim": "execute_case_once 執行 setup_env 與 verify_env。"
+        },
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 948,
+          "end_line": 1065,
+          "excerpt_sha256": "49232fed5c7e503c2745839844a19b2d5ef595fffee802d5435ee8d3d5dade68",
+          "claim": "execute_with_retry 控制 attempt 次數與 on_retry 放行。"
+        }
+      ]
+    },
+    {
+      "id": "domain-plugin",
+      "type": "external",
+      "label": "Domain Plugin",
+      "sublabel": "環境／步驟／傳輸／evaluate",
+      "overview_component": "domain-plugin",
+      "responsibility": "擁有測試環境佈建、verify_env、execute_step（可選用 SDK Transport）、evaluate() 判定與 teardown。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "examples/sample_echo/src/testpilot_sample_echo/plugin.py",
+          "line": 38,
+          "end_line": 60,
+          "excerpt_sha256": "f1efe6e5a548cbce20eb86e31b7099a2ca556f012b7a5211120bfafc0f851927",
+          "claim": "plugin 於 execute_step 自行選用 transport 並在 evaluate() 決定 Pass/Fail。"
+        },
+        {
+          "path": "src/testpilot/core/plugin_base.py",
+          "line": 77,
+          "end_line": 143,
+          "excerpt_sha256": "e8f60ebea381e67bc6c1fab1ec351f2d611f41ab70a85cfb115c377066f14201",
+          "claim": "setup_env、verify_env、project_hook_payload、execute_step、evaluate 與 teardown。"
+        }
+      ]
+    },
+    {
+      "id": "hooks-remed",
+      "type": "backend",
+      "label": "Remediation Coordinator",
+      "sublabel": "Tier-1／Tier-2 gate",
+      "overview_component": "recovery",
+      "responsibility": "於 on_failure 記錄快照、on_retry 執行 Tier-1 或 opt-in Tier-2 修復，強制檢查語意不可變與 verify_env。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/remediation.py",
+          "line": 630,
+          "end_line": 705,
+          "excerpt_sha256": "13b3afe989fb56423bde6fd0ccb027f5fa6d4d02030f4e34d9f1a7f2de5cc8cb",
+          "claim": "handle_on_retry 執行 Tier-1 修復並在連敗達標時觸發 Tier-2。"
+        },
+        {
+          "path": "src/testpilot/core/remediation.py",
+          "line": 983,
+          "end_line": 1050,
+          "excerpt_sha256": "946d3661b5043d4e67be29afc2dba128bff156d70231547e1cf8575c455e9296",
+          "claim": "檢查 case 語意未遭竄改並強制通過 verify_env gate。"
+        }
+      ]
+    },
+    {
+      "id": "azure-agent",
+      "type": "cloud",
+      "label": "Azure Agent（可選）",
+      "sublabel": "tool-denied one-shot",
+      "overview_component": "agent-assistance",
+      "responsibility": "可停用；僅在規劃或 opt-in Tier-2 達門檻時提供計畫，無 tools 權限且不改判 verdict。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/copilot_session.py",
+          "line": 365,
+          "end_line": 389,
+          "excerpt_sha256": "c9a890c99c67542900fd5f04b1f05c760720ebdace69f6d97efce49fba0ae58a",
+          "claim": "one-shot session 強制拒絕所有 tools 與 permission。"
+        },
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 233,
+          "end_line": 263,
+          "excerpt_sha256": "c06889fe73365c3c9772c859d46f72dab5e8e23fc093c3e3690e07252d6e260b",
+          "claim": "tier2_requester 接到 tool-denied one-shot。"
+        }
+      ]
+    },
+    {
+      "id": "artifacts",
+      "type": "database",
+      "label": "Run 產物",
+      "sublabel": "agent_trace／run-abort",
+      "overview_component": "run-artifacts",
+      "responsibility": "保存每案嘗試紀錄、修復稽核與中斷摘要。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1021,
+          "end_line": 1036,
+          "excerpt_sha256": "2da2402d36fae319e48780f35fe312e2e54140ca32b5fdf9fdbabb904ba4b91a",
+          "claim": "每案寫出 agent_trace/<case>.json。"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "c01-plan-case",
+      "from": "run-loop",
+      "to": "azure-agent",
+      "y": 182,
+      "label": "可選：_plan_case 取得案前建議（無 key 時略過）",
+      "variant": "dashed",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 446,
+          "end_line": 460,
+          "excerpt_sha256": "20f6f3ae8f5140d16f748e09ac2424ce1a6f0df791b47743601429db3affce81",
+          "claim": "_plan_case 檢查 circuit breaker 與 Azure runtime 後執行或略過。"
+        }
+      ]
+    },
+    {
+      "id": "c02-start-retry",
+      "from": "run-loop",
+      "to": "exec-engine",
+      "y": 250,
+      "label": "execute_with_retry(plugin, case, policy)",
+      "variant": "emphasis",
+      "note": "先經 API 1.7 project_hook_payload 投影再派發 pre_case hook",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 910,
+          "end_line": 946,
+          "excerpt_sha256": "3e4d876a6ff36febbe16d4d997cd972c4a2329b49bc3cd540070339fb55401b3",
+          "claim": "pre_case 經投影封套派發並決定 max_attempts。"
+        }
+      ]
+    },
+    {
+      "id": "c03-setup-verify",
+      "from": "exec-engine",
+      "to": "domain-plugin",
+      "y": 355,
+      "label": "setup_env() → verify_env() 環境前置 gate",
+      "variant": "emphasis",
+      "note": "裝置與連線環境完全由 Plugin 定義；任一失敗即跳過步驟並觸發 on_failure",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 534,
+          "end_line": 575,
+          "excerpt_sha256": "239a955f4c5bd166217e3dc2732547b98574bf02739aa7d394f2985072e23820",
+          "claim": "依序執行 setup_env 與 verify_env 並檢查 unknown outcome。"
+        }
+      ]
+    },
+    {
+      "id": "c04-exec-steps",
+      "from": "exec-engine",
+      "to": "domain-plugin",
+      "y": 445,
+      "label": "迴圈：pre_step → execute_step() → post_step",
+      "variant": "emphasis",
+      "note": "Plugin 可在 execute_step 選用 SDK Transport（serialwrap/SSH/ADB）；若回報 outcome=unknown 立即中止並跳過重試與 teardown",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 590,
+          "end_line": 668,
+          "excerpt_sha256": "d40e4ee4bc3bc0edb6e4a088f8056fd4c39a9faf66dfe9a15058f215722aa24d",
+          "claim": "逐步執行並在 step 失敗或 unknown outcome 時停止該次 attempt。"
+        }
+      ]
+    },
+    {
+      "id": "c05-evaluate",
+      "from": "exec-engine",
+      "to": "domain-plugin",
+      "y": 535,
+      "label": "evaluate(case, step_results)",
+      "variant": "emphasis",
+      "note": "由 Plugin 定義真正的 Pass／Fail 語意；若步驟已失敗或 unknown 則不評 pass",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 670,
+          "end_line": 695,
+          "excerpt_sha256": "1bf4626c32b391a1c2f380c52d58520caf8eeecccc9a1e22a30af93903a4b2f4",
+          "claim": "呼叫 plugin.evaluate() 並於失敗時派發 on_failure。"
+        }
+      ]
+    },
+    {
+      "id": "c06-teardown",
+      "from": "exec-engine",
+      "to": "domain-plugin",
+      "y": 620,
+      "label": "finally：teardown()（API 1.5 cleanup_result）",
+      "variant": "default",
+      "note": "僅在非 unknown_outcome 且未要求略過時執行",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 748,
+          "end_line": 785,
+          "excerpt_sha256": "9e6630be166d6f515d3f4946194bc9c26203a37c1dde762ac630e7a9d7bac970",
+          "claim": "finally 區塊正規化 teardown cleanup_result。"
+        }
+      ]
+    },
+    {
+      "id": "c07-on-failure",
+      "from": "exec-engine",
+      "to": "hooks-remed",
+      "y": 732,
+      "label": "失敗時派發 on_failure（記錄 failure_snapshot）",
+      "variant": "dashed",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 482,
+          "end_line": 533,
+          "excerpt_sha256": "0ecdc55bf35a5f12939490eaa0f41d1a3c0b51e7f57b1dcee7d25c80bc0bcd10",
+          "claim": "dispatch_failure 派發 on_failure 並彙整 abort / unknown 證據。"
+        }
+      ]
+    },
+    {
+      "id": "c08-on-retry-t1",
+      "from": "exec-engine",
+      "to": "hooks-remed",
+      "y": 798,
+      "label": "attempt > 1：on_retry 執行 Tier-1 環境修復",
+      "variant": "dashed",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/remediation.py",
+          "line": 630,
+          "end_line": 678,
+          "excerpt_sha256": "543c9a600c104cc1a8dd8797ca6bb5f9f2679f7e0b47bd796cdf16f6dbe643fd",
+          "claim": "handle_on_retry 先執行 Tier-1 deterministic decision。"
+        }
+      ]
+    },
+    {
+      "id": "c09-tier2-plan",
+      "from": "hooks-remed",
+      "to": "azure-agent",
+      "y": 872,
+      "label": "opt-in 且達門檻／預算內：請求 Tier-2 修復計畫",
+      "variant": "dashed",
+      "note": "schema 驗證通過才執行；不允許修改測試步驟或 pass_criteria",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/remediation.py",
+          "line": 679,
+          "end_line": 697,
+          "excerpt_sha256": "1f5aed57fd1310eafbc50f7c47119faee7be4ca20ef9ef2b5087f4d7bf546087",
+          "claim": "Tier-1 連敗達門檻且在預算內才呼叫 _run_tier2。"
+        }
+      ]
+    },
+    {
+      "id": "c10-exec-verify",
+      "from": "hooks-remed",
+      "to": "domain-plugin",
+      "y": 952,
+      "label": "Plugin 執行修復 → Core 驗語意不可變 ＋ verify_env gate",
+      "variant": "security",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/remediation.py",
+          "line": 983,
+          "end_line": 1050,
+          "excerpt_sha256": "946d3661b5043d4e67be29afc2dba128bff156d70231547e1cf8575c455e9296",
+          "claim": "執行修復後比對 case 語意並強制跑 verify_env。"
+        }
+      ]
+    },
+    {
+      "id": "c11-retry-proceed",
+      "from": "hooks-remed",
+      "to": "exec-engine",
+      "y": 1034,
+      "label": "proceed=True → 遞增 timeout 進下一 attempt；否則中止",
+      "variant": "return",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 1045,
+          "end_line": 1065,
+          "excerpt_sha256": "6b06fa043194aa383905dd3f38e04afddd1b8c30a594dd4eed7f29f6190d99e9",
+          "claim": "檢查 proceed 後進入下一次 execute_case_once 或結束 retry。"
+        }
+      ]
+    },
+    {
+      "id": "c12-post-trace",
+      "from": "exec-engine",
+      "to": "run-loop",
+      "y": 1126,
+      "label": "post_case 彙整 RetryResult 回傳 run_loop",
+      "variant": "return",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 1125,
+          "end_line": 1185,
+          "excerpt_sha256": "e98e552a098f92558208326a786318e6603ba1b54de0fdda95bc422c11d031c5",
+          "claim": "派發 post_case 並封裝 RetryResult。"
+        }
+      ]
+    },
+    {
+      "id": "c13-write-trace",
+      "from": "run-loop",
+      "to": "artifacts",
+      "y": 1196,
+      "label": "寫入 agent_trace/<case>.json（abort 時寫 run-abort.json）",
+      "variant": "emphasis",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1021,
+          "end_line": 1072,
+          "excerpt_sha256": "fd93228794965d6b73f6e3dc95f0c70ce8cd715c3a59c65783b329fa00ef7e7d",
+          "claim": "落盤 trace 與 terminal abort 摘要。"
+        }
+      ]
+    }
+  ],
+  "unknowns": [
+    {
+      "id": "plugin-tier2-opt-in",
+      "question": "外部 plugin 是否實作 build_tier2_remediation_context / execute_tier2_remediation？",
+      "impact": "未實作時僅跑 Tier-1 或純 retry，不會觸發 Azure Agent Tier-2 計畫。"
+    }
+  ]
+}

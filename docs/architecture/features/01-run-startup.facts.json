@@ -1,0 +1,346 @@
+{
+  "schema_version": 1,
+  "document_type": "feature-facts",
+  "feature": {
+    "id": "01-run-startup",
+    "order": 1,
+    "title": "啟動與分流",
+    "summary": "從 CLI / SDK 進入 Orchestrator，經 PluginLoader SDK 版本檢查與能力准入後分流至 Custom Runner、Skeleton 或 Core run_loop，並建立 RunBackend 擷取與啟動閘門。"
+  },
+  "repository": {
+    "url": "https://github.com/hamanpaul/testpilot-core",
+    "revision": "413d336e3a9c8b56bd4b94535eeab200f9f236aa"
+  },
+  "diagram_type": "sequence",
+  "scope": {
+    "includes": [
+      "CLI / Python run_one_case 入口與 testbed 自動 staging",
+      "PluginLoader 發現與 API_VERSION（1.7）相容性檢查",
+      "admit_run_capabilities 准入、三叉分流與 strict / legacy 擷取啟動"
+    ],
+    "excludes": [
+      "單案 attempt 重試迴圈細節（見 02 單案重試）",
+      "run 結束日誌匯出與報表產出（見 03 收尾報表）"
+    ]
+  },
+  "participants": [
+    {
+      "id": "cli-entry",
+      "type": "frontend",
+      "label": "CLI / SDK 入口",
+      "sublabel": "cli_support／run_one_case",
+      "overview_component": "entry",
+      "responsibility": "解析 CLI 參數或 API 呼叫，建立 Orchestrator 與可選 Azure runtime。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/cli_support.py",
+          "line": 50,
+          "end_line": 76,
+          "excerpt_sha256": "008e3f9cc6c8db89ef46b27eb8ec3168348ec36956f10e3544befd4a9afb9a77",
+          "claim": "get_orchestrator 與 run_plugin_cases 進入 Orchestrator.run。"
+        },
+        {
+          "path": "src/testpilot/core/api_entry.py",
+          "line": 15,
+          "end_line": 47,
+          "excerpt_sha256": "219a2715419271c55e1659d2de6ec3d5eae5b906ae32d2d81156bf8ef1b441d6",
+          "claim": "run_one_case 提供無 click context 的公開入口。"
+        }
+      ]
+    },
+    {
+      "id": "orchestrator",
+      "type": "backend",
+      "label": "Orchestrator／run_loop",
+      "sublabel": "分流、準備與啟動閘門",
+      "overview_component": "run-controller",
+      "responsibility": "管控載入、能力准入、三叉分流，以及 core run_loop 啟動前的準備與閘門。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 752,
+          "end_line": 836,
+          "excerpt_sha256": "2769f11027ce8935e18a828b76852d9f90a0f603938fbb152cf79e2663248477",
+          "claim": "載入 plugin、能力准入並依 custom runner / skeleton / core 分流。"
+        },
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 472,
+          "end_line": 525,
+          "excerpt_sha256": "d45d9e9eadf00c2855a3050e6e91a96a9404a87df3b04ef929bbbcee217a0c9c",
+          "claim": "_run_with_capture 依能力模式啟動 strict 或 legacy 擷取。"
+        }
+      ]
+    },
+    {
+      "id": "plugin-loader",
+      "type": "backend",
+      "label": "PluginLoader",
+      "sublabel": "entry point／SDK v1.7 閘門",
+      "overview_component": "plugin-loader",
+      "responsibility": "載入 plugin 並強制驗證 PluginBase 繼承與 SDK API 版本相容性。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/plugin_loader.py",
+          "line": 35,
+          "end_line": 51,
+          "excerpt_sha256": "413123382b2debf144656a5010cc3af0bd336d0220a4058eea3d80479dc07232",
+          "claim": "_check_api_compat 拒絕未宣告或不相容的 api_version。"
+        },
+        {
+          "path": "src/testpilot/core/plugin_loader.py",
+          "line": 152,
+          "end_line": 175,
+          "excerpt_sha256": "a215566e8c2e8d5c39a87c45472cb4c0d743b7f7c74bfe1d9f7901cf9b402241",
+          "claim": "load() 驗證類別與 API_VERSION 後實例化 plugin。"
+        }
+      ]
+    },
+    {
+      "id": "domain-plugin",
+      "type": "external",
+      "label": "Domain Plugin",
+      "sublabel": "prepare_run／啟動 gate",
+      "overview_component": "domain-plugin",
+      "responsibility": "實作 discover_cases、prepare_run，以及 strict 模式下可選的 prepare_run_after_capture 驗證。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/plugin_base.py",
+          "line": 293,
+          "end_line": 316,
+          "excerpt_sha256": "406a2e9643d5fc19e7551617501a93fb94217d966089e21b4d03597174869f0b",
+          "claim": "prepare_run 與 prepare_run_after_capture 契約。"
+        },
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 788,
+          "end_line": 826,
+          "excerpt_sha256": "66cb498f8ba6d894b8ef22dfab75ab5dee162bd3f5d07c1cef5785f1ff3c186b",
+          "claim": "strict 模式呼叫 prepare_run_after_capture 並檢驗 gate 結果。"
+        }
+      ]
+    },
+    {
+      "id": "run-backend",
+      "type": "backend",
+      "label": "RunBackend",
+      "sublabel": "整輪錄製／strict preflight",
+      "overview_component": "run-backend",
+      "responsibility": "啟動 run 級日誌擷取、strict preflight 與序號標記。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/runtime/orchestrator_run_backend_compat.py",
+          "line": 97,
+          "end_line": 110,
+          "excerpt_sha256": "b8b85501cd90e521d88945554bf8052e92db92b35cf599432556adbddbabd3fe",
+          "claim": "legacy 路徑呼叫 setup_run 並綁定 session。"
+        },
+        {
+          "path": "src/testpilot/runtime/serialwrap_backend.py",
+          "line": 328,
+          "end_line": 390,
+          "excerpt_sha256": "ba6d9a1be88f7ef3c6c0e2ccad7d4ef1707dd066af1a42b46879789f2a6e7043",
+          "claim": "strict_capture_preflight 檢查 daemon 與綁定狀態。"
+        }
+      ]
+    },
+    {
+      "id": "custom-runner",
+      "type": "external",
+      "label": "Custom Runner",
+      "sublabel": "legacy 接管分支",
+      "overview_component": "custom-runner",
+      "responsibility": "若 legacy plugin 回傳 create_runner()，接管整輪執行並略過 Core run_loop。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 679,
+          "end_line": 702,
+          "excerpt_sha256": "c599b30a952deb91b44c9bdf922dd24a076743ac9da7e9d26356663d53e57be2",
+          "claim": "_run_via_runner 委派 runner.run 并標記 unsupported core cost。"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "s01-invoke",
+      "from": "cli-entry",
+      "to": "orchestrator",
+      "y": 180,
+      "label": "建立 Orchestrator 並呼叫 run()",
+      "variant": "emphasis",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/cli_support.py",
+          "line": 62,
+          "end_line": 76,
+          "excerpt_sha256": "9499c03967d1224ba29ac099dc283711bf766a0ce968f20929fae14b7356d1c3",
+          "claim": "run_plugin_cases 呼叫 orch.run。"
+        }
+      ]
+    },
+    {
+      "id": "s02-load-plugin",
+      "from": "orchestrator",
+      "to": "plugin-loader",
+      "y": 244,
+      "label": "loader.load(plugin_name)",
+      "variant": "default",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 752,
+          "end_line": 754,
+          "excerpt_sha256": "a831ebfeca256f77998234ce01dd52498e7aa01e1b676aa2a4b51e3ffa7563aa",
+          "claim": "run() 先經 loader.load 載入 plugin。"
+        }
+      ]
+    },
+    {
+      "id": "s03-sdk-gate",
+      "from": "plugin-loader",
+      "to": "orchestrator",
+      "y": 318,
+      "label": "驗 PluginBase 與 API_VERSION 後回傳",
+      "variant": "return",
+      "note": "不支援或未宣告 api_version 會拋出 IncompatiblePluginError",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/plugin_loader.py",
+          "line": 165,
+          "end_line": 175,
+          "excerpt_sha256": "8278047bd1a65674e768e8dae4a46841b5d3e3265fbb3b6503882bbeda2aac57",
+          "claim": "檢查繼承與 API 版本相容性。"
+        }
+      ]
+    },
+    {
+      "id": "s04-admit-caps",
+      "from": "orchestrator",
+      "to": "domain-plugin",
+      "y": 395,
+      "label": "檢查 required_run_capabilities 與 gate hook",
+      "variant": "security",
+      "note": "API 1.6 strict 能力不合法或 backend 不足時，於擷取前 fail-closed 中止",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_start_gate.py",
+          "line": 115,
+          "end_line": 186,
+          "excerpt_sha256": "b9f43ca93b466d63911bd4a2049fff4793d3569855b6bf3ad9c0e469a46a119e",
+          "claim": "admit_run_capabilities 靜態檢查 plugin 與 backend 能力。"
+        }
+      ]
+    },
+    {
+      "id": "s05-custom-branch",
+      "from": "orchestrator",
+      "to": "custom-runner",
+      "y": 475,
+      "label": "若 legacy 有 create_runner()：委派整輪",
+      "variant": "dashed",
+      "note": "strict 模式禁用 custom runner；此分支不產生 core cost／analysis；若無 runner 也無 reporter 則走 skeleton",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 809,
+          "end_line": 826,
+          "excerpt_sha256": "7d456f561882b60c0fd138bb3d1ef33a3af0b81a6dfc70ba5cde25e5b8033276",
+          "claim": "依 create_runner 與 create_reporter 分流至 custom runner、skeleton 或 core run_loop。"
+        }
+      ]
+    },
+    {
+      "id": "s06-bind-prepare",
+      "from": "orchestrator",
+      "to": "domain-plugin",
+      "y": 612,
+      "label": "bind testbed／root ＋ prepare_run(case_ids)",
+      "variant": "emphasis",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 792,
+          "end_line": 808,
+          "excerpt_sha256": "9bd785eda68993fcbbda10d86a13ede152329fdde76126420389c545e629f653",
+          "claim": "綁定 testbed 設定與 project root。"
+        }
+      ]
+    },
+    {
+      "id": "s07-start-capture",
+      "from": "orchestrator",
+      "to": "run-backend",
+      "y": 684,
+      "label": "啟動 capture（strict preflight 或 legacy setup_run）",
+      "variant": "default",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 855,
+          "end_line": 862,
+          "excerpt_sha256": "aeb244765bc247e7922222846d5747a105359d59d5c3fc293edd0d6aec7a51c0",
+          "claim": "legacy 路徑啟動 run capture 並標記起始 seq。"
+        }
+      ]
+    },
+    {
+      "id": "s08-capture-ready",
+      "from": "run-backend",
+      "to": "orchestrator",
+      "y": 756,
+      "label": "回傳 RunHandle 與起始 seq／capture context",
+      "variant": "return",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 762,
+          "end_line": 774,
+          "excerpt_sha256": "03a86f9b4014b9e9370f6ef3000c7027ae897113773603a26abee4f589d76502",
+          "claim": "取得並驗證 StrictCaptureContext。"
+        }
+      ]
+    },
+    {
+      "id": "s09-post-capture-gate",
+      "from": "orchestrator",
+      "to": "domain-plugin",
+      "y": 838,
+      "label": "strict：prepare_run_after_capture ＋ 鎖定 role_plan",
+      "variant": "security",
+      "note": "若 gate 非 ACCEPTED 或 role_plan 漂移，寫出 abort 結果後不進入單案執行",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 788,
+          "end_line": 851,
+          "excerpt_sha256": "2b67aac34193620e4d0ddd3f6000a042870ca16621e6c5bdce7b68a20f14e10b",
+          "claim": "執行 post-capture gate 並驗證 EffectiveRolePlan digest 未變。"
+        }
+      ]
+    }
+  ],
+  "unknowns": [
+    {
+      "id": "plugin-runner-choice",
+      "question": "具體外部 plugin 是否實作 create_runner 或宣告 STRICT_CAPTURE_BINDING？",
+      "impact": "依個別 plugin 宣告決定進入 3 條分流中的哪一條。"
+    }
+  ]
+}

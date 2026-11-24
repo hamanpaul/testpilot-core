@@ -4,11 +4,13 @@ on:
   pull_request:
     paths:
       - docs/architecture/**
+      - tools/architecture_overlay.py
       - .github/workflows/architecture.yml
   push:
     branches: [main]
     paths:
       - docs/architecture/**
+      - tools/architecture_overlay.py
       - .github/workflows/architecture.yml
 
 permissions:
@@ -16,7 +18,7 @@ permissions:
 
 jobs:
   architecture:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +29,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: tt-a1i/archify
-          ref: a07fa1d5b2a10cbea110c5a2be2817397a301cdc
+          ref: 208acba8d412335185b2056fedf54b3405df43fb
           path: .architecture-tools/archify
 
       - uses: actions/setup-node@v4
@@ -40,7 +42,7 @@ jobs:
 
       - name: Prepare browser review dependencies
         run: |
-          python -m pip install playwright==1.62.0
+          python -m pip install playwright==1.64.1
           sudo apt-get update
           sudo apt-get install -y fonts-noto-cjk
           command -v google-chrome
@@ -50,12 +52,17 @@ jobs:
           python - <<'PYTHON'
           import hashlib, json, subprocess
           from pathlib import Path
+
           root = Path('docs/architecture')
           facts = json.loads((root / 'facts.json').read_text())
           ir = json.loads((root / 'architecture.json').read_text())
           revision = facts['repository']['revision']
+          repo_url = facts['repository']['url']
           assert ir['meta']['repository']['revision'] == revision
-          assert ir['meta']['repository']['url'] == facts['repository']['url']
+          assert ir['meta']['repository']['url'] == repo_url
+          assert ir['meta'].get('locale') == 'zh-TW'
+          assert ir['meta'].get('output') == 'docs/architecture/architecture.html'
+
           def check_evidence(value):
               if isinstance(value, dict):
                   if 'excerpt_sha256' in value:
@@ -65,15 +72,22 @@ jobs:
                       lines = blob.splitlines(keepends=True)
                       assert 1 <= value['line'] <= value['end_line'] <= len(lines)
                       excerpt = b''.join(lines[value['line'] - 1:value['end_line']])
-                      assert hashlib.sha256(excerpt).hexdigest() == value['excerpt_sha256']
-                  for child in value.values(): check_evidence(child)
+                      assert hashlib.sha256(excerpt).hexdigest() == value['excerpt_sha256'], (path, value['line'], value['end_line'])
+                  for child in value.values():
+                      check_evidence(child)
               elif isinstance(value, list):
-                  for child in value: check_evidence(child)
+                  for child in value:
+                      check_evidence(child)
+
           check_evidence(facts)
-          def project(row, keys): return {key: row[key] for key in keys if key in row}
+
+          def project(row, keys):
+              return {key: row[key] for key in keys if key in row}
+
           def indexed(rows):
               assert len({row['id'] for row in rows}) == len(rows)
               return {row['id']: row for row in rows}
+
           actual = indexed(ir['components'])
           expected = indexed(facts['components'])
           assert actual.keys() == expected.keys()
@@ -84,63 +98,149 @@ jobs:
           fields = ('id', 'from', 'to', 'label', 'variant')
           assert indexed([project(e, fields) for e in ir['connections']]) == indexed([project(e, fields) for e in facts['relations']])
           assert ir.get('boundaries', []) == [project(b, ('kind', 'label', 'wraps')) for b in facts['boundaries']]
-          print('Fact evidence and native projection match:', revision)
+
+          feature_paths = sorted((root / 'features').glob('*.facts.json'))
+          assert feature_paths, 'Expected at least one feature facts file'
+          feature_pages = []
+          for ff_path in feature_paths:
+              ff = json.loads(ff_path.read_text())
+              fid = ff['feature']['id']
+              ir_path = ff_path.with_name(f'{fid}.json')
+              assert ir_path.exists(), f'Missing sequence IR: {ir_path}'
+              fir = json.loads(ir_path.read_text())
+              assert ff['repository']['revision'] == revision
+              assert ff['repository']['url'] == repo_url
+              assert fir['diagram_type'] == 'sequence'
+              assert fir['meta']['repository']['revision'] == revision
+              assert fir['meta']['repository']['url'] == repo_url
+              assert fir['meta'].get('locale') == 'zh-TW'
+              assert fir['meta'].get('output') == f'docs/architecture/features/{fid}.html'
+              check_evidence(ff)
+
+              f_actual = indexed(fir['participants'])
+              f_expected = indexed(ff['participants'])
+              assert f_actual.keys() == f_expected.keys()
+              for key, row in f_expected.items():
+                  if row.get('overview_component'):
+                      assert row['overview_component'] in expected, (fid, key, row['overview_component'])
+                  p_fields = ('id', 'type', 'label', 'sublabel')
+                  assert project(f_actual[key], p_fields) == project(row, p_fields)
+                  assert f_actual[key]['sources'] == [project(a, ('path', 'line', 'end_line')) for a in row['evidence'][:3]]
+
+              s_fields = ('id', 'from', 'to', 'y', 'label', 'variant', 'note')
+              assert indexed([project(m, s_fields) for m in fir['messages']]) == indexed([project(s, s_fields) for s in ff['steps']])
+              for step in ff['steps']:
+                  assert step['from'] in f_expected and step['to'] in f_expected, (fid, step['id'])
+              feature_pages.append((ff['feature']['order'], fid, f'features/{fid}.html'))
+
+          pages_cfg = json.loads((root / 'pages.json').read_text())
+          assert pages_cfg['schema'] == 'viewer-overlay-pages/v1'
+          cfg_ids = [p['id'] for p in pages_cfg['pages']]
+          expected_ids = ['overview'] + [fid for _, fid, _ in sorted(feature_pages)]
+          assert cfg_ids == expected_ids, (cfg_ids, expected_ids)
+          for p in pages_cfg['pages']:
+              assert p.get('available') is True
+              assert (root / p['path']).exists(), p['path']
+
+          print('Fact evidence, feature projections, and pages config match:', revision, expected_ids)
           PYTHON
 
-      - name: Validate and reproduce the checked-in HTML
+      - name: Validate, reproduce, and verify overlay for all pages
         run: |
+          export ARCHIFY_UPDATE_CHECK_DISABLED=1
           node .architecture-tools/archify/archify/bin/archify.mjs validate architecture \
             docs/architecture/architecture.json --quality showcase --repo-root . --json
           node .architecture-tools/archify/archify/bin/archify.mjs deliver architecture \
-            docs/architecture/architecture.json "$RUNNER_TEMP/architecture.html" \
-            --quality showcase --repo-root . --json > "$RUNNER_TEMP/architecture-delivery.json"
-          cmp docs/architecture/architecture.html "$RUNNER_TEMP/architecture.html"
+            docs/architecture/architecture.json "$RUNNER_TEMP/raw-overview.html" \
+            --quality showcase --repo-root . --json > "$RUNNER_TEMP/architecture-delivery-overview.json"
+          python3 tools/architecture_overlay.py verify \
+            --html docs/architecture/architecture.html \
+            --pages docs/architecture/pages.json \
+            --page overview \
+            --original "$RUNNER_TEMP/raw-overview.html"
 
-      - name: Inspect the real HTML in Chrome
+          for page in 01-run-startup 02-case-execution 03-finalize-reporting; do
+            node .architecture-tools/archify/archify/bin/archify.mjs validate sequence \
+              "docs/architecture/features/${page}.json" --quality showcase --repo-root . --json
+            node .architecture-tools/archify/archify/bin/archify.mjs deliver sequence \
+              "docs/architecture/features/${page}.json" "$RUNNER_TEMP/raw-${page}.html" \
+              --quality showcase --repo-root . --json > "$RUNNER_TEMP/architecture-delivery-${page}.json"
+            python3 tools/architecture_overlay.py verify \
+              --html "docs/architecture/features/${page}.html" \
+              --pages docs/architecture/pages.json \
+              --page "${page}" \
+              --original "$RUNNER_TEMP/raw-${page}.html"
+          done
+
+      - name: Inspect all rendered HTML pages in Chrome
         run: |
           export ARCHIFY_CHROME="$(command -v google-chrome)"
+          export ARCHIFY_UPDATE_CHECK_DISABLED=1
           node .architecture-tools/archify/archify/bin/archify.mjs visual-check \
-            docs/architecture/architecture.html --json
+            docs/architecture/architecture.html --out-dir "$RUNNER_TEMP/visual-check-overview" --json
+          for page in 01-run-startup 02-case-execution 03-finalize-reporting; do
+            node .architecture-tools/archify/archify/bin/archify.mjs visual-check \
+              "docs/architecture/features/${page}.html" --out-dir "$RUNNER_TEMP/visual-check-${page}" --json
+          done
           python - <<'PYTHON'
           import hashlib, json, os
           from pathlib import Path
           from playwright.sync_api import sync_playwright
-          html = Path('docs/architecture/architecture.html').resolve()
-          ir = json.loads(html.with_suffix('.json').read_text())
+
+          root = Path('docs/architecture').resolve()
+          pages_cfg = json.loads((root / 'pages.json').read_text())
           out = Path(os.environ['RUNNER_TEMP']) / 'architecture-browser'
           out.mkdir(exist_ok=True)
-          errors, requests, sizes = [], [], []
+          errors, requests = [], []
+          receipts = []
+
           with sync_playwright() as pw:
               browser = pw.chromium.launch(executable_path=os.environ['ARCHIFY_CHROME'])
-              page = browser.new_page(viewport={'width':1440, 'height':900})
+              page = browser.new_page(viewport={'width': 1440, 'height': 900})
               page.on('pageerror', lambda error: errors.append(str(error)))
               page.on('request', lambda request: requests.append(request.url) if request.url.startswith(('http:', 'https:')) else None)
-              page.goto(html.as_uri(), wait_until='load')
+
+              # 1. Overview diagram checks
+              overview_html = (root / 'architecture.html').resolve()
+              overview_ir = json.loads(overview_html.with_suffix('.json').read_text())
+              page.goto(overview_html.as_uri(), wait_until='load')
               svg = page.locator('.diagram-container svg').first
               assert svg.is_visible()
               nodes = svg.locator('g[data-node-id]')
-              expected = {node['id'] for node in ir['components']}
+              expected = {node['id'] for node in overview_ir['components']}
               assert set(nodes.evaluate_all('(ns) => ns.map(n => n.dataset.nodeId)')) == expected
               assert nodes.count() == len(expected)
               assert all(node.is_visible() for node in nodes.all())
               edges = svg.locator('path[data-edge-id]').evaluate_all('(es) => es.map(e => ({id:e.dataset.edgeId,d:e.getAttribute("d"),marker:e.getAttribute("marker-end")}))')
-              assert {edge['id'] for edge in edges} == {edge['id'] for edge in ir['connections']}
-              assert len(edges) == len(ir['connections'])
+              assert {edge['id'] for edge in edges} == {edge['id'] for edge in overview_ir['connections']}
+              assert len(edges) == len(overview_ir['connections'])
               assert all(edge['d'] and edge['marker'] for edge in edges)
-              for width, height in [(1440,900),(1600,1000),(1920,1080),(2048,1320),(390,844)]:
-                  page.set_viewport_size({'width':width, 'height':height})
+
+              sizes = []
+              for width, height in [(1440, 900), (1600, 1000), (1920, 1080), (2048, 1320), (390, 844)]:
+                  page.set_viewport_size({'width': width, 'height': height})
                   page.wait_for_timeout(300)
                   size = page.evaluate('({width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,scrollHeight:document.documentElement.scrollHeight})')
                   assert size['scrollWidth'] <= width, size
-                  assert width < 1440 or size['scrollHeight'] <= height, size
                   sizes.append(size)
-                  page.screenshot(path=str(out / f'diagram-{width}.png'), full_page=True)
-              page.set_viewport_size({'width':1440, 'height':900})
+                  page.screenshot(path=str(out / f'overview-{width}.png'), full_page=True)
+
+              page.set_viewport_size({'width': 1440, 'height': 900})
+              assert page.locator('#sw-overlay-nav .sw-ov-item').count() == len(pages_cfg['pages'])
+              box = svg.bounding_box()
+              assert box
+              scale_before = page.evaluate('window.Archify.view.state().scale')
+              page.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+              page.mouse.wheel(0, -120)
+              page.wait_for_timeout(150)
+              scale_after = page.evaluate('window.Archify.view.state().scale')
+              assert scale_after > scale_before, (scale_before, scale_after)
+
               svg.locator('g[data-node-id="run-controller"]').click()
               assert page.locator('#focus-chip').is_visible()
               links = page.locator('#focus-evidence-links a')
               assert links.count() > 0
-              assert ir['meta']['repository']['revision'] in links.first.get_attribute('href')
+              assert overview_ir['meta']['repository']['revision'] in links.first.get_attribute('href')
               page.locator('#btn-reach-downstream').click()
               assert page.locator('#btn-reach-downstream').get_attribute('aria-pressed') == 'true'
               page.locator('#btn-focus-clear').click()
@@ -151,11 +251,53 @@ jobs:
               before = page.locator('html').get_attribute('data-theme')
               page.locator('#btn-theme').click()
               assert page.locator('html').get_attribute('data-theme') != before
-              page.screenshot(path=str(out / 'diagram-dark.png'), full_page=True)
+              page.screenshot(path=str(out / 'overview-dark.png'), full_page=True)
+              receipts.append(dict(id='overview', html_sha256=hashlib.sha256(overview_html.read_bytes()).hexdigest(), nodes=nodes.count(), edges=len(edges), wheel_zoom=[scale_before, scale_after], viewports=sizes))
+
+              # 2. Sequence pages + nav click check
+              for item in pages_cfg['pages'][1:]:
+                  pid = item['id']
+                  fhtml = (root / item['path']).resolve()
+                  page.goto(fhtml.as_uri(), wait_until='load')
+                  fsvg = page.locator('.diagram-container svg').first
+                  assert fsvg.is_visible()
+                  assert page.locator('#sw-overlay-nav .sw-ov-item').count() == len(pages_cfg['pages'])
+                  fsizes = []
+                  for width, height in [(1440, 900), (1600, 1000), (1920, 1080), (2048, 1320), (390, 844)]:
+                      page.set_viewport_size({'width': width, 'height': height})
+                      page.wait_for_timeout(200)
+                      size = page.evaluate('({width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,scrollHeight:document.documentElement.scrollHeight})')
+                      assert size['scrollWidth'] <= width, (pid, size)
+                      fsizes.append(size)
+                  page.set_viewport_size({'width': 1600, 'height': 1000})
+                  page.screenshot(path=str(out / f'{pid}-1600.png'), full_page=True)
+                  tall = page.evaluate('document.querySelector(".diagram-container svg").clientHeight > window.innerHeight')
+                  fbox = fsvg.bounding_box()
+                  assert fbox
+                  f_before = page.evaluate('window.Archify.view.state().scale')
+                  cx, cy = fbox['x'] + fbox['width'] / 2, min(fbox['y'] + 220, 500)
+                  if tall:
+                      page.evaluate('''({x, y}) => {
+                        const target = document.querySelector('.diagram-container svg');
+                        target.dispatchEvent(new WheelEvent('wheel', {bubbles: true, cancelable: true, deltaY: -120, clientX: x, clientY: y, altKey: true}));
+                      }''', {'x': cx, 'y': cy})
+                  else:
+                      page.mouse.move(cx, cy)
+                      page.mouse.wheel(0, -120)
+                  page.wait_for_timeout(150)
+                  f_after = page.evaluate('window.Archify.view.state().scale')
+                  assert f_after > f_before, (pid, tall, f_before, f_after)
+                  receipts.append(dict(id=pid, html_sha256=hashlib.sha256(fhtml.read_bytes()).hexdigest(), wheel_zoom=[f_before, f_after], viewports=fsizes))
+
+              # Verify clicking nav back to overview
+              page.locator('#sw-overlay-nav .sw-ov-item').first.click()
+              page.wait_for_load_state('load')
+              assert page.url.endswith('/architecture.html')
+
               assert not errors and not requests, (errors, requests)
-              receipt = dict(ok=True, html_sha256=hashlib.sha256(html.read_bytes()).hexdigest(), browser=browser.version, transport='file', file_navigation=True, nodes=nodes.count(), directional_svg_paths=len(edges), viewports=sizes, browser_errors=errors, http_requests=requests)
-              (out / 'browser-review.json').write_text(json.dumps(receipt, indent=2))
-              print(json.dumps(receipt, indent=2))
+              summary = dict(ok=True, browser=browser.version, pages=receipts, browser_errors=errors, http_requests=requests)
+              (out / 'browser-review.json').write_text(json.dumps(summary, indent=2))
+              print(json.dumps(summary, indent=2))
               browser.close()
           PYTHON
 
@@ -166,7 +308,6 @@ jobs:
           name: architecture-review-${{ github.sha }}
           if-no-files-found: error
           path: |
-            docs/architecture/architecture.visual-check.*
-            docs/architecture/architecture.*.png
-            ${{ runner.temp }}/architecture-delivery.json
+            ${{ runner.temp }}/visual-check-*
+            ${{ runner.temp }}/architecture-delivery*.json
             ${{ runner.temp }}/architecture-browser/

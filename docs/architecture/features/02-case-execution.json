@@ -1,0 +1,277 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "TestPilot Core｜02 單案執行、Attempt 管線與重試修復",
+    "subtitle": "Core 控制每案的有界重試、timeout 遞增與 hook 投影；每個 attempt 交由 Domain Plugin 執行環境設定、步驟（含自選傳輸）、evaluate 判定與 teardown，並在重試間執行 Tier-1／Tier-2 環境修復與語意不變 gate。",
+    "locale": "zh-TW",
+    "output": "docs/architecture/features/02-case-execution.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "repository": {
+      "url": "https://github.com/hamanpaul/testpilot-core",
+      "provider": "github",
+      "revision": "413d336e3a9c8b56bd4b94535eeab200f9f236aa"
+    }
+  },
+  "participants": [
+    {
+      "id": "run-loop",
+      "type": "backend",
+      "label": "Core run_loop",
+      "sublabel": "逐案排程與 trace 落盤",
+      "sources": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 926,
+          "end_line": 1072
+        }
+      ]
+    },
+    {
+      "id": "exec-engine",
+      "type": "backend",
+      "label": "ExecutionEngine",
+      "sublabel": "attempt／retry／timeout",
+      "sources": [
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 451,
+          "end_line": 560
+        },
+        {
+          "path": "src/testpilot/core/execution_engine.py",
+          "line": 948,
+          "end_line": 1065
+        }
+      ]
+    },
+    {
+      "id": "domain-plugin",
+      "type": "external",
+      "label": "Domain Plugin",
+      "sublabel": "環境／步驟／傳輸／evaluate",
+      "sources": [
+        {
+          "path": "examples/sample_echo/src/testpilot_sample_echo/plugin.py",
+          "line": 38,
+          "end_line": 60
+        },
+        {
+          "path": "src/testpilot/core/plugin_base.py",
+          "line": 77,
+          "end_line": 143
+        }
+      ]
+    },
+    {
+      "id": "hooks-remed",
+      "type": "backend",
+      "label": "Remediation Coordinator",
+      "sublabel": "Tier-1／Tier-2 gate",
+      "sources": [
+        {
+          "path": "src/testpilot/core/remediation.py",
+          "line": 630,
+          "end_line": 705
+        },
+        {
+          "path": "src/testpilot/core/remediation.py",
+          "line": 983,
+          "end_line": 1050
+        }
+      ]
+    },
+    {
+      "id": "azure-agent",
+      "type": "cloud",
+      "label": "Azure Agent（可選）",
+      "sublabel": "tool-denied one-shot",
+      "sources": [
+        {
+          "path": "src/testpilot/core/copilot_session.py",
+          "line": 365,
+          "end_line": 389
+        },
+        {
+          "path": "src/testpilot/core/orchestrator.py",
+          "line": 233,
+          "end_line": 263
+        }
+      ]
+    },
+    {
+      "id": "artifacts",
+      "type": "database",
+      "label": "Run 產物",
+      "sublabel": "agent_trace／run-abort",
+      "sources": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1021,
+          "end_line": 1036
+        }
+      ]
+    }
+  ],
+  "segments": [
+    {
+      "from": 160,
+      "to": 310,
+      "label": "1. 案前規劃與 Hook 投影"
+    },
+    {
+      "from": 330,
+      "to": 690,
+      "label": "2. 單次 Attempt 執行管線（環境 → 步驟 → 判定 → Teardown）"
+    },
+    {
+      "from": 710,
+      "to": 1080,
+      "label": "3. 失敗與重試間修復（Tier-1 / opt-in Tier-2）"
+    },
+    {
+      "from": 1100,
+      "to": 1240,
+      "label": "4. 單案收斂與寫跡"
+    }
+  ],
+  "messages": [
+    {
+      "id": "c01-plan-case",
+      "from": "run-loop",
+      "to": "azure-agent",
+      "y": 182,
+      "label": "可選：_plan_case 取得案前建議（無 key 時略過）",
+      "variant": "dashed"
+    },
+    {
+      "id": "c02-start-retry",
+      "from": "run-loop",
+      "to": "exec-engine",
+      "y": 250,
+      "label": "execute_with_retry(plugin, case, policy)",
+      "variant": "emphasis",
+      "note": "先經 API 1.7 project_hook_payload 投影再派發 pre_case hook"
+    },
+    {
+      "id": "c03-setup-verify",
+      "from": "exec-engine",
+      "to": "domain-plugin",
+      "y": 355,
+      "label": "setup_env() → verify_env() 環境前置 gate",
+      "variant": "emphasis",
+      "note": "裝置與連線環境完全由 Plugin 定義；任一失敗即跳過步驟並觸發 on_failure"
+    },
+    {
+      "id": "c04-exec-steps",
+      "from": "exec-engine",
+      "to": "domain-plugin",
+      "y": 445,
+      "label": "迴圈：pre_step → execute_step() → post_step",
+      "variant": "emphasis",
+      "note": "Plugin 可在 execute_step 選用 SDK Transport（serialwrap/SSH/ADB）；若回報 outcome=unknown 立即中止並跳過重試與 teardown"
+    },
+    {
+      "id": "c05-evaluate",
+      "from": "exec-engine",
+      "to": "domain-plugin",
+      "y": 535,
+      "label": "evaluate(case, step_results)",
+      "variant": "emphasis",
+      "note": "由 Plugin 定義真正的 Pass／Fail 語意；若步驟已失敗或 unknown 則不評 pass"
+    },
+    {
+      "id": "c06-teardown",
+      "from": "exec-engine",
+      "to": "domain-plugin",
+      "y": 620,
+      "label": "finally：teardown()（API 1.5 cleanup_result）",
+      "variant": "default",
+      "note": "僅在非 unknown_outcome 且未要求略過時執行"
+    },
+    {
+      "id": "c07-on-failure",
+      "from": "exec-engine",
+      "to": "hooks-remed",
+      "y": 732,
+      "label": "失敗時派發 on_failure（記錄 failure_snapshot）",
+      "variant": "dashed"
+    },
+    {
+      "id": "c08-on-retry-t1",
+      "from": "exec-engine",
+      "to": "hooks-remed",
+      "y": 798,
+      "label": "attempt > 1：on_retry 執行 Tier-1 環境修復",
+      "variant": "dashed"
+    },
+    {
+      "id": "c09-tier2-plan",
+      "from": "hooks-remed",
+      "to": "azure-agent",
+      "y": 872,
+      "label": "opt-in 且達門檻／預算內：請求 Tier-2 修復計畫",
+      "variant": "dashed",
+      "note": "schema 驗證通過才執行；不允許修改測試步驟或 pass_criteria"
+    },
+    {
+      "id": "c10-exec-verify",
+      "from": "hooks-remed",
+      "to": "domain-plugin",
+      "y": 952,
+      "label": "Plugin 執行修復 → Core 驗語意不可變 ＋ verify_env gate",
+      "variant": "security"
+    },
+    {
+      "id": "c11-retry-proceed",
+      "from": "hooks-remed",
+      "to": "exec-engine",
+      "y": 1034,
+      "label": "proceed=True → 遞增 timeout 進下一 attempt；否則中止",
+      "variant": "return"
+    },
+    {
+      "id": "c12-post-trace",
+      "from": "exec-engine",
+      "to": "run-loop",
+      "y": 1126,
+      "label": "post_case 彙整 RetryResult 回傳 run_loop",
+      "variant": "return"
+    },
+    {
+      "id": "c13-write-trace",
+      "from": "run-loop",
+      "to": "artifacts",
+      "y": 1196,
+      "label": "寫入 agent_trace/<case>.json（abort 時寫 run-abort.json）",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Core 只管生命週期與護欄",
+      "items": [
+        "Core 控制 retry 上限、timeout 遞增、hook 投影與語意不可變檢查。",
+        "遇 command outcome unknown 或 terminal abort 立即停止重試與 teardown。"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Plugin 擁有測試語意與裝置環境",
+      "items": [
+        "setup_env / verify_env / execute_step / evaluate() 全由 Plugin 實作。",
+        "修復動作也在 Plugin 執行，Core 只把關修復後 verify_env gate。"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Azure Agent 不得介入判定",
+      "items": [
+        "僅可做案前規劃與 opt-in Tier-2 環境修復計畫（無 tools、無權改判）。",
+        "所有 attempt 紀錄皆寫入 reports/<RID>/agent_trace/<case>.json。"
+      ]
+    }
+  ]
+}

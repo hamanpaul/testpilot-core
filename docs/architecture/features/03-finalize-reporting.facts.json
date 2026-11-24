@@ -1,0 +1,322 @@
+{
+  "schema_version": 1,
+  "document_type": "feature-facts",
+  "feature": {
+    "id": "03-finalize-reporting",
+    "order": 3,
+    "title": "收尾與報表",
+    "summary": "所有 case 結束後，Core 經 RunBackend 收割 seq 日誌並組裝 RunResult；寫出 Core 專屬的 agent_usage 成本與可選 run-end 分析後，再把未變動的 RunResult 交給 Plugin Reporter 投影為領域報表。"
+  },
+  "repository": {
+    "url": "https://github.com/hamanpaul/testpilot-core",
+    "revision": "413d336e3a9c8b56bd4b94535eeab200f9f236aa"
+  },
+  "diagram_type": "sequence",
+  "scope": {
+    "includes": [
+      "strict capture harvest 與 legacy RunBackend seq 日誌匯出",
+      "RunResult 組裝、assistance_metrics 與可選 Azure run-end 分析",
+      "Core agent_usage（cost-report / run-analysis）與 Plugin build_reports(RunResult) 產出"
+    ],
+    "excludes": [
+      "各領域報表（如 XLSX / HTML）的欄位排版規則（屬 plugin-owned）"
+    ]
+  },
+  "participants": [
+    {
+      "id": "run-loop",
+      "type": "backend",
+      "label": "Core run_loop",
+      "sublabel": "RunResult 收斂與排程",
+      "overview_component": "run-controller",
+      "responsibility": "協調擷取收尾、組裝 RunResult、寫出 core cost 後呼叫 plugin reporter。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1080,
+          "end_line": 1170,
+          "excerpt_sha256": "e8c5a0c7127e9e4d3e597429af3b192ed4b1c11df8dfec2309db798405815d86",
+          "claim": "收割日誌、停止 capture 並建立 RunResult。"
+        },
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1232,
+          "end_line": 1286,
+          "excerpt_sha256": "c0cdb7d00ac9cb6636217b51eac7c4f4001903b8335eea2f28ff3c8461a954ef",
+          "claim": "run-end analysis、core cost 與 plugin build_reports。"
+        }
+      ]
+    },
+    {
+      "id": "run-backend",
+      "type": "backend",
+      "label": "RunBackend",
+      "sublabel": "整輪日誌收割與切片",
+      "overview_component": "run-backend",
+      "responsibility": "按每案 seq 區間驗證並匯出 DUT / STA 解碼日誌與 WAL manifest。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/runtime/serialwrap_backend.py",
+          "line": 614,
+          "end_line": 725,
+          "excerpt_sha256": "86d8104904593c1feaa3f950eaac6117065b40c0f7ad9917b86741b260dd20c7",
+          "claim": "harvest_strict_for_handle 驗證序列範圍並分頁發布。"
+        },
+        {
+          "path": "src/testpilot/runtime/serialwrap_backend.py",
+          "line": 1398,
+          "end_line": 1460,
+          "excerpt_sha256": "7461a17efd412dac382d3b32c6f22e1f6b5b8e4723283a75b76ad6a7b3c4f231",
+          "claim": "export_logs 寫出 serialwrap-wal-export.json 與解碼日誌。"
+        }
+      ]
+    },
+    {
+      "id": "azure-agent",
+      "type": "cloud",
+      "label": "Azure Agent（可選）",
+      "sublabel": "run-end 摘要分析",
+      "overview_component": "agent-assistance",
+      "responsibility": "在所有 verdict 鎖定後執行可選的 run-end 分析（不回寫或修改 verdict）。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1229,
+          "end_line": 1245,
+          "excerpt_sha256": "e0d5d8b9a8defdc6cd89dc30c5a606d3326686e598b30c520a4b3052789ba7e2",
+          "claim": "註明 analysis 僅於 verdicts 確定後執行，不影響單案判定。"
+        }
+      ]
+    },
+    {
+      "id": "usage-reporter",
+      "type": "backend",
+      "label": "Core Usage Reporter",
+      "sublabel": "agent_usage／cost",
+      "overview_component": "run-artifacts",
+      "responsibility": "寫出 events.jsonl、cost-report.{json,md} 與 run-analysis.{json,md}（即使異常中斷亦寫出）。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1217,
+          "end_line": 1227,
+          "excerpt_sha256": "a5641941afbe9104749c05d99209d2a1c16d47fe93d1181a637fea38a9cf86de",
+          "claim": "loop_error 發生時仍寫出 skipped_aborted core cost artifacts。"
+        },
+        {
+          "path": "src/testpilot/reporting/usage_reporter.py",
+          "line": 103,
+          "end_line": 120,
+          "excerpt_sha256": "e68a1f29547ce68da96cd8d0b6e0ed3aa69daabc0006c3ce5647df71392569dd",
+          "claim": "write_core_cost_artifacts 寫出 agent_usage 全部檔案。"
+        }
+      ]
+    },
+    {
+      "id": "plugin-reporter",
+      "type": "external",
+      "label": "Plugin Reporter",
+      "sublabel": "build_reports／SDK 元件",
+      "overview_component": "reporting",
+      "responsibility": "接收未污染的 RunResult 並產出領域格式報表（XLSX / MD / JSON / HTML 等）。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/plugin_base.py",
+          "line": 270,
+          "end_line": 283,
+          "excerpt_sha256": "02dd311d8a1c82850f16c63688d51a0fb3a5ce743c5fd2fc0115de606ac1f473",
+          "claim": "create_reporter 與 report_formats 契約。"
+        },
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1250,
+          "end_line": 1258,
+          "excerpt_sha256": "5a933172e442704164d4b8ce3f72cbfd111c673380c44b0443cc757f8a76a8a4",
+          "claim": "先讓 plugin reporter 讀取原始 RunResult，之後才附加 core 指針。"
+        }
+      ]
+    },
+    {
+      "id": "artifacts",
+      "type": "database",
+      "label": "Run 產物",
+      "sublabel": "reports/<RID>",
+      "overview_component": "run-artifacts",
+      "responsibility": "保存 DUT/STA seq 日誌、agent_usage 與 Plugin 報表的本機輸出目錄。",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 877,
+          "end_line": 885,
+          "excerpt_sha256": "b1861eef59219fe63bedb9c6cbc1e3e052ed71154cb09ccd48d658062c416e8d",
+          "claim": "建立 reports/<RID> 與 agent_trace 目錄。"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "f01-harvest-logs",
+      "from": "run-loop",
+      "to": "run-backend",
+      "y": 182,
+      "label": "harvest_strict 或 export_logs",
+      "variant": "emphasis",
+      "note": "依 strict/legacy 收割或匯出 seq 區間日誌",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1082,
+          "end_line": 1146,
+          "excerpt_sha256": "13f7639b39f5f165362c3b9ae8149f764ea78a19cc277c98cc1997c9c4331f56",
+          "claim": "依 strict/legacy 模式收割或匯出日誌並停止 capture。"
+        }
+      ]
+    },
+    {
+      "id": "f02-write-logs",
+      "from": "run-backend",
+      "to": "artifacts",
+      "y": 248,
+      "label": "寫出解碼 DUT／STA 日誌與 WAL manifest",
+      "variant": "default",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/runtime/serialwrap_backend.py",
+          "line": 1455,
+          "end_line": 1465,
+          "excerpt_sha256": "85ef459b6370e7616d6200f6c98b65038874495c8bb5d5fc83d9d6f6333e903f",
+          "claim": "寫出 serialwrap-wal-export.json 與對齊日誌檔。"
+        }
+      ]
+    },
+    {
+      "id": "f03-build-runresult",
+      "from": "run-backend",
+      "to": "run-loop",
+      "y": 322,
+      "label": "回傳 log 路徑與完整狀態 → 組裝 RunResult",
+      "variant": "return",
+      "note": "strict 模式若 harvest 非 COMPLETE 會補寫 run-abort.json",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1104,
+          "end_line": 1170,
+          "excerpt_sha256": "1b9867805122b50b7a03b48e1529d3df7b6bb515b3558063463f43b0ec73b375",
+          "claim": "依 harvest 狀態更新 run-abort.json 並建立 RunResult。"
+        }
+      ]
+    },
+    {
+      "id": "f04-analyze-run",
+      "from": "run-loop",
+      "to": "azure-agent",
+      "y": 412,
+      "label": "可選：_analyze_run(RunResult, metrics)（verdict 已鎖定）",
+      "variant": "dashed",
+      "note": "先凍結直接用量再呼叫 run-end 分析；異常中斷時標為 skipped_aborted",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1214,
+          "end_line": 1245,
+          "excerpt_sha256": "72bd64caea39dcaab7f6919679a3a42b67e31cfcde8a210aa9eee8eabfcb847e",
+          "claim": "計算 assistance_metrics 並執行 _analyze_run。"
+        }
+      ]
+    },
+    {
+      "id": "f05-write-cost",
+      "from": "run-loop",
+      "to": "usage-reporter",
+      "y": 496,
+      "label": "_write_core_cost_payload(analysis, metrics)",
+      "variant": "default",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1172,
+          "end_line": 1205,
+          "excerpt_sha256": "8eeb05dff36470bfd6b47f283ac505b1e06749b4c1d3a51d7eaba87df4fadebd",
+          "claim": "凍結 usage_ledger 並產出 core cost report。"
+        }
+      ]
+    },
+    {
+      "id": "f06-cost-files",
+      "from": "usage-reporter",
+      "to": "artifacts",
+      "y": 564,
+      "label": "寫入 agent_usage/",
+      "variant": "default",
+      "note": "包含 cost-report.json 與 run-analysis",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/reporting/usage_reporter.py",
+          "line": 103,
+          "end_line": 120,
+          "excerpt_sha256": "e68a1f29547ce68da96cd8d0b6e0ed3aa69daabc0006c3ce5647df71392569dd",
+          "claim": "寫出 events.jsonl、cost-report 與 run-analysis。"
+        }
+      ]
+    },
+    {
+      "id": "f07-plugin-report",
+      "from": "run-loop",
+      "to": "plugin-reporter",
+      "y": 656,
+      "label": "build_reports(RunResult)",
+      "variant": "emphasis",
+      "note": "確保 Plugin Reporter 看到的 RunResult 與核心執行產出完全一致",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/core/run_loop.py",
+          "line": 1250,
+          "end_line": 1258,
+          "excerpt_sha256": "5a933172e442704164d4b8ce3f72cbfd111c673380c44b0443cc757f8a76a8a4",
+          "claim": "於附加 core_agent_analysis 前先交付原始 RunResult 給 plugin reporter。"
+        }
+      ]
+    },
+    {
+      "id": "f08-write-plugin-report",
+      "from": "plugin-reporter",
+      "to": "artifacts",
+      "y": 738,
+      "label": "寫入 Plugin 領域報表",
+      "note": "run_loop 隨後附加 core_cost_report 與 tier2_remediation 指針再回傳",
+      "variant": "emphasis",
+      "basis": "observed",
+      "evidence": [
+        {
+          "path": "src/testpilot/reporting/reporter.py",
+          "line": 254,
+          "end_line": 276,
+          "excerpt_sha256": "a8bba4cc7e4669eab9c44fa70404b5d0ead15a845131b2a4c80d6e99969d1510",
+          "claim": "輸出格式化的領域測試報表。"
+        }
+      ]
+    }
+  ],
+  "unknowns": [
+    {
+      "id": "plugin-report-formats",
+      "question": "外部 plugin 實際輸出哪些報表格式（XLSX / MD / JSON / HTML）？",
+      "impact": "格式與欄位邏輯屬於外部 plugin，Core 只約束 build_reports(RunResult) 介面。"
+    }
+  ]
+}

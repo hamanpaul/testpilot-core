@@ -82,9 +82,9 @@ The core wheel does not ship a domain test suite. Public references currently in
 
 ### Architecture
 
-[Interactive architecture diagram](docs/architecture/architecture.html) · [Source-pinned facts](docs/architecture/facts.json) · [Archify JSON](docs/architecture/architecture.json)
+[Interactive architecture diagram](docs/architecture/architecture.html) · [Source-pinned facts](docs/architecture/facts.json) · [Archify JSON](docs/architecture/architecture.json) · Sequence views: [01 Startup](docs/architecture/features/01-run-startup.html) / [02 Case Execution](docs/architecture/features/02-case-execution.html) / [03 Finalize & Reporting](docs/architecture/features/03-finalize-reporting.html)
 
-Download the HTML and open it locally for interaction. Read `facts.json` before revising the architecture; HTML/IR are derived views of its pinned source revision.
+Download the HTML files locally (or open the top navigation bar) for scroll-wheel zoom and multi-page navigation overlay (`tools/architecture_overlay.py`). Read `facts.json` and `features/*.facts.json` before revising the architecture; HTML/IR are derived views of its pinned source revision.
 
 The default core-owned execution path is split into two concerns:
 
@@ -402,9 +402,9 @@ Core wheel 本身不包含 domain test suite。目前公開 reference 包含：
 
 ### 架構
 
-[互動式架構圖](docs/architecture/architecture.html) · [架構事實](docs/architecture/facts.json) · [Archify JSON](docs/architecture/architecture.json)
+[互動式架構圖](docs/architecture/architecture.html) · [架構事實](docs/architecture/facts.json) · [Archify JSON](docs/architecture/architecture.json) · 流程時序頁：[01 啟動分流](docs/architecture/features/01-run-startup.html) / [02 單案重試](docs/architecture/features/02-case-execution.html) / [03 收尾報表](docs/architecture/features/03-finalize-reporting.html)
 
-下載 HTML 後以瀏覽器開啟即可互動。後續 Agent 更新架構前，先讀 `facts.json` 並比較其固定來源版本；HTML / Archify JSON 為衍生視圖。分支中的 facts 是候選，合併到 main 才是共同基準。
+下載 HTML 後以瀏覽器開啟即可互動，並透過 `tools/architecture_overlay.py` 支援滾輪縮放與頁頂跨頁導覽列。後續 Agent 更新架構前，先讀 `facts.json` 與 `features/*.facts.json` 並比較固定來源版本；HTML / Archify JSON 為衍生視圖。分支中的 facts 是候選，合併到 main 才是共同基準。
 
 預設的 core-owned execution path 可以拆成兩個主要 concern：
 
